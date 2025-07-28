@@ -1,0 +1,10 @@
+copyto_and_sum(fromto::CVectorPair{Float32})::Float32
+
+CVectorPair{Float32}
+  from::CVector{Float32}[0]
+  to::CVector{Float32}[16]
+32 bytes
+CVector{Float32}
+  length::Int32[0]
+  data::Ptr{Float32}[8]
+16 bytes
