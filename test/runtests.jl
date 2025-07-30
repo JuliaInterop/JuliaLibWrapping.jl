@@ -73,4 +73,29 @@ end
         @test occursin("CVectorPair{Float32}(from::CVector{Float32}[0], to::CVector{Float32}[16]) (32 bytes)", str)
         @test occursin("CVector{Float32}(length::Int32[0], data::Ptr{Float32}[8]) (16 bytes)", str)
     end
+
+    @testset "C wrapper" begin
+        mktempdir() do path
+            mkpath(path)
+            dest = CProject(path, "libsimple")
+            entrypoints, typedescs = parselog("bindinginfo_libsimple.log")
+            wrapper(dest, entrypoints, typedescs)
+
+            headerfile = joinpath(dest.dir, dest.headerbase * ".h")
+            @test isfile(headerfile)
+            content = read(headerfile, String)
+            @test occursin("#ifndef JULIALIB_LIBSIMPLE_H", content)
+            @test occursin("#define JULIALIB_LIBSIMPLE_H", content)
+            @test occursin("#include <stddef.h>", content)
+            @test occursin("#include <stdint.h>", content)
+            @test occursin("#include <stdbool.h>", content)
+            @test occursin("typedef struct {", content)
+            @test occursin("    int32_t length;", content)
+            @test occursin("    float* data;", content)
+            @test occursin("CVector_float_ from;", content)
+            @test occursin("CVector_float_ to;", content)
+            @test occursin("float copyto_and_sum(CVectorPair_float_ fromto);", content)
+            @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
+        end
+    end
 end
