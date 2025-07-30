@@ -1,13 +1,15 @@
 name = "JuliaLibWrapping"
 uuid = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
-authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
 version = "1.0.0-DEV"
+authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
 
 [deps]
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 
 [compat]
 Graphs = "1"
+OrderedCollections = "1.8.1"
 julia = "1.12"
 
 [extras]

@@ -50,7 +50,7 @@ Extract the signatures of the entrypoints and nonstandard types from a log file.
 """
 function parselog(filename::String)
     entrypoints = MethodDesc[]
-    typedescs = Dict{String, TypeDesc}()
+    typedescs = OrderedDict{String, TypeDesc}()
 
     open(filename) do f
         handling_types = false
@@ -98,6 +98,31 @@ function parselog(filename::String)
             end
         end
     end
+
+    # Sort the types by building a dependency graph
+    g = SimpleDiGraph(length(typedescs))
+    name2idx = Dict(name => i for (i, name) in enumerate(keys(typedescs)))
+    for (i, (_, type)) in enumerate(typedescs)
+        for field in type.fields
+            dep = get(name2idx, field.type, nothing)
+            if dep !== nothing
+                add_edge!(g, i, dep)
+            end
+        end
+    end
+    function lt(a, b)
+        # if neither is a declared type, compare by name
+        haskey(typedescs, a) || haskey(typedescs, b) || return a < b
+        # if one is not declared, it comes first
+        !haskey(typedescs, a) && return true
+        !haskey(typedescs, b) && return false
+        # otherwise, a < b if there is a path from b to a
+        ia, ib = name2idx[a], name2idx[b]
+        has_path(g, ib, ia) && return true
+        has_path(g, ia, ib) && return false
+        return a < b  # if no path, compare by name
+    end
+    sort!(typedescs; lt)
 
     return entrypoints, typedescs
 end
