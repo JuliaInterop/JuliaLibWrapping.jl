@@ -1,47 +1,116 @@
+using JSON
+
 struct FieldDesc
     name::String
-    type::String
+    type::Int
     offset::Int
 end
-function Base.show(io::IO, field::FieldDesc)
-    print(io, field.name, "::", field.type, "[", field.offset, "]")
+
+struct PrimitiveTypeDesc
+    # TODO: support custom primitive types?
+    name::String
 end
 
-struct TypeDesc
+struct StructDesc
     name::String
-    fields::Vector{FieldDesc}
     size::Int
+    alignment::Int
+    fields::Vector{FieldDesc}
 end
-function Base.show(io::IO, type::TypeDesc)
-    print(io, type.name, "(", join(type.fields, ", "), ") (", type.size, " bytes)")
+
+struct PointerDesc
+    name::String
+    pointee_type::Int # type of pointee
 end
 
 struct ArgDesc
     name::String
-    type::String
+    type::Int
     isva::Bool  # is this a varargs argument?
-end
-function Base.show(io::IO, arg::ArgDesc)
-    print(io, arg.name, "::", arg.type)
-    if arg.isva
-        print(io, "...")
-    end
 end
 
 struct MethodDesc
-    name::String
-    return_type::String
+    symbol::String # exported C symbol
+    name::String   # full method name w/ args
+    return_type::Int
     args::Vector{ArgDesc}
 end
 
-function Base.show(io::IO, method::MethodDesc)
-    print(io, method.name, "(", join(method.args, ", "), ")::", method.return_type)
+const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc}
+
+function from_json(::Type{PrimitiveTypeDesc}, type::Dict{String,Any})
+    return PrimitiveTypeDesc(type["name"])
 end
 
-const rexsize = r"^(\d+) bytes$"
-const rexfield = r"^  (.+)::(.+)\[(\d+)\]$"
-const rexmethod = r"^(.+)\((.*)\)::(.+)$"
-const rexarg = r"^(.+)::(.+)(\.\.\.)?$"
+function from_json(::Type{StructDesc}, type::Dict{String, Any})
+    return StructDesc(
+        type["name"],
+        type["size"],
+        type["alignment"],
+        FieldDesc[
+            FieldDesc(
+                field["name"],
+                field["type"],
+                field["offset"]
+            )
+            for field in type["fields"]
+        ]
+    )
+end
+
+function from_json(::Type{PointerDesc}, json::Dict{String, Any})
+    return PointerDesc(json["name"], json["pointee"])
+end
+
+function from_json(::Type{TypeDesc}, json::Dict{String, Any})
+    kind = json["kind"]::String
+    if kind === "primitive"
+        return from_json(PrimitiveTypeDesc, json)
+    elseif kind === "struct"
+        return from_json(StructDesc, json)
+    elseif kind === "pointer"
+        return from_json(PointerDesc, json)
+    else # unreachable
+        @assert false "unexpected kind '$(json["kind"])' in type metadata"
+    end
+end
+
+function from_json(::Type{MethodDesc}, method::Dict{String, Any})
+    return MethodDesc(
+        method["symbol"],
+        method["name"],
+        method["returns"]["type"],
+        ArgDesc[
+            ArgDesc(
+                arg["name"],
+                arg["type"],
+                #= isva =# false
+            )
+            for arg in method["arguments"]
+        ],
+    )
+end
+
+function build_type_graph(typedescs::OrderedDict{Int, TypeDesc};
+                          pointer_filter::Function)
+    g = SimpleDiGraph(length(typedescs))
+    for (id, desc) in pairs(typedescs)
+        if desc isa StructDesc
+            for field in desc.fields
+                add_edge!(g, field.type, id)
+            end
+        elseif desc isa PointerDesc
+            if pointer_filter(id)
+                add_edge!(g, desc.pointee_type, id)
+            else
+                # pointee types don't affect data layout (no edges to add)
+            end
+        elseif desc isa PrimitiveTypeDesc
+            # dependency is tracked from the `struct` side
+        end
+    end
+    return g
+end
 
 """
     entrypoints, typedescs = parselog(filename::String)
@@ -49,81 +118,66 @@ const rexarg = r"^(.+)::(.+)(\.\.\.)?$"
 Extract the signatures of the entrypoints and nonstandard types from a log file.
 """
 function parselog(filename::String)
+    abi_info = JSON.Parser.parsefile(filename)
+
+    # Extract all the type descriptors
+    typedescs = OrderedDict{Int, TypeDesc}()
+    for type in abi_info["types"]
+        id = type["id"]::Int
+        typedescs[id] = from_json(TypeDesc, type)
+    end
+
+    # Then collect the methods
     entrypoints = MethodDesc[]
-    typedescs = OrderedDict{String, TypeDesc}()
+    for method in abi_info["functions"]
+        push!(entrypoints, from_json(MethodDesc, method))
+    end
 
-    open(filename) do f
-        handling_types = false
-        while !eof(f)
-            line = rstrip(readline(f))
-            if isempty(line)
-                handling_types = true
-                continue
-            elseif handling_types
-                current_type = line
-                fields = FieldDesc[]
-                line = rstrip(readline(f))  # Read the next line for type details
-                m = match(rexsize, line)
-                while m === nothing
-                    m = match(rexfield, line)
-                    field_name = m.captures[1]
-                    field_type = m.captures[2]
-                    field_offset = parse(Int, m.captures[3])
-                    push!(fields, FieldDesc(field_name, field_type, field_offset))
-                    line = rstrip(readline(f))
-                    m = match(rexsize, line)
-                end
-                type_size = parse(Int, m.captures[1])
-                typedescs[current_type] = TypeDesc(current_type, fields, type_size)
-            else   # methods
-                m = match(rexmethod, line)
-                method_name = m.captures[1]
-                args_str = m.captures[2]
-                return_type = m.captures[3]
+    # First we have to identify the parts of the graph where we have type-recursion and
+    # therefore have to use forward-declarations instead of just sorting declarations.
+    recursive_types = BitSet()
 
-                args = ArgDesc[]
-                for arg_str in split(args_str, ",")
-                    arg_str = strip(arg_str)
-                    if isempty(arg_str)
-                        continue
-                    end
-                    m = match(rexarg, arg_str)
-                    arg_name = m.captures[1]
-                    arg_type = m.captures[2]
-                    isva = length(m.captures) > 2 && m.captures[3] !== nothing  # Check for varargs
-                    push!(args, ArgDesc(arg_name, arg_type, isva))
-                end
-
-                push!(entrypoints, MethodDesc(method_name, return_type, args))
-            end
+    full_type_graph = build_type_graph(typedescs; pointer_filter = (id)->true)
+    for scc in strongly_connected_components(full_type_graph)
+        length(scc) == 1 && continue
+        for type_id in scc
+            push!(recursive_types, type_id)
         end
     end
 
-    # Sort the types by building a dependency graph
-    g = SimpleDiGraph(length(typedescs))
-    name2idx = Dict(name => i for (i, name) in enumerate(keys(typedescs)))
-    for (i, (_, type)) in enumerate(typedescs)
-        for field in type.fields
-            dep = get(name2idx, field.type, nothing)
-            if dep !== nothing
-                add_edge!(g, i, dep)
+    # Now that we know the recursive types, we can restrict them from treating their pointers
+    # as a type dependency and re-build a type-graph that is acyclic (these deleted dependencies
+    # will later become a forward-declaration)
+    type_graph = build_type_graph(typedescs; pointer_filter = (id)->!in(id, recursive_types))
+
+    # We now have an acyclic type-dependency graph, and we have to emit our declarations in a
+    # topological order. This guarantees that if a type A has a dependency on type B, type B
+    # will appear before type A.
+    order_to_emit = zeros(length(typedescs))
+    for (pos, desc_id) in enumerate(topological_sort(type_graph))
+        # poor man's permute!(typedescs, topological_sort(g))
+        order_to_emit[desc_id] = pos
+    end
+    sort!(typedescs; by=(id)->order_to_emit[id])
+
+    # Finally, we just need to compute the set of required forward declarations.
+    forwarddecls = BitSet()
+    for id in recursive_types
+        desc = typedescs[id]
+        desc isa StructDesc || continue
+        for field in desc.fields
+            dep = field.type
+            while typedescs[dep] isa PointerDesc
+                # 'dereference' any pointer type
+                dep = (typedescs[dep]::PointerDesc).pointee_type
             end
+            order_to_emit[id] ≥ order_to_emit[dep] && continue
+            # this struct refers (through 1 or more pointers) to a type that will
+            # be emitted after it, so that type must be forward-declared.
+            push!(forwarddecls, dep)
         end
     end
-    function lt(a, b)
-        # if neither is a declared type, compare by name
-        haskey(typedescs, a) || haskey(typedescs, b) || return a < b
-        # if one is not declared, it comes first
-        !haskey(typedescs, a) && return true
-        !haskey(typedescs, b) && return false
-        # otherwise, a < b if there is a path from b to a
-        ia, ib = name2idx[a], name2idx[b]
-        has_path(g, ib, ia) && return true
-        has_path(g, ia, ib) && return false
-        return a < b  # if no path, compare by name
-    end
-    sort!(typedescs; lt)
 
-    return entrypoints, typedescs
+    return entrypoints, typedescs, forwarddecls
 end
 parselog(filename::AbstractString) = parselog(String(filename)::String)
