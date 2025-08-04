@@ -1,5 +1,9 @@
 using JuliaLibWrapping
+using OrderedCollections
 using Test
+
+import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, TypeDesc
+import JuliaLibWrapping: sort_declarations!
 
 function onlymatch(f, collection)
     matches = filter(f, collection)
@@ -68,6 +72,90 @@ end
         @test tdesc.size == 8
         name2idx = Dict(desc.name => i for (i, desc) in enumerate(values(typeinfo)))
         @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{Float32}"]
+    end
+
+    @testset "sort_declarations!" begin
+        unsorted = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc(
+                "test_struct1",
+                0, # size
+                0, # alignment
+                FieldDesc[
+                    FieldDesc("field1", #= type =# 2, #= offset =# 0),
+                    FieldDesc("field2", #= type =# 3, #= offset =# 0),
+                ],
+            ),
+            2 => StructDesc(
+                "test_struct2",
+                0, # size
+                0, # alignment
+                FieldDesc[
+                    FieldDesc("field1", #= type =# 3, #= offset =# 0),
+                    FieldDesc("field2", #= type =# 3, #= offset =# 0),
+                ],
+            ),
+            3 => PrimitiveTypeDesc("UInt16"),
+        )
+        sorted = copy(unsorted)
+        fwd_decls = sort_declarations!(sorted)
+
+        # No recursive types, so this should require no forward declarations
+        @test isempty(fwd_decls)
+        # There is only one order that these types could be defined such that
+        # dependencies are defined before they are used.
+        @test collect(keys(sorted)) == Int[3,2,1]
+
+        unsorted = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc(
+                "test_struct1",
+                0, # size
+                0, # alignment
+                FieldDesc[
+                    FieldDesc("field1", #= type =# 2, #= offset =# 0),
+                    FieldDesc("field2", #= type =# 5, #= offset =# 0),
+                ],
+            ),
+            2 => PointerDesc("pointer1", #= pointee_type =# 3),
+            3 => StructDesc(
+                "test_struct2",
+                0, # size
+                0, # alignment
+                FieldDesc[
+                    FieldDesc("field1", #= type =# 5, #= offset =# 0),
+                    FieldDesc("field2", #= type =# 5, #= offset =# 0),
+                ],
+            ),
+            4 => PointerDesc("pointer2", #= pointee_type =# 1),
+            5 => PrimitiveTypeDesc("UInt16"),
+        )
+        sorted = copy(unsorted)
+        fwd_decls = sort_declarations!(sorted)
+
+        # We added a pointer indirection, but it's non-recursive so we should
+        # require no forward declarations
+        @test isempty(fwd_decls)
+
+        # Once again, there is only one order that we can emit these definitions
+        @test collect(keys(sorted)) == Int[5,3,2,1,4]
+
+        # Modify the type definitions so that test_struct1 and test_struct2 are
+        # mutually recursive.
+        unsorted[3].fields[1] = FieldDesc("field1", #= type =# 4, #= offset =# 0)
+
+        sorted = copy(unsorted)
+        fwd_decls = sort_declarations!(sorted)
+
+        # At least one of the struct types should need to be forward-declared
+        @test !isempty(fwd_decls)
+        if fwd_decls == BitSet([1])
+            # If 1 was forward-declared then 3 (and pointer to 1) is defined first
+            @test collect(keys(sorted)) == Int[5,4,3,2,1]
+        elseif fwd_decls == BitSet([3])
+            # If 3 was forward-declared then 1 (and pointer to 3) is defined first
+            @test collect(keys(sorted)) == Int[5,2,1,4,3]
+        else
+            @test false # unexpected forward declarations
+        end
     end
 
     @testset "C wrapper" begin
