@@ -106,7 +106,11 @@ const ctypes = Dict{String, String}(
 
 function sanitize_for_c(str::AbstractString)
     # Replace any non alphanumeric characters with '_'
-    return replace(str, r"[^a-zA-Z0-9_]" => "_")
+    str = replace(str, r"[^a-zA-Z0-9_]" => "_")
+    # Strip any leading / trailing underscores
+    str = strip(str, Char['_'])
+    # Merge any repeated underscores to just one
+    return replace(str, r"_+" => "_")
 end
 
 function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedDict{Int,TypeDesc})
@@ -125,6 +129,9 @@ function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedD
     elseif type isa StructDesc
         mangled = sanitize_for_c(type.name)
     end
+    # FIXME: this function should check for name collisions at this stage (which can happen due to
+    #        sanitization or name ambiguity in the printing from Julia) and gensym a unique suffix
+    #        if necessary
     typedict[type_id] = mangled
     return mangled
 end

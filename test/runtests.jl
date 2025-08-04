@@ -85,12 +85,12 @@ end
             @test occursin("#include <stddef.h>", content)
             @test occursin("#include <stdint.h>", content)
             @test occursin("#include <stdbool.h>", content)
-            @test occursin("typedef struct CVector_Float32_ {", content)
+            @test occursin("typedef struct CVector_Float32 {", content)
             @test occursin("    int32_t length;", content)
             @test occursin("    float* data;", content)
-            @test occursin("CVector_Float32_ from;", content)
-            @test occursin("CVector_Float32_ to;", content)
-            @test occursin("float copyto_and_sum(CVectorPair_Float32_ fromto);", content)
+            @test occursin("CVector_Float32 from;", content)
+            @test occursin("CVector_Float32 to;", content)
+            @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
         end
     end
