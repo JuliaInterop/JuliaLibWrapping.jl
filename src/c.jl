@@ -3,6 +3,13 @@ struct CProject
     headerbase::String
 end
 
+function unwrap_pointer_type(type_id::Int, typeinfo)
+    while typeinfo[type_id] isa PointerDesc
+        type_id = typeinfo[type_id].pointee_type
+    end
+    return type_id
+end
+
 function wrapper(dest::CProject, abi_info::ABIInfo)
     (; entrypoints, typeinfo, forward_declared) = abi_info
 
@@ -28,12 +35,16 @@ function wrapper(dest::CProject, abi_info::ABIInfo)
         end
 
         # Print the struct definitions
+        printed = BitSet()
         for (id, type) in pairs(typeinfo)
             if type isa StructDesc
                 mangled_name = mangle_c!(typedict, id, typeinfo)
                 println(f, "typedef struct ", mangled_name, " {")
                 for field in type.fields
                     ft = mangle_c!(typedict, field.type, typeinfo)
+                    if !in(unwrap_pointer_type(field.type, typeinfo), printed)
+                        ft = "struct " * ft
+                    end
                     println(f, "    ", ft, " ", sanitize_for_c(field.name), ";")
                 end
                 println(f, "} ", mangled_name, ";")
@@ -41,7 +52,8 @@ function wrapper(dest::CProject, abi_info::ABIInfo)
                 # We only rely on built-in primitive types (c.f. `ctypes`)
             elseif type isa PointerDesc
                 # We emit pointer types in-line - no need for a separate typedef
-            end
+            else @assert false "unknown descriptor type" end
+            push!(printed, id)
         end
         println(f)
 
