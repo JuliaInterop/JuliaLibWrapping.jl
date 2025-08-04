@@ -10,62 +10,63 @@ function onlymatch(f, collection)
 end
 
 @testset "JuliaLibWrapping.jl" begin
-    @testset "parselog" begin
-        entrypoints, typedescs, forwarddecls = parselog("bindinginfo_libsimple.json")
+    @testset "import_abi_info" begin
+        abi_info = import_abi_info("bindinginfo_libsimple.json")
+        (; entrypoints, typeinfo) = abi_info
 
         methdesc = onlymatch(md -> md.symbol == "copyto_and_sum", entrypoints)
-        @test typedescs[methdesc.return_type].name == "Float32"
+        @test typeinfo[methdesc.return_type].name == "Float32"
         @test length(methdesc.args) == 1
         argdesc = only(methdesc.args)
         @test argdesc.name == "fromto"
-        @test typedescs[argdesc.type].name == "CVectorPair{Float32}"
+        @test typeinfo[argdesc.type].name == "CVectorPair{Float32}"
         @test argdesc.isva == false
 
         methdesc = onlymatch(md -> md.symbol == "countsame", entrypoints)
-        @test typedescs[methdesc.return_type].name == "Int32"
+        @test typeinfo[methdesc.return_type].name == "Int32"
         @test length(methdesc.args) == 2
         argdesc1, argdesc2 = methdesc.args
         @test argdesc1.name == "list"
-        @test typedescs[argdesc1.type].name == "Ptr{MyTwoVec}"
+        @test typeinfo[argdesc1.type].name == "Ptr{MyTwoVec}"
         @test argdesc1.isva == false
         @test argdesc2.name == "n"
-        @test typedescs[argdesc2.type].name == "Int32"
+        @test typeinfo[argdesc2.type].name == "Int32"
         @test argdesc2.isva == false
 
-        @test length(typedescs) >= 3
+        @test length(typeinfo) >= 3
         findtype(descs, name) = (k = collect(keys(descs)); k[findfirst((id)->descs[id].name === name, k)])
 
-        tdesc = typedescs[findtype(typedescs, "CVectorPair{Float32}")]
+        tdesc = typeinfo[findtype(typeinfo, "CVectorPair{Float32}")]
         @test tdesc.name == "CVectorPair{Float32}"
         @test length(tdesc.fields) == 2
         @test tdesc.fields[1].name == "from"
-        @test typedescs[tdesc.fields[1].type].name == "CVector{Float32}"
+        @test typeinfo[tdesc.fields[1].type].name == "CVector{Float32}"
         @test tdesc.fields[1].offset == 0
         @test tdesc.fields[2].name == "to"
-        @test typedescs[tdesc.fields[2].type].name == "CVector{Float32}"
+        @test typeinfo[tdesc.fields[2].type].name == "CVector{Float32}"
         @test tdesc.fields[2].offset == 16
         @test tdesc.size == 32
-        tdesc = typedescs[findtype(typedescs, "CVector{Float32}")]
+        tdesc = typeinfo[findtype(typeinfo, "CVector{Float32}")]
         @test tdesc.name == "CVector{Float32}"
         @test length(tdesc.fields) == 2
         @test tdesc.fields[1].name == "length"
-        @test typedescs[tdesc.fields[1].type].name == "Int32"
+        @test typeinfo[tdesc.fields[1].type].name == "Int32"
         @test tdesc.fields[1].offset == 0
         @test tdesc.fields[2].name == "data"
-        @test typedescs[tdesc.fields[2].type].name == "Ptr{Float32}"
+        @test typeinfo[tdesc.fields[2].type].name == "Ptr{Float32}"
         @test tdesc.fields[2].offset == 8
         @test tdesc.size == 16
-        tdesc = typedescs[findtype(typedescs, "MyTwoVec")]
+        tdesc = typeinfo[findtype(typeinfo, "MyTwoVec")]
         @test tdesc.name == "MyTwoVec"
         @test length(tdesc.fields) == 2
         @test tdesc.fields[1].name == "x"
-        @test typedescs[tdesc.fields[1].type].name == "Int32"
+        @test typeinfo[tdesc.fields[1].type].name == "Int32"
         @test tdesc.fields[1].offset == 0
         @test tdesc.fields[2].name == "y"
-        @test typedescs[tdesc.fields[2].type].name == "Int32"
+        @test typeinfo[tdesc.fields[2].type].name == "Int32"
         @test tdesc.fields[2].offset == 4
         @test tdesc.size == 8
-        name2idx = Dict(desc.name => i for (i, desc) in enumerate(values(typedescs)))
+        name2idx = Dict(desc.name => i for (i, desc) in enumerate(values(typeinfo)))
         @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{Float32}"]
     end
 
@@ -73,8 +74,8 @@ end
         mktempdir() do path
             mkpath(path)
             dest = CProject(path, "libsimple")
-            entrypoints, typedescs, forwarddecls = parselog("bindinginfo_libsimple.json")
-            wrapper(dest, entrypoints, typedescs, forwarddecls)
+            abi_info = import_abi_info("bindinginfo_libsimple.json")
+            wrapper(dest, abi_info)
 
             headerfile = joinpath(dest.dir, dest.headerbase * ".h")
             @test isfile(headerfile)

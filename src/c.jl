@@ -3,7 +3,9 @@ struct CProject
     headerbase::String
 end
 
-function wrapper(dest::CProject, entrypoints, typedescs, forwarddecls)
+function wrapper(dest::CProject, abi_info::ABIInfo)
+    (; entrypoints, typeinfo, forward_declared) = abi_info
+
     # Write the header file for C
     headerfile = joinpath(dest.dir, dest.headerbase * ".h")
     libvar = "JULIALIB_" * uppercase(dest.headerbase) * "_H"
@@ -18,20 +20,20 @@ function wrapper(dest::CProject, entrypoints, typedescs, forwarddecls)
         typedict = Dict{Int, String}()
 
         # Print forward-declarations (if any, for recursive types)
-        for id in forwarddecls
-            type = typedescs[id]
+        for id in forward_declared
+            type = typeinfo[id]
             @assert type isa StructDesc "un-expected forward declaration type"
-            mangled_name = mangle_c!(typedict, id, typedescs)
+            mangled_name = mangle_c!(typedict, id, typeinfo)
             println(f, "struct ", mangled_name, ";")
         end
 
         # Print the struct definitions
-        for (id, type) in pairs(typedescs)
+        for (id, type) in pairs(typeinfo)
             if type isa StructDesc
-                mangled_name = mangle_c!(typedict, id, typedescs)
+                mangled_name = mangle_c!(typedict, id, typeinfo)
                 println(f, "typedef struct ", mangled_name, " {")
                 for field in type.fields
-                    ft = mangle_c!(typedict, field.type, typedescs)
+                    ft = mangle_c!(typedict, field.type, typeinfo)
                     println(f, "    ", ft, " ", sanitize_for_c(field.name), ";")
                 end
                 println(f, "} ", mangled_name, ";")
@@ -48,7 +50,7 @@ function wrapper(dest::CProject, entrypoints, typedescs, forwarddecls)
             if !isempty(args)
                 args = ", " * args
             end
-            mangled_rt = mangle_c!(typedict, method.return_type, typedescs)
+            mangled_rt = mangle_c!(typedict, method.return_type, typeinfo)
             print(f, mangled_rt, " ", method.symbol, "(")
             isfirst = true
             for arg in method.args
@@ -57,7 +59,7 @@ function wrapper(dest::CProject, entrypoints, typedescs, forwarddecls)
                 else
                     print(f, ", ")
                 end
-                ft = mangle_c!(typedict, arg.type, typedescs)
+                ft = mangle_c!(typedict, arg.type, typeinfo)
                 print(f, ft, " ", sanitize_for_c(arg.name))
                 if arg.isva
                     print(f, "...")
@@ -107,19 +109,19 @@ function sanitize_for_c(str::AbstractString)
     return replace(str, r"[^a-zA-Z0-9_]" => "_")
 end
 
-function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typedescs::OrderedDict{Int,TypeDesc})
+function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedDict{Int,TypeDesc})
     if type_id in keys(typedict)
         return typedict[type_id]
     end
 
-    type = typedescs[type_id]
+    type = typeinfo[type_id]
     if type isa PrimitiveTypeDesc
         if !in(type.name, keys(ctypes))
             error("unsupported primitive type: '$(type.name)'")
         end
         return ctypes[type.name]
     elseif type isa PointerDesc
-        mangled = mangle_c!(typedict, type.pointee_type, typedescs) * "*"
+        mangled = mangle_c!(typedict, type.pointee_type, typeinfo) * "*"
     elseif type isa StructDesc
         mangled = sanitize_for_c(type.name)
     end

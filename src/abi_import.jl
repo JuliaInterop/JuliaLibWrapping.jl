@@ -113,26 +113,16 @@ function build_type_graph(typedescs::OrderedDict{Int, TypeDesc};
 end
 
 """
-    entrypoints, typedescs = parselog(filename::String)
+    sort_declarations!(typedescs) -> forward_declarations
 
-Extract the signatures of the entrypoints and nonstandard types from a log file.
+Sort `typedescs` w.r.t. type-dependencies (e.g. Type A using Type B in a field),
+so that a type-descriptor always appears after any dependencies. Sort is performed
+in-place.
+
+Returns indices of all types that could not be sorted (due to recursive types, e.g.
+a linked list in C). In C, these are the definitions that must be forward-declared.
 """
-function parselog(filename::String)
-    abi_info = JSON.Parser.parsefile(filename)
-
-    # Extract all the type descriptors
-    typedescs = OrderedDict{Int, TypeDesc}()
-    for type in abi_info["types"]
-        id = type["id"]::Int
-        typedescs[id] = from_json(TypeDesc, type)
-    end
-
-    # Then collect the methods
-    entrypoints = MethodDesc[]
-    for method in abi_info["functions"]
-        push!(entrypoints, from_json(MethodDesc, method))
-    end
-
+function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
     # First we have to identify the parts of the graph where we have type-recursion and
     # therefore have to use forward-declarations instead of just sorting declarations.
     recursive_types = BitSet()
@@ -178,6 +168,42 @@ function parselog(filename::String)
         end
     end
 
-    return entrypoints, typedescs, forwarddecls
+    return forwarddecls
 end
-parselog(filename::AbstractString) = parselog(String(filename)::String)
+
+struct ABIInfo
+    # A map from `type_id` to `type_descriptor`, sorted by declaration order.
+    typeinfo::OrderedDict{Int, TypeDesc}
+    # Indexes into `types`, indicates which types must be forward-declared for C.
+    forward_declared::BitSet
+    # A vector of exposed functions from the imported ABI
+    entrypoints::Vector{MethodDesc}
+end
+
+"""
+    entrypoints, typedescs, forward_declarations = parselog(filename::String)
+
+Extract the signatures of the entrypoints and types from an exported ABI info (JSON) file.
+"""
+function import_abi_info(filename::String)
+    abi_info = JSON.Parser.parsefile(filename)
+
+    # Extract all the type descriptors
+    typedescs = OrderedDict{Int, TypeDesc}()
+    for type in abi_info["types"]
+        id = type["id"]::Int
+        typedescs[id] = from_json(TypeDesc, type)
+    end
+
+    # Then collect the methods
+    entrypoints = MethodDesc[]
+    for method in abi_info["functions"]
+        push!(entrypoints, from_json(MethodDesc, method))
+    end
+
+    forward_declared = sort_declarations!(typedescs)
+
+    return ABIInfo(typedescs, forward_declared, entrypoints)
+end
+
+import_abi_info(filename::AbstractString) = import_abi_info(String(filename)::String)
