@@ -129,9 +129,18 @@ function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedD
     elseif type isa StructDesc
         mangled = sanitize_for_c(type.name)
     end
-    # FIXME: this function should check for name collisions at this stage (which can happen due to
-    #        sanitization or name ambiguity in the printing from Julia) and gensym a unique suffix
-    #        if necessary
+
+    # Check for any name collision and unique the symbol, if necessary.
+    if mangled in values(typedict)
+        suffix = type_id
+        extended = mangled * "_" * string(suffix)
+        while extended in values(typedict)
+            suffix += 1
+            extended = mangled * "_" * string(suffix)
+        end
+        mangled = extended
+    end
+
     typedict[type_id] = mangled
     return mangled
 end
