@@ -191,7 +191,7 @@ function import_abi_info(filename::String)
     # Extract all the type descriptors
     typedescs = OrderedDict{Int, TypeDesc}()
     for type in abi_info["types"]
-        id = type["id"]::Int
+        id = Int(type["id"]::Int64)
         typedescs[id] = from_json(TypeDesc, type)
     end
 
