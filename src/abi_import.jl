@@ -50,7 +50,7 @@ function from_json(::Type{StructDesc}, type::Dict{String, Any})
         FieldDesc[
             FieldDesc(
                 field["name"],
-                field["type"],
+                field["type_id"],
                 field["offset"]
             )
             for field in type["fields"]
@@ -79,11 +79,11 @@ function from_json(::Type{MethodDesc}, method::Dict{String, Any})
     return MethodDesc(
         method["symbol"],
         method["name"],
-        method["returns"]["type"],
+        method["returns"]["type_id"],
         ArgDesc[
             ArgDesc(
                 arg["name"],
-                arg["type"],
+                arg["type_id"],
                 #= isva =# false
             )
             for arg in method["arguments"]
