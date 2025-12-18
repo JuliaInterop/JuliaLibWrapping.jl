@@ -7,8 +7,11 @@ struct FieldDesc
 end
 
 struct PrimitiveTypeDesc
-    # TODO: support custom primitive types?
     name::String
+    signed::Bool
+    bits::UInt
+    size::UInt
+    alignment::UInt
 end
 
 struct StructDesc
@@ -39,7 +42,13 @@ end
 const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc}
 
 function from_json(::Type{PrimitiveTypeDesc}, type::Dict{String,Any})
-    return PrimitiveTypeDesc(type["name"])
+    return PrimitiveTypeDesc(
+	type["name"],
+	type["signed"],
+	type["bits"],
+	type["size"],
+	type["alignment"],
+    )
 end
 
 function from_json(::Type{StructDesc}, type::Dict{String, Any})
@@ -59,7 +68,7 @@ function from_json(::Type{StructDesc}, type::Dict{String, Any})
 end
 
 function from_json(::Type{PointerDesc}, json::Dict{String, Any})
-    return PointerDesc(json["name"], json["pointee"])
+    return PointerDesc(json["name"], json["pointee_type_id"])
 end
 
 function from_json(::Type{TypeDesc}, json::Dict{String, Any})
@@ -127,7 +136,7 @@ function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
     # therefore have to use forward-declarations instead of just sorting declarations.
     recursive_types = BitSet()
 
-    full_type_graph = build_type_graph(typedescs; pointer_filter = (id)->true)
+    full_type_graph = build_type_graph(typedescs; pointer_filter = Returns(true))
     for scc in strongly_connected_components(full_type_graph)
         length(scc) == 1 && continue
         for type_id in scc
@@ -171,17 +180,43 @@ function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
     return forwarddecls
 end
 
+"""
+    ABIInfo
+
+# Fields
+
+- `typeinfo::OrderedDict{Int, TypeDesc}`: A map from `type_id` to
+  `type_descriptor`, sorted by declaration order.
+- `forward_declared::BitSet`: Indexes into `types`, indicates which
+   types must be forward-declared for C.
+- `entrypoints::Vector{MethodDesc}`: A vector of exposed functions
+   from the imported ABI.
+"""
 struct ABIInfo
-    # A map from `type_id` to `type_descriptor`, sorted by declaration order.
     typeinfo::OrderedDict{Int, TypeDesc}
-    # Indexes into `types`, indicates which types must be forward-declared for C.
     forward_declared::BitSet
-    # A vector of exposed functions from the imported ABI
     entrypoints::Vector{MethodDesc}
 end
 
+function Base.show(io::IO, info::ABIInfo)
+    Base.show_type_name(io, ABIInfo.name)
+    print(io, "(...) object, with ")
+    print(io, length(info.typeinfo), " types and ")
+    print(io, length(info.entrypoints), " entrypoints.\n")
+    println(io, "  Types:")
+    for desc in values(info.typeinfo)
+	println(io, "    ∘ ", desc.name)
+    end
+    println(io, "  Entrypoints:")
+    for desc in info.entrypoints
+	print(io, "    ∘ ")
+	println(io, desc.name)
+    end
+end
+
+
 """
-    entrypoints, typedescs, forward_declarations = parselog(filename::String)
+    abi_info = import_abi_info(filename::String)
 
 Extract the signatures of the entrypoints and types from an exported ABI info (JSON) file.
 """

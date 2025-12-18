@@ -94,7 +94,7 @@ end
                     FieldDesc("field2", #= type =# 3, #= offset =# 0),
                 ],
             ),
-            3 => PrimitiveTypeDesc("UInt16"),
+            3 => PrimitiveTypeDesc("UInt16", false, 16, 2, 2),
         )
         sorted = copy(unsorted)
         fwd_decls = sort_declarations!(sorted)
@@ -126,7 +126,7 @@ end
                 ],
             ),
             4 => PointerDesc("pointer2", #= pointee_type =# 1),
-            5 => PrimitiveTypeDesc("UInt16"),
+            5 => PrimitiveTypeDesc("UInt16", false, 16, 2, 2),
         )
         sorted = copy(unsorted)
         fwd_decls = sort_declarations!(sorted)
