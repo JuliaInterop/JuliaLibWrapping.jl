@@ -1,0 +1,139 @@
+{
+  "functions": [
+    {
+      "symbol": "tree_size",
+      "name": "tree_size(tree::CTree{Float64})",
+      "arguments": [
+        { "name": "tree", "type_id": 1 }
+      ],
+      "returns": { "type_id": 6 }
+    },
+    {
+      "symbol": "copyto_and_sum",
+      "name": "copyto_and_sum(fromto::CVectorPair{Float32})",
+      "arguments": [
+        { "name": "fromto", "type_id": 7 }
+      ],
+      "returns": { "type_id": 8 }
+    },
+    {
+      "symbol": "countsame",
+      "name": "countsame(list::Ptr{MyTwoVec}, n::Int32)",
+      "arguments": [
+        { "name": "list", "type_id": 11 },
+        { "name": "n", "type_id": 4 }
+      ],
+      "returns": { "type_id": 4 }
+    }
+  ],
+  "types": [
+    {
+      "id": 1,
+      "kind": "struct",
+      "name": "CTree{Float64}",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "children", "type_id": 3, "offset": 0, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 2,
+      "kind": "primitive",
+      "name": "Float64",
+      "signed": false,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 3,
+      "kind": "struct",
+      "name": "CVector{CTree{Float64}}",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 5, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 4,
+      "kind": "primitive",
+      "name": "Int32",
+      "signed": true,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 5,
+      "kind": "pointer",
+      "name": "Ptr{CTree{Float64}}",
+      "pointee_type_id": 1
+    },
+    {
+      "id": 6,
+      "kind": "primitive",
+      "name": "Int64",
+      "signed": true,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 7,
+      "kind": "struct",
+      "name": "CVectorPair{Float32}",
+      "size": 32,
+      "alignment": 8,
+      "fields": [
+        { "name": "from", "type_id": 9, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "to", "type_id": 9, "offset": 16, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 8,
+      "kind": "primitive",
+      "name": "Float32",
+      "signed": false,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 9,
+      "kind": "struct",
+      "name": "CVector{Float32}",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 10, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 10,
+      "kind": "pointer",
+      "name": "Ptr{Float32}",
+      "pointee_type_id": 8
+    },
+    {
+      "id": 11,
+      "kind": "pointer",
+      "name": "Ptr{MyTwoVec}",
+      "pointee_type_id": 12
+    },
+    {
+      "id": 12,
+      "kind": "struct",
+      "name": "MyTwoVec",
+      "size": 8,
+      "alignment": 4,
+      "fields": [
+        { "name": "x", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "y", "type_id": 4, "offset": 4, "isptr": false, "isfieldatomic": false }
+      ]
+    }
+  ]
+}

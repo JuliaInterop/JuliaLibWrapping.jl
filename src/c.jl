@@ -3,7 +3,16 @@ struct CProject
     headerbase::String
 end
 
-function wrapper(dest::CProject, entrypoints, typedescs)
+function unwrap_pointer_type(type_id::Int, typeinfo)
+    while typeinfo[type_id] isa PointerDesc
+        type_id = typeinfo[type_id].pointee_type
+    end
+    return type_id
+end
+
+function wrapper(dest::CProject, abi_info::ABIInfo)
+    (; entrypoints, typeinfo, forward_declared) = abi_info
+
     # Write the header file for C
     headerfile = joinpath(dest.dir, dest.headerbase * ".h")
     libvar = "JULIALIB_" * uppercase(dest.headerbase) * "_H"
@@ -15,14 +24,36 @@ function wrapper(dest::CProject, entrypoints, typedescs)
         println(f, "#include <stdbool.h>")
         println(f)
 
-        typedict = Dict{String, String}()
-        for type in values(typedescs)
-            println(f, "typedef struct {")
-            for field in type.fields
-                ft = mangle_c!(typedict, field.type)
-                println(f, "    ", ft, " ", field.name, ";")
-            end
-            println(f, "} ", mangle_c!(typedict, type.name), ";")
+        typedict = Dict{Int, String}()
+
+        # Print forward-declarations (if any, for recursive types)
+        for id in forward_declared
+            type = typeinfo[id]
+            @assert type isa StructDesc "un-expected forward declaration type"
+            mangled_name = mangle_c!(typedict, id, typeinfo)
+            println(f, "struct ", mangled_name, ";")
+        end
+
+        # Print the struct definitions
+        printed = BitSet()
+        for (id, type) in pairs(typeinfo)
+            if type isa StructDesc
+                mangled_name = mangle_c!(typedict, id, typeinfo)
+                println(f, "typedef struct ", mangled_name, " {")
+                for field in type.fields
+                    ft = mangle_c!(typedict, field.type, typeinfo)
+                    if !in(unwrap_pointer_type(field.type, typeinfo), printed)
+                        ft = "struct " * ft
+                    end
+                    println(f, "    ", ft, " ", sanitize_for_c(field.name), ";")
+                end
+                println(f, "} ", mangled_name, ";")
+            elseif type isa PrimitiveTypeDesc
+                # We only rely on built-in primitive types (c.f. `ctypes`)
+            elseif type isa PointerDesc
+                # We emit pointer types in-line - no need for a separate typedef
+            else @assert false "unknown descriptor type" end
+            push!(printed, id)
         end
         println(f)
 
@@ -31,7 +62,8 @@ function wrapper(dest::CProject, entrypoints, typedescs)
             if !isempty(args)
                 args = ", " * args
             end
-            print(f, mangle_c!(typedict, method.return_type), " ", method.name, "(")
+            mangled_rt = mangle_c!(typedict, method.return_type, typeinfo)
+            print(f, mangled_rt, " ", method.symbol, "(")
             isfirst = true
             for arg in method.args
                 if isfirst
@@ -39,8 +71,8 @@ function wrapper(dest::CProject, entrypoints, typedescs)
                 else
                     print(f, ", ")
                 end
-                ft = mangle_c!(typedict, arg.type)
-                print(f, ft, " ", arg.name)
+                ft = mangle_c!(typedict, arg.type, typeinfo)
+                print(f, ft, " ", sanitize_for_c(arg.name))
                 if arg.isva
                     print(f, "...")
                 end
@@ -63,7 +95,16 @@ const ctypes = Dict{String, String}(
     "UInt64" => "uint64_t",
     "Float32" => "float",
     "Float64" => "double",
-    "Bool" => "_Bool",
+    "Bool" => "bool",
+    "RawFD" => "int",
+
+    "Cstring" => "char *",
+    "Cwstring" => "wchar_t *",
+
+    # Note: These types will never appear in an auto-exported ABI, since they are not
+    # distinct Julia types (these are just platform-specific aliases to the types above).
+    "Cchar" => "char",
+    "Cwchar_t" => "wchar_t",
     "Cvoid" => "void",
     "Cint" => "int",
     "Cshort" => "short",
@@ -73,38 +114,45 @@ const ctypes = Dict{String, String}(
     "Culong" => "unsigned long",
     "Cssize_t" => "ssize_t",
     "Csize_t" => "size_t",
-    "Cchar" => "char",
-    "Cwchar_t" => "wchar_t",
-    "Cstring" => "char *",
-    "Cwstring" => "wchar_t *",
-    "RawFD" => "int",
 )
 
-function mangle_c!(typedict::Dict{String, String}, type::AbstractString)
-    ft = get(typedict, type, nothing)
-    ft !== nothing && return ft
-    ft = get(ctypes, type, nothing)
-    ft !== nothing && return ft
-    idxbad = findfirst(r"[^a-zA-Z0-9_\{\}]", type)
-    if idxbad !== nothing
-        error("Invalid type name: ", type, " (invalid character at position ", idxbad, ")")
+function sanitize_for_c(str::AbstractString)
+    # Replace any non alphanumeric characters with '_'
+    str = replace(str, r"[^a-zA-Z0-9_]" => "_")
+    # Strip any leading / trailing underscores
+    str = strip(str, Char['_'])
+    # Merge any repeated underscores to just one
+    return replace(str, r"_+" => "_")
+end
+
+function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedDict{Int,TypeDesc})
+    if type_id in keys(typedict)
+        return typedict[type_id]
     end
-    m = match(r"^Ptr\{(.+)\}$", type)
-    if m !== nothing
-        inner_type = m.captures[1]
-        result = mangle_c!(typedict, inner_type) * "*"
-        typedict[type] = result
-        return result
+
+    type = typeinfo[type_id]
+    if type isa PrimitiveTypeDesc
+        if !in(type.name, keys(ctypes))
+            error("unsupported primitive type: '$(type.name)'")
+        end
+        return ctypes[type.name]
+    elseif type isa PointerDesc
+        mangled = mangle_c!(typedict, type.pointee_type, typeinfo) * "*"
+    elseif type isa StructDesc
+        mangled = sanitize_for_c(type.name)
     end
-    m = match(r"^(.+)\{(.+)\}$", type)
-    if m !== nothing
-        basename, params = m.captures
-        params = split(params, ",")
-        params = join(map(p -> mangle_c!(typedict, p), params), "_")
-        result = basename * "_" * params * "_"
-        typedict[type] = result
-        return result
+
+    # Check for any name collision and unique the symbol, if necessary.
+    if mangled in values(typedict)
+        suffix = type_id
+        extended = mangled * "_" * string(suffix)
+        while extended in values(typedict)
+            suffix += 1
+            extended = mangled * "_" * string(suffix)
+        end
+        mangled = extended
     end
-    typedict[type] = type
-    return type
+
+    typedict[type_id] = mangled
+    return mangled
 end

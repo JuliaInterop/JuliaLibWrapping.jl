@@ -5,10 +5,12 @@ authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
 
 [deps]
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 
 [compat]
 Graphs = "1"
+JSON = "0.21.4"
 OrderedCollections = "1.8.1"
 julia = "1.12"
 

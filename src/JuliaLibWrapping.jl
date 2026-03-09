@@ -3,10 +3,10 @@ module JuliaLibWrapping
 using OrderedCollections
 using Graphs
 
-export parselog, wrapper
-export CProject
+export import_abi_info, wrapper
+export CProject, ABIInfo
 
-include("parselog.jl")
+include("abi_import.jl")
 include("c.jl")
 
 end
