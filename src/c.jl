@@ -97,6 +97,7 @@ const ctypes = Dict{String, String}(
     "Float64" => "double",
     "Bool" => "bool",
     "RawFD" => "int",
+    "Nothing" => "void",
 
     "Cstring" => "char *",
     "Cwstring" => "wchar_t *",
@@ -105,7 +106,6 @@ const ctypes = Dict{String, String}(
     # distinct Julia types (these are just platform-specific aliases to the types above).
     "Cchar" => "char",
     "Cwchar_t" => "wchar_t",
-    "Cvoid" => "void",
     "Cint" => "int",
     "Cshort" => "short",
     "Clong" => "long",

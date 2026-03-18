@@ -180,6 +180,7 @@ end
             @test occursin("CVector_Float32 to;", content)
             @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
+            @test occursin("void nothing_to_void(void* x, Nothing y, Nothing* z);", content)
         end
     end
 end
