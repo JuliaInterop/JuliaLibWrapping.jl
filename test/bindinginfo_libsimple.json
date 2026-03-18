@@ -9,6 +9,15 @@
       "returns": { "type_id": 6 }
     },
     {
+      "symbol": "unnamed_arguments",
+      "name": "unnamed_arguments(::Int32, ::Int32)",
+      "arguments": [
+        { "name": "", "type_id": 4 },
+        { "name": "#unused#", "type_id": 4 }
+      ],
+      "returns": { "type_id": 4 }
+    },
+    {
       "symbol": "copyto_and_sum",
       "name": "copyto_and_sum(fromto::CVectorPair{Float32})",
       "arguments": [

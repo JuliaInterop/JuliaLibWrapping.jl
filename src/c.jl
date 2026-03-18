@@ -72,7 +72,10 @@ function wrapper(dest::CProject, abi_info::ABIInfo)
                     print(f, ", ")
                 end
                 ft = mangle_c!(typedict, arg.type, typeinfo)
-                print(f, ft, " ", sanitize_for_c(arg.name))
+                print(f, ft)
+                if !(isempty(arg.name) || arg.name == "#unused#")
+                    print(f, " ", sanitize_for_c(arg.name))
+                end
                 if arg.isva
                     print(f, "...")
                 end
@@ -80,7 +83,7 @@ function wrapper(dest::CProject, abi_info::ABIInfo)
             print(f, ");\n")
         end
 
-        println(f, "#endif // $libvar")
+        println(f, "\n#endif // $libvar")
     end
 end
 
