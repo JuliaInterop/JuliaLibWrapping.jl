@@ -5,5 +5,11 @@
 [![Build Status](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/JuliaInterop/JuliaLibWrapping.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaInterop/JuliaLibWrapping.jl)
 
-**Note**: currently this is a work-in-progress, and it depends on https://github.com/JuliaLang/julia/pull/59108
-See the tests for an example of how to create a `.h` file from the logfile written by `juliac`.
+**Status**: work-in-progress, not yet released.
+
+`juliac` (see [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)) can emit a JSON
+ABI-info file describing the entrypoints and types of a compiled Julia library.
+JuliaLibWrapping consumes that file and generates a C header (`.h`) so the library
+can be called from C. The `juliac` ABI-export feature ships in Julia 1.13.
+
+See the tests for an example of generating a `.h` file from a `juliac` ABI-info file.
