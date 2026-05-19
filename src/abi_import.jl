@@ -1,5 +1,3 @@
-using JSON
-
 struct FieldDesc
     name::String
     type::Int
@@ -199,7 +197,7 @@ struct ABIInfo
 end
 
 function Base.show(io::IO, info::ABIInfo)
-    Base.show_type_name(io, ABIInfo.name)
+    print(io, nameof(ABIInfo))
     print(io, "(...) object, with ")
     print(io, length(info.typeinfo), " types and ")
     print(io, length(info.entrypoints), " entrypoints.\n")
@@ -221,7 +219,7 @@ end
 Extract the signatures of the entrypoints and types from an exported ABI info (JSON) file.
 """
 function import_abi_info(filename::String)
-    abi_info = JSON.Parser.parsefile(filename)
+    abi_info = JSON.parsefile(filename)
 
     # Extract all the type descriptors
     typedescs = OrderedDict{Int, TypeDesc}()

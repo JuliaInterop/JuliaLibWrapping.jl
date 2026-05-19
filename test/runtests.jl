@@ -2,6 +2,7 @@ using JuliaLibWrapping
 using OrderedCollections
 using Test
 using Aqua
+using ExplicitImports
 
 import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, TypeDesc
 import JuliaLibWrapping: sort_declarations!
@@ -186,5 +187,14 @@ end
 
     @testset "Aqua" begin
         Aqua.test_all(JuliaLibWrapping)
+    end
+
+    @testset "ExplicitImports" begin
+        # JSON.parsefile is the canonical JSON.jl entry point but JSON.jl
+        # pre-dates the `public` keyword and never marked it public. Disable
+        # the bundled all-qualified-accesses-are-public check and re-run it
+        # with :parsefile ignored.
+        test_explicit_imports(JuliaLibWrapping; all_qualified_accesses_are_public=false)
+        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore=(:parsefile,))
     end
 end
