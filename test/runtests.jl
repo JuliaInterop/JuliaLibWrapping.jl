@@ -1,6 +1,7 @@
 using JuliaLibWrapping
 using OrderedCollections
 using Test
+using Aqua
 
 import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, TypeDesc
 import JuliaLibWrapping: sort_declarations!
@@ -181,5 +182,9 @@ end
             @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
         end
+    end
+
+    @testset "Aqua" begin
+        Aqua.test_all(JuliaLibWrapping)
     end
 end
