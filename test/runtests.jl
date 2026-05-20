@@ -255,6 +255,73 @@ end
         @test mangle_c!(typedict, 3, typeinfo) == "Foo_4"
     end
 
+    @testset "PythonTarget" begin
+        abi_info = read_abi_info("bindinginfo_libsimple.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "libsimple", "libsimple")
+            write_wrapper(dest, abi_info)
+
+            bindings_path = joinpath(path, "libsimple", "_bindings.py")
+            init_path = joinpath(path, "libsimple", "__init__.py")
+            pyproject_path = joinpath(path, "pyproject.toml")
+            @test isfile(bindings_path)
+            @test isfile(init_path)
+            @test isfile(pyproject_path)
+
+            bindings = read(bindings_path, String)
+            @test occursin("import ctypes", bindings)
+            @test occursin("_LIBRARY_ENV_VAR = \"LIBSIMPLE_LIBRARY\"", bindings)
+            @test occursin("class CTree_Float64(ctypes.Structure):\n    pass", bindings)
+            @test occursin("class CVector_Float32(ctypes.Structure):", bindings)
+            @test occursin("(\"length\", ctypes.c_int32)", bindings)
+            @test occursin("(\"data\", ctypes.POINTER(ctypes.c_float))", bindings)
+            # `from` is a Python keyword; it must be renamed to be reachable
+            # via attribute access.
+            @test occursin("(\"from_\", CVector_Float32)", bindings)
+            @test occursin("CTree_Float64._fields_ = [", bindings)
+            @test occursin("_lib.copyto_and_sum.argtypes = [CVectorPair_Float32]", bindings)
+            @test occursin("_lib.copyto_and_sum.restype = ctypes.c_float", bindings)
+            @test occursin("_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
+                           bindings)
+
+            init = read(init_path, String)
+            @test occursin("from ._bindings import (", init)
+            @test occursin("copyto_and_sum", init)
+            @test occursin("CTree_Float64", init)
+
+            pyproject = read(pyproject_path, String)
+            @test occursin("[build-system]", pyproject)
+            @test occursin("name = \"libsimple\"", pyproject)
+
+            golden = read(joinpath(@__DIR__, "expected_libsimple_bindings.py"), String)
+            @test bindings == golden
+
+            python3 = Sys.which("python3")
+            if python3 === nothing
+                # CI must exercise the Python wrapper; locally we allow skipping
+                # so contributors without python3 can still run the suite.
+                haskey(ENV, "CI") && error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            else
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            end
+        end
+
+        @testset "PythonTarget show" begin
+            t = PythonTarget("/tmp/foo", "libsimple", "libsimple")
+            @test sprint(show, t) ==
+                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\")"
+        end
+
+        @testset "unsupported primitive" begin
+            typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => PrimitiveTypeDesc("NotARealType", false, 32, 4, 4),
+            )
+            @test_throws "unsupported primitive type: 'NotARealType'" JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo)
+        end
+    end
+
     @testset "Aqua" begin
         Aqua.test_all(JuliaLibWrapping)
     end

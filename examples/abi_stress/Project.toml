@@ -1,0 +1,6 @@
+name = "abi_stress"
+uuid = "76c9153f-aaf5-48a3-8ec2-3179e8df46cb"
+version = "0.0.1"
+
+[compat]
+julia = "1.13"
