@@ -77,6 +77,14 @@ end
         @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{Float32}"]
     end
 
+    @testset "parse_abi_info: malformed input" begin
+        bad = Dict{String, Any}(
+            "types" => Any[Dict{String, Any}("id" => 1, "kind" => "nonsense", "name" => "X")],
+            "functions" => Any[],
+        )
+        @test_throws "unexpected kind 'nonsense'" parse_abi_info(bad)
+    end
+
     @testset "read_abi_info" begin
         from_file = read_abi_info("bindinginfo_libsimple.json")
         from_dict = parse_abi_info(parsefile("bindinginfo_libsimple.json"))

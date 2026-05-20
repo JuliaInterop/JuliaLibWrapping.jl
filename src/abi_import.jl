@@ -77,8 +77,8 @@ function from_json(::Type{TypeDesc}, json::Dict{String, Any})
         return from_json(StructDesc, json)
     elseif kind === "pointer"
         return from_json(PointerDesc, json)
-    else # unreachable
-        @assert false "unexpected kind '$(json["kind"])' in type metadata"
+    else
+        error("unexpected kind '$(json["kind"])' in type metadata")
     end
 end
 
