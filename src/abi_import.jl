@@ -214,23 +214,24 @@ end
 
 
 """
-    abi_info = import_abi_info(filename::String)
+    abi_info = parse_abi_info(parsed::AbstractDict)
 
-Extract the signatures of the entrypoints and types from an exported ABI info (JSON) file.
+Build an [`ABIInfo`](@ref) from a parsed `juliac` ABI-info JSON document. `parsed`
+is the dictionary returned by `JSON.parsefile` (or `JSON.parse`) on such a file.
+
+See [`read_abi_info`](@ref) for the file-based convenience.
 """
-function import_abi_info(filename::String)
-    abi_info = JSON.parsefile(filename)
-
+function parse_abi_info(parsed::AbstractDict)
     # Extract all the type descriptors
     typedescs = OrderedDict{Int, TypeDesc}()
-    for type in abi_info["types"]
+    for type in parsed["types"]
         id = Int(type["id"]::Int64)
         typedescs[id] = from_json(TypeDesc, type)
     end
 
     # Then collect the methods
     entrypoints = MethodDesc[]
-    for method in abi_info["functions"]
+    for method in parsed["functions"]
         push!(entrypoints, from_json(MethodDesc, method))
     end
 
@@ -239,4 +240,13 @@ function import_abi_info(filename::String)
     return ABIInfo(typedescs, forward_declared, entrypoints)
 end
 
-import_abi_info(filename::AbstractString) = import_abi_info(String(filename)::String)
+"""
+    abi_info = read_abi_info(filename::AbstractString)
+    abi_info = read_abi_info(io::IO)
+
+Read and parse a `juliac` ABI-info JSON file, returning an [`ABIInfo`](@ref).
+The first form is equivalent to `parse_abi_info(JSON.parsefile(filename))`;
+the second reads the document from a stream.
+"""
+read_abi_info(filename::AbstractString) = parse_abi_info(JSON.parsefile(filename))
+read_abi_info(io::IO) = parse_abi_info(JSON.parse(read(io, String)))
