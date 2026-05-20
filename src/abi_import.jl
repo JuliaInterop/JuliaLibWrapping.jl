@@ -77,8 +77,8 @@ function from_json(::Type{TypeDesc}, json::Dict{String, Any})
         return from_json(StructDesc, json)
     elseif kind === "pointer"
         return from_json(PointerDesc, json)
-    else # unreachable
-        @assert false "unexpected kind '$(json["kind"])' in type metadata"
+    else
+        error("unexpected kind '$(json["kind"])' in type metadata")
     end
 end
 
@@ -197,6 +197,11 @@ struct ABIInfo
 end
 
 function Base.show(io::IO, info::ABIInfo)
+    print(io, "ABIInfo(", length(info.typeinfo), " types, ",
+              length(info.entrypoints), " entrypoints)")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", info::ABIInfo)
     print(io, nameof(ABIInfo))
     print(io, "(...) object, with ")
     print(io, length(info.typeinfo), " types and ")
@@ -225,7 +230,7 @@ function parse_abi_info(parsed::AbstractDict)
     # Extract all the type descriptors
     typedescs = OrderedDict{Int, TypeDesc}()
     for type in parsed["types"]
-        id = Int(type["id"]::Int64)
+        id = Int(type["id"]::Integer)
         typedescs[id] = from_json(TypeDesc, type)
     end
 
