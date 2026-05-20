@@ -1,4 +1,4 @@
-struct CProject
+struct CTarget <: AbstractTarget
     dir::String
     headerbase::String
 end
@@ -10,7 +10,7 @@ function unwrap_pointer_type(type_id::Int, typeinfo)
     return type_id
 end
 
-function wrapper(dest::CProject, abi_info::ABIInfo)
+function write_wrapper(dest::CTarget, abi_info::ABIInfo)
     (; entrypoints, typeinfo, forward_declared) = abi_info
 
     # Write the header file for C

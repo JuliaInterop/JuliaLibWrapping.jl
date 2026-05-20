@@ -160,12 +160,12 @@ end
         end
     end
 
-    @testset "C wrapper" begin
+    @testset "write_wrapper" begin
         mktempdir() do path
             mkpath(path)
-            dest = CProject(path, "libsimple")
+            dest = CTarget(path, "libsimple")
             abi_info = import_abi_info("bindinginfo_libsimple.json")
-            wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info)
 
             headerfile = joinpath(dest.dir, dest.headerbase * ".h")
             @test isfile(headerfile)
