@@ -197,6 +197,11 @@ struct ABIInfo
 end
 
 function Base.show(io::IO, info::ABIInfo)
+    print(io, "ABIInfo(", length(info.typeinfo), " types, ",
+              length(info.entrypoints), " entrypoints)")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", info::ABIInfo)
     print(io, nameof(ABIInfo))
     print(io, "(...) object, with ")
     print(io, length(info.typeinfo), " types and ")

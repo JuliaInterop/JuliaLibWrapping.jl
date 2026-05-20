@@ -180,6 +180,21 @@ end
         end
     end
 
+    @testset "show methods" begin
+        abi_info = read_abi_info("bindinginfo_libsimple.json")
+        terse = sprint(show, abi_info)
+        @test !occursin('\n', terse)
+        @test occursin("ABIInfo(", terse)
+        @test occursin("types", terse) && occursin("entrypoints", terse)
+
+        verbose = sprint(show, MIME("text/plain"), abi_info)
+        @test occursin("Types:", verbose)
+        @test occursin("Entrypoints:", verbose)
+
+        target = CTarget("/tmp/foo", "libsimple")
+        @test sprint(show, target) == "CTarget(\"/tmp/foo\", \"libsimple\")"
+    end
+
     @testset "write_wrapper" begin
         mktempdir() do path
             mkpath(path)

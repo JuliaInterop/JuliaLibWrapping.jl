@@ -3,6 +3,10 @@ struct CTarget <: AbstractTarget
     headerbase::String
 end
 
+function Base.show(io::IO, t::CTarget)
+    print(io, "CTarget(", repr(t.dir), ", ", repr(t.headerbase), ")")
+end
+
 function unwrap_pointer_type(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     while typeinfo[type_id] isa PointerDesc
         type_id = typeinfo[type_id].pointee_type
