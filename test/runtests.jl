@@ -6,7 +6,7 @@ using Aqua
 using ExplicitImports
 
 import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, TypeDesc
-import JuliaLibWrapping: sort_declarations!
+import JuliaLibWrapping: sort_declarations!, mangle_c!
 
 function onlymatch(f, collection)
     matches = filter(f, collection)
@@ -218,6 +218,39 @@ end
             @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
         end
+    end
+
+    @testset "mangle_c!" begin
+        # Unsupported primitive type: any name not in the `ctypes` table errors.
+        typedict = Dict{Int, String}()
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("NotARealType", false, 32, 4, 4),
+        )
+        @test_throws "unsupported primitive type: 'NotARealType'" mangle_c!(typedict, 1, typeinfo)
+
+        # Two struct names that sanitize to the same C identifier collide;
+        # the second gets a `_<id>` suffix, the third bumps to the next free id.
+        typedict = Dict{Int, String}()
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc("Foo!", 0, 0, FieldDesc[]),
+            2 => StructDesc("Foo?", 0, 0, FieldDesc[]),
+            3 => StructDesc("Foo#", 0, 0, FieldDesc[]),
+        )
+        @test mangle_c!(typedict, 1, typeinfo) == "Foo"
+        @test mangle_c!(typedict, 2, typeinfo) == "Foo_2"
+        @test mangle_c!(typedict, 3, typeinfo) == "Foo_3"
+
+        # If the first `_<id>` slot is already taken, the while loop must
+        # keep incrementing until it finds a free suffix.
+        typedict = Dict{Int, String}()
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc("Foo", 0, 0, FieldDesc[]),     # takes "Foo"
+            2 => StructDesc("Foo_3", 0, 0, FieldDesc[]),   # takes "Foo_3"
+            3 => StructDesc("Foo!", 0, 0, FieldDesc[]),    # wants "Foo_3", bumps to "Foo_4"
+        )
+        @test mangle_c!(typedict, 1, typeinfo) == "Foo"
+        @test mangle_c!(typedict, 2, typeinfo) == "Foo_3"
+        @test mangle_c!(typedict, 3, typeinfo) == "Foo_4"
     end
 
     @testset "Aqua" begin
