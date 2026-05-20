@@ -230,7 +230,7 @@ function parse_abi_info(parsed::AbstractDict)
     # Extract all the type descriptors
     typedescs = OrderedDict{Int, TypeDesc}()
     for type in parsed["types"]
-        id = Int(type["id"]::Int64)
+        id = Int(type["id"]::Integer)
         typedescs[id] = from_json(TypeDesc, type)
     end
 

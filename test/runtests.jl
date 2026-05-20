@@ -78,8 +78,10 @@ end
     end
 
     @testset "parse_abi_info: malformed input" begin
+        # Int32 id exercises the platform-tolerant integer handling (this is what
+        # 32-bit Julia hands you for an unannotated `1` literal).
         bad = Dict{String, Any}(
-            "types" => Any[Dict{String, Any}("id" => 1, "kind" => "nonsense", "name" => "X")],
+            "types" => Any[Dict{String, Any}("id" => Int32(1), "kind" => "nonsense", "name" => "X")],
             "functions" => Any[],
         )
         @test_throws "unexpected kind 'nonsense'" parse_abi_info(bad)
