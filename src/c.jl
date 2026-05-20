@@ -3,7 +3,7 @@ struct CTarget <: AbstractTarget
     headerbase::String
 end
 
-function unwrap_pointer_type(type_id::Int, typeinfo)
+function unwrap_pointer_type(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     while typeinfo[type_id] isa PointerDesc
         type_id = typeinfo[type_id].pointee_type
     end
@@ -58,10 +58,6 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
         println(f)
 
         for method in entrypoints
-            args = join(method.args, ", ")
-            if !isempty(args)
-                args = ", " * args
-            end
             mangled_rt = mangle_c!(typedict, method.return_type, typeinfo)
             print(f, mangled_rt, " ", method.symbol, "(")
             isfirst = true
