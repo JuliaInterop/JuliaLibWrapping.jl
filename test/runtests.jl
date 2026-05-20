@@ -1,5 +1,6 @@
 using JuliaLibWrapping
 using OrderedCollections
+using JSON: parsefile
 using Test
 using Aqua
 using ExplicitImports
@@ -16,8 +17,8 @@ function onlymatch(f, collection)
 end
 
 @testset "JuliaLibWrapping.jl" begin
-    @testset "import_abi_info" begin
-        abi_info = import_abi_info("bindinginfo_libsimple.json")
+    @testset "parse_abi_info" begin
+        abi_info = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
         (; entrypoints, typeinfo) = abi_info
 
         methdesc = onlymatch(md -> md.symbol == "copyto_and_sum", entrypoints)
@@ -74,6 +75,17 @@ end
         @test tdesc.size == 8
         name2idx = Dict(desc.name => i for (i, desc) in enumerate(values(typeinfo)))
         @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{Float32}"]
+    end
+
+    @testset "read_abi_info" begin
+        from_file = read_abi_info("bindinginfo_libsimple.json")
+        from_dict = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
+        from_io = open(read_abi_info, "bindinginfo_libsimple.json")
+        for other in (from_dict, from_io)
+            @test collect(keys(from_file.typeinfo)) == collect(keys(other.typeinfo))
+            @test from_file.forward_declared == other.forward_declared
+            @test length(from_file.entrypoints) == length(other.entrypoints)
+        end
     end
 
     @testset "sort_declarations!" begin
@@ -164,7 +176,7 @@ end
         mktempdir() do path
             mkpath(path)
             dest = CTarget(path, "libsimple")
-            abi_info = import_abi_info("bindinginfo_libsimple.json")
+            abi_info = read_abi_info("bindinginfo_libsimple.json")
             write_wrapper(dest, abi_info)
 
             headerfile = joinpath(dest.dir, dest.headerbase * ".h")
@@ -190,11 +202,11 @@ end
     end
 
     @testset "ExplicitImports" begin
-        # JSON.parsefile is the canonical JSON.jl entry point but JSON.jl
-        # pre-dates the `public` keyword and never marked it public. Disable
-        # the bundled all-qualified-accesses-are-public check and re-run it
-        # with :parsefile ignored.
+        # JSON.parsefile and JSON.parse are the canonical JSON.jl entry points
+        # but JSON.jl pre-dates the `public` keyword and never marked them
+        # public. Disable the bundled all-qualified-accesses-are-public check
+        # and re-run it with those names ignored.
         test_explicit_imports(JuliaLibWrapping; all_qualified_accesses_are_public=false)
-        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore=(:parsefile,))
+        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore=(:parsefile, :parse))
     end
 end
