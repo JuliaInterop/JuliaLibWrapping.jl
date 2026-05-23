@@ -77,6 +77,72 @@ using Test
         end
     end
 
+    @testset "CString layout" begin
+        @test fieldnames(CString) == (:length, :data)
+        @test fieldtype(CString, :length) === Int32
+        @test fieldtype(CString, :data) === Ptr{UInt8}
+        @test isbitstype(CString)
+        @test fieldoffset(CString, 1) == 0
+        @test fieldoffset(CString, 2) == 8
+        @test CString <: AbstractString
+    end
+
+    @testset "CString AbstractString interface" begin
+        buf = codeunits("hello")
+        GC.@preserve buf begin
+            s = CString(Int32(length(buf)), pointer(buf))
+
+            # AbstractString-derived methods.
+            @test ncodeunits(s) === 5
+            @test codeunit(s) === UInt8
+            @test codeunit(s, 1) === UInt8('h')
+            @test_throws BoundsError codeunit(s, 0)
+            @test_throws BoundsError codeunit(s, 6)
+            @test length(s) === 5  # character count (ASCII so == ncodeunits)
+            @test collect(s) == collect("hello")
+            @test s == "hello"
+            @test "hello" == s
+            @test cmp(s, "hello") == 0
+            @test cmp(s, "world") < 0
+            @test String(s) == "hello"
+            @test occursin("ell", s)
+            @test startswith(s, "he")
+        end
+
+        # Embedded NUL bytes are preserved (length-prefixed, not terminated).
+        raw = UInt8[0x66, 0x00, 0x6f]  # "f\0o"
+        GC.@preserve raw begin
+            s = CString(Int32(length(raw)), pointer(raw))
+            @test ncodeunits(s) === 3
+            @test codeunit(s, 2) === 0x00
+            @test String(s) == "f\0o"
+        end
+
+        # Multi-byte UTF-8 ("café"): 4 characters, 5 bytes.
+        utf8 = codeunits("café")
+        GC.@preserve utf8 begin
+            s = CString(Int32(length(utf8)), pointer(utf8))
+            @test ncodeunits(s) === 5
+            @test length(s) === 4
+            @test collect(s) == ['c', 'a', 'f', 'é']
+            @test s == "café"
+            @test String(s) == "café"
+        end
+
+        # Fast byte-level cmp between two CStrings.
+        a_buf = codeunits("apple")
+        b_buf = codeunits("banana")
+        GC.@preserve a_buf b_buf begin
+            a = CString(Int32(length(a_buf)), pointer(a_buf))
+            b = CString(Int32(length(b_buf)), pointer(b_buf))
+            @test cmp(a, b) < 0
+            @test cmp(b, a) > 0
+            @test cmp(a, a) == 0
+            @test a < b
+            @test a != b
+        end
+    end
+
     @testset "CMatrix AbstractMatrix interface" begin
         # Column-major storage; verify both linear and Cartesian indexing.
         buf = Float64[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]  # 2x3, col-major

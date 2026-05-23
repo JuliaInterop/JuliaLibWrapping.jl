@@ -1,0 +1,56 @@
+{
+  "_comment": "Hand-authored fixture for the CString vocabulary type. Mirrors the layout juliac would emit for `struct CString; length::Int32; data::Ptr{UInt8}; end`, with one @ccallable function consuming a CString and one returning one. The Python emitter must recognize this shape by name + field layout and emit from_str / as_str / from_bytes / as_bytes helpers.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 1,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 2,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "struct",
+      "name": "CString",
+      "id": 4,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 2 },
+      "name": "greeting_length(s::CString)",
+      "arguments": [
+        { "name": "s", "type_id": 4 }
+      ],
+      "symbol": "greeting_length"
+    },
+    {
+      "returns": { "type_id": 4 },
+      "name": "greeting()",
+      "arguments": [],
+      "symbol": "greeting"
+    }
+  ]
+}
