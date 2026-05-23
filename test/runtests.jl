@@ -426,6 +426,115 @@ end
         @test cvinfo(flipped, ti) !== nothing
     end
 
+    @testset "cmatrix_struct_info" begin
+        # Implements issue #12: structural recognition of the CMatrix shape
+        # (rows::Int32, cols::Int32, data::Ptr{T}) for primitive numeric T.
+        cminfo = JuliaLibWrapping.cmatrix_struct_info
+        abi = read_abi_info("bindinginfo_cmatrix.json")
+        findtype(descs, name) = (k = collect(keys(descs));
+                                 k[findfirst((id)->descs[id].name === name, k)])
+        cm_f64 = abi.typeinfo[findtype(abi.typeinfo, "CMatrix{Float64}")]
+        info = cminfo(cm_f64, abi.typeinfo)
+        @test info !== nothing
+        @test info.pointee_name == "Float64"
+        @test info.dtype == "float64"
+        @test info.pointee_ctype == "ctypes.c_double"
+
+        # Hand-built rejections.
+        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primflt = PrimitiveTypeDesc("Float64", true, 64, 8, 8)
+        ptr_to_flt = PointerDesc("Ptr{Float64}", 2)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primint, 2 => primflt, 3 => ptr_to_flt,
+            4 => StructDesc("CMatrix{Float64}", 16, 8, FieldDesc[
+                FieldDesc("rows", 1, 0),
+                FieldDesc("cols", 1, 4),
+                FieldDesc("data", 3, 8),
+            ]),
+            5 => StructDesc("NotACMatrix", 16, 8, FieldDesc[
+                FieldDesc("rows", 1, 0),
+                FieldDesc("cols", 1, 4),
+                FieldDesc("data", 3, 8),
+            ]),
+            6 => StructDesc("CMatrixOnlyTwoFields", 12, 8, FieldDesc[
+                FieldDesc("rows", 1, 0),
+                FieldDesc("data", 3, 8),
+            ]),
+            7 => StructDesc("CMatrixBadNames", 16, 8, FieldDesc[
+                FieldDesc("nrows", 1, 0),
+                FieldDesc("ncols", 1, 4),
+                FieldDesc("data", 3, 8),
+            ]),
+            8 => StructDesc("CMatrixFloatRows", 16, 8, FieldDesc[
+                FieldDesc("rows", 2, 0),  # Float64 — not integer
+                FieldDesc("cols", 1, 4),
+                FieldDesc("data", 3, 8),
+            ]),
+        )
+        @test cminfo(ti[4], ti) !== nothing
+        @test cminfo(ti[5], ti) === nothing  # wrong name prefix
+        @test cminfo(ti[6], ti) === nothing  # missing cols
+        @test cminfo(ti[7], ti) === nothing  # wrong field names
+        @test cminfo(ti[8], ti) === nothing  # non-integer rows
+
+        # Field order is irrelevant — recognizer matches by name.
+        scrambled = StructDesc("CMatrix{Float64}", 16, 8, FieldDesc[
+            FieldDesc("data", 3, 0),
+            FieldDesc("cols", 1, 8),
+            FieldDesc("rows", 1, 12),
+        ])
+        @test cminfo(scrambled, ti) !== nothing
+    end
+
+    @testset "CMatrix vocabulary" begin
+        # Implements issue #12: CMatrix{T} recognition + column-major numpy
+        # helpers in the Python emitter.
+        abi = read_abi_info("bindinginfo_cmatrix.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cmatrix_demo", "_bindings.py")
+            bindings = read(bindings_path, String)
+
+            # Numpy is imported and declared as a dep when CMatrix is present.
+            @test occursin("import numpy as np", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
+
+            # The struct class is emitted and decorated with helpers.
+            @test occursin("class CMatrix_Float64(ctypes.Structure):", bindings)
+            @test occursin("(\"rows\", ctypes.c_int32)", bindings)
+            @test occursin("(\"cols\", ctypes.c_int32)", bindings)
+            @test occursin("(\"data\", ctypes.POINTER(ctypes.c_double))", bindings)
+
+            # from_numpy enforces column-major (Fortran) layout — silently
+            # treating a C-order numpy array as column-major would transpose.
+            @test occursin("def from_numpy(cls, arr):", bindings)
+            @test occursin("if arr.ndim != 2:", bindings)
+            @test occursin("if not arr.flags.f_contiguous:", bindings)
+            @test occursin("expected_dtype = np.dtype(\"float64\")", bindings)
+            @test occursin("rows=arr.shape[0], cols=arr.shape[1]", bindings)
+
+            # as_numpy returns a view with column-major strides.
+            @test occursin("def as_numpy(self):", bindings)
+            @test occursin("np.ctypeslib.as_array(self.data, shape=(self.cols, self.rows)).T",
+                           bindings)
+
+            # Golden-file comparison.
+            golden = read(joinpath(@__DIR__, "expected_cmatrix_bindings.py"), String)
+            @test bindings == golden
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
     @testset "JLWStatus convention" begin
         # Implements issue #15: in-band status struct + Python raise-on-error.
         abi_info = read_abi_info("bindinginfo_jlwstatus.json")

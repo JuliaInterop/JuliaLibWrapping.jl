@@ -1,0 +1,51 @@
+{
+  "_comment": "Hand-authored fixture for the CMatrix vocabulary type. Mirrors the layout juliac would emit for `struct CMatrix{Float64}; rows::Int32; cols::Int32; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape by name + field layout and emit numpy from_numpy/as_numpy helpers (column-major).",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 1,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 2,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Float64}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "struct",
+      "name": "CMatrix{Float64}",
+      "id": 4,
+      "size": 16,
+      "fields": [
+        { "name": "rows", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "cols", "type_id": 2, "offset": 4, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 1 },
+      "name": "trace_cmatrix(m::CMatrix{Float64})",
+      "arguments": [
+        { "name": "m", "type_id": 4 }
+      ],
+      "symbol": "trace_cmatrix"
+    }
+  ]
+}

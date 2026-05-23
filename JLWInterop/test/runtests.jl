@@ -77,6 +77,56 @@ using Test
         end
     end
 
+    @testset "CMatrix AbstractMatrix interface" begin
+        # Column-major storage; verify both linear and Cartesian indexing.
+        buf = Float64[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]  # 2x3, col-major
+        GC.@preserve buf begin
+            m = CMatrix{Float64}(Int32(2), Int32(3), pointer(buf))
+
+            @test m isa AbstractMatrix{Float64}
+            @test IndexStyle(typeof(m)) === IndexLinear()
+            @test size(m) === (2, 3)
+            @test size(m, 1) === 2
+            @test size(m, 2) === 3
+            @test length(m) === 6
+            @test eltype(m) === Float64
+
+            # Column-major: m[1,1]=1, m[2,1]=2, m[1,2]=3, m[2,2]=4, m[1,3]=5, m[2,3]=6
+            @test m[1, 1] === 1.0
+            @test m[2, 1] === 2.0
+            @test m[1, 2] === 3.0
+            @test m[2, 3] === 6.0
+            @test m[3] === 3.0  # linear index = 3 → m[1, 2]
+
+            # Bounds checking works in both forms.
+            @test_throws BoundsError m[0]
+            @test_throws BoundsError m[7]
+            @test_throws BoundsError m[3, 1]
+            @test_throws BoundsError m[1, 4]
+
+            # AbstractArray machinery.
+            @test sum(m) === 21.0
+            @test collect(m) == reshape(buf, 2, 3)
+
+            # setindex! writes through to the backing buffer.
+            m[1, 2] = 99.0  # linear slot 3
+            @test buf[3] == 99.0
+            @test_throws BoundsError (m[3, 1] = 0.0)
+        end
+    end
+
+    @testset "CMatrix layout" begin
+        @test fieldnames(CMatrix) == (:rows, :cols, :data)
+        @test fieldtype(CMatrix{Float64}, :rows) === Int32
+        @test fieldtype(CMatrix{Float64}, :cols) === Int32
+        @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
+        @test isbitstype(CMatrix{Float64})
+        @test fieldoffset(CMatrix{Float64}, 1) == 0
+        @test fieldoffset(CMatrix{Float64}, 2) == 4
+        # rows + cols pack into 8 bytes, then pointer-aligned.
+        @test fieldoffset(CMatrix{Float64}, 3) == 8
+    end
+
     @testset "CVector layout" begin
         # Layout must match what the JuliaLibWrapping Python emitter expects:
         # length::Int32 first, data::Ptr{T} second. Helpers on the Python side

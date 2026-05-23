@@ -175,6 +175,49 @@ function cvector_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
               dtype = numpy_dtypes[pointee.name])
 end
 
+"""
+    cmatrix_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize the JLWInterop `CMatrix{T}` shape: a struct whose name starts
+with `"CMatrix"`, with exactly three fields named `rows`, `cols` (primitive
+integers) and `data` (a pointer to a primitive numeric type recognized by
+[`numpy_dtypes`](@ref)). Field order is irrelevant. Returns
+`(; pointee_name, pointee_ctype, dtype)` on a match, otherwise `nothing`.
+Recognition is by name + shape (see [`is_jlwstatus_struct`](@ref) for the
+rationale).
+"""
+function cmatrix_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CMatrix") || return nothing
+    length(desc.fields) == 3 || return nothing
+    rows_field = nothing
+    cols_field = nothing
+    data_field = nothing
+    for field in desc.fields
+        if field.name == "rows"
+            rows_field = field
+        elseif field.name == "cols"
+            cols_field = field
+        elseif field.name == "data"
+            data_field = field
+        end
+    end
+    (rows_field === nothing || cols_field === nothing || data_field === nothing) && return nothing
+    for f in (rows_field, cols_field)
+        t = typeinfo[f.type]
+        t isa PrimitiveTypeDesc || return nothing
+        (startswith(t.name, "Int") || startswith(t.name, "UInt")) || return nothing
+        t.name in keys(numpy_dtypes) || return nothing
+    end
+    data_type = typeinfo[data_field.type]
+    data_type isa PointerDesc || return nothing
+    pointee = typeinfo[data_type.pointee_type]
+    pointee isa PrimitiveTypeDesc || return nothing
+    pointee.name in keys(numpy_dtypes) || return nothing
+    return (; pointee_name = pointee.name,
+              pointee_ctype = pytypes[pointee.name],
+              dtype = numpy_dtypes[pointee.name])
+end
+
 const PYTHON_KEYWORDS = Set{String}([
     "False", "None", "True", "and", "as", "assert", "async", "await", "break",
     "class", "continue", "def", "del", "elif", "else", "except", "finally",
@@ -240,7 +283,8 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
                         for m in entrypoints)
     needs_numpy = any(type isa StructDesc &&
-                      cvector_struct_info(type, typeinfo) !== nothing
+                      (cvector_struct_info(type, typeinfo) !== nothing ||
+                       cmatrix_struct_info(type, typeinfo) !== nothing)
                       for type in values(typeinfo))
 
     bindings_path = joinpath(pkgdir, "_bindings.py")
@@ -377,6 +421,46 @@ function _write_cvector_helpers(f::IO, cvinfo)
     println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.length,))")
 end
 
+function _write_cmatrix_helpers(f::IO, cminfo)
+    # Mirror of `_write_cvector_helpers` for the column-major 2-D shape.
+    # `rows`, `cols`, and `data` field names are guaranteed by the recognizer.
+    ctype = cminfo.pointee_ctype
+    dtype = cminfo.dtype
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_numpy(cls, arr):")
+    println(f, "        \"\"\"Return a CMatrix view of the 2-D Fortran-contiguous numpy array `arr`.")
+    println(f, "")
+    println(f, "        CMatrix storage is column-major (Julia / Fortran order). A default")
+    println(f, "        row-major (C-order) numpy array is REJECTED rather than silently")
+    println(f, "        transposed — call `np.asfortranarray(arr)` first if needed.")
+    println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch. The returned")
+    println(f, "        object holds a reference to `arr`, so the caller must keep it alive for")
+    println(f, "        the duration of any C call that uses the buffer.\"\"\"")
+    println(f, "        if arr.ndim != 2:")
+    println(f, "            raise ValueError(f\"expected 2-D array, got {arr.ndim}-D\")")
+    println(f, "        if not arr.flags.f_contiguous:")
+    println(f, "            raise ValueError(\"array must be Fortran-contiguous (column-major); \"")
+    println(f, "                             \"use np.asfortranarray(arr) to convert\")")
+    println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
+    println(f, "        if arr.dtype != expected_dtype:")
+    println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
+    println(f, "        obj = cls(rows=arr.shape[0], cols=arr.shape[1],")
+    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
+    println(f, "        obj._buffer = arr")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_numpy(self):")
+    println(f, "        \"\"\"Return a 2-D column-major numpy view of the underlying buffer (no copy).")
+    println(f, "")
+    println(f, "        The view has shape `(rows, cols)` and Fortran (column-major) strides,")
+    println(f, "        matching the storage layout.\"\"\"")
+    println(f, "        # Read the column-major buffer as (cols, rows) row-major then transpose:")
+    println(f, "        # the transpose is a view, and the result has the correct (rows, cols)")
+    println(f, "        # shape with column-major strides.")
+    println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.cols, self.rows)).T")
+end
+
 const JLWERROR_DEFINITION = """
 class JLWError(RuntimeError):
     \"\"\"Raised when a wrapped function returns a non-zero JLWStatus.code.\"\"\"
@@ -482,10 +566,14 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
                 println(f, "    ]")
             end
             cvinfo = cvector_struct_info(type, typeinfo)
+            cminfo = cvinfo === nothing ? cmatrix_struct_info(type, typeinfo) : nothing
             if cvinfo !== nothing
                 # Implements issue #12: emit numpy conversion helpers when the
                 # struct matches the CVector{T} shape with a primitive pointee.
                 _write_cvector_helpers(f, cvinfo)
+            elseif cminfo !== nothing
+                # Implements issue #12: column-major CMatrix{T} variant.
+                _write_cmatrix_helpers(f, cminfo)
             end
         end
         println(f)
