@@ -3,6 +3,7 @@ import ctypes
 import os
 import sys
 import pathlib
+import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _LIBRARY_BASENAME = "libsimple"
@@ -40,6 +41,30 @@ class CVector_Float32(ctypes.Structure):
         ("length", ctypes.c_int32),
         ("data", ctypes.POINTER(ctypes.c_float)),
     ]
+
+    @classmethod
+    def from_numpy(cls, arr):
+        """Return a CVector view of the 1-D contiguous numpy array `arr`.
+
+        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no
+        silent reinterpretation). The returned object holds a reference to `arr`,
+        so the caller must keep it alive for the duration of any C call that uses
+        the buffer."""
+        if arr.ndim != 1:
+            raise ValueError(f"expected 1-D array, got {arr.ndim}-D")
+        if not arr.flags.c_contiguous:
+            raise ValueError("array must be C-contiguous")
+        expected_dtype = np.dtype("float32")
+        if arr.dtype != expected_dtype:
+            raise ValueError(f"expected dtype float32, got {arr.dtype}")
+        obj = cls(length=arr.size,
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+        obj._buffer = arr
+        return obj
+
+    def as_numpy(self):
+        """Return a 1-D numpy view of the underlying buffer (no copy)."""
+        return np.ctypeslib.as_array(self.data, shape=(self.length,))
 
 class CVectorPair_Float32(ctypes.Structure):
     _fields_ = [
