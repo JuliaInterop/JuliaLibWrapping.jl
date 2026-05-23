@@ -3,6 +3,7 @@
 *.jl.mem
 /docs/Manifest*.toml
 /docs/build/
+/examples/*/out/
 Manifest.toml
 Manifest-v*.toml
 CLAUDE.md

@@ -10,6 +10,35 @@ See [Error handling](@ref "Error handling across the ABI") for the
 `JLWStatus` convention that lets wrapped libraries surface errors as native
 exceptions in the target language.
 
+## Driving the pipeline
+
+[`build_library`](@ref) runs the full `juliac` → ABI JSON → wrapper pipeline
+in one call:
+
+```julia
+using JuliaLibWrapping
+using JuliaC
+out = mktempdir()
+result = build_library(
+    joinpath(@__DIR__, "src/mylib.jl"),
+    [CTarget(out, "mylib"), PythonTarget(out, "mylib_py", "mylib")];
+    project = @__DIR__,
+    libname = "mylib",
+    libdir  = out,
+)
+```
+
+`build_library` invokes `juliac` to produce the shared library and ABI JSON,
+then applies [`write_wrapper`](@ref) to each target. The supported route is
+[JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl) (a weak dependency): load
+it with `using JuliaC` before calling `build_library`. ABI developers who want
+to try features ahead of JuliaC.jl can opt into the unstable in-tree
+`share/julia/juliac/juliac.jl` script by passing `backend = :script`.
+
+Relative `[sources]` paths in the entry project's `Project.toml` are rejected
+up front, because `juliac` relocates the project into a temporary directory
+before compiling.
+
 ## Two-tier Python output
 
 `write_wrapper(PythonTarget, …)` emits three files into the generated package
