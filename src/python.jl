@@ -106,10 +106,38 @@ const PYTHON_KEYWORDS = Set{String}([
     "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
 ])
 
-function sanitize_python_argname(name::AbstractString)
+"""
+    sanitize_python_argname(name) -> String
+    sanitize_python_argname(name, seen::Set{String}) -> String
+
+Return a Python-identifier form of `name`: characters illegal in identifiers
+are stripped via [`sanitize_for_c`](@ref), an empty result becomes `"_"`, and
+any reserved Python keyword is suffixed with `_`.
+
+When a `seen` set is supplied, the returned name is also made unique within
+that scope (callers should pass one `Set{String}` per scope — e.g. one per
+function signature, one per struct's field list). If the candidate already
+appears in `seen`, an integer suffix (`2`, `3`, …) is appended until the name
+is fresh, skipping any value that itself already collides — so the result is
+safe even when sanitised input happens to look like another argument plus a
+numeric tail. The chosen name is inserted into `seen` before returning.
+"""
+function sanitize_python_argname(name::AbstractString, seen=nothing)
     sanitized = sanitize_for_c(name)
-    isempty(sanitized) && return "_"
-    sanitized in PYTHON_KEYWORDS && return sanitized * "_"
+    isempty(sanitized) && (sanitized = "_")
+    sanitized in PYTHON_KEYWORDS && (sanitized *= "_")
+    if seen !== nothing
+        if sanitized in seen
+            i = 2
+            candidate = sanitized * string(i)
+            while candidate in seen
+                i += 1
+                candidate = sanitized * string(i)
+            end
+            sanitized = candidate
+        end
+        push!(seen, sanitized)
+    end
     return sanitized
 end
 
@@ -235,12 +263,14 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     for (id, type) in pairs(typeinfo)
         type isa StructDesc || continue
         name = typedict[id]
+        field_names_seen = Set{String}()
         if id in forward_declared
             # Body deferred — assign _fields_ now that all classes exist.
             println(f, name, "._fields_ = [")
             for field in type.fields
                 ft = mangle_python!(typedict, field.type, typeinfo)
-                println(f, "    (", repr(sanitize_python_argname(field.name)), ", ", ft, "),")
+                fname = sanitize_python_argname(field.name, field_names_seen)
+                println(f, "    (", repr(fname), ", ", ft, "),")
             end
             println(f, "]")
         else
@@ -251,7 +281,8 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
                 println(f, "    _fields_ = [")
                 for field in type.fields
                     ft = mangle_python!(typedict, field.type, typeinfo)
-                    println(f, "        (", repr(sanitize_python_argname(field.name)), ", ", ft, "),")
+                    fname = sanitize_python_argname(field.name, field_names_seen)
+                    println(f, "        (", repr(fname), ", ", ft, "),")
                 end
                 println(f, "    ]")
             end
@@ -266,18 +297,8 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)
 
-        argnames = String[sanitize_python_argname(a.name) for a in method.args]
-        # Disambiguate any duplicates that the sanitiser collapsed onto the same name.
-        seen = Dict{String, Int}()
-        for i in eachindex(argnames)
-            n = argnames[i]
-            if haskey(seen, n)
-                seen[n] += 1
-                argnames[i] = n * string(seen[n])
-            else
-                seen[n] = 1
-            end
-        end
+        arg_names_seen = Set{String}()
+        argnames = String[sanitize_python_argname(a.name, arg_names_seen) for a in method.args]
 
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
         if rt == "None"
