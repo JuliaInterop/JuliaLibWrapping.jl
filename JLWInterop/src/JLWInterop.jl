@@ -18,7 +18,7 @@ dependency of compiled libraries.
 module JLWInterop
 
 export JLWStatus, jlw_ok, jlw_error
-export CVector
+export CVector, CMatrix
 
 const JLW_MESSAGE_BYTES = 256
 
@@ -92,6 +92,80 @@ Base.@propagate_inbounds function Base.setindex!(v::CVector{T}, x, i::Int) where
     @boundscheck checkbounds(v, i)
     unsafe_store!(v.data, convert(T, x), i)
     return v
+end
+
+"""
+    CMatrix{T}
+
+ABI-stable 2-D buffer descriptor for crossing a `@ccallable` boundary:
+`rows × cols` elements of type `T` starting at `data`, laid out in
+**column-major** order (the same convention as Julia's `Matrix{T}` and
+Fortran). `T` should be an `isbits` type; `CMatrix{T}` is itself `isbits`
+in that case and allocation-free to construct.
+
+`CMatrix{T}` holds a raw pointer; it does **not** own the underlying
+buffer. Whoever allocated the storage (the caller passing the buffer in,
+or the library that returned it) remains responsible for keeping it alive
+for the entire time any `CMatrix` referring to it is in use, and for
+freeing it afterward. `CMatrix` performs no allocation, no copy, and no
+finalization.
+
+Use it to expose a 2-D numeric buffer at a `@ccallable` boundary instead
+of a `Matrix{T}` (which is not C-ABI compatible). The JuliaLibWrapping
+Python emitter recognizes `CMatrix{T}` for primitive numeric `T` and
+generates `from_numpy` / `as_numpy` helpers on the corresponding
+`ctypes.Structure`. Because the storage is column-major, `from_numpy`
+requires a Fortran-contiguous (column-major) `numpy.ndarray` and rejects
+the default row-major layout: callers passing a default numpy array must
+write `arr.T.copy(order='F')` or equivalent first. This is deliberate —
+silently treating a row-major array as column-major would transpose the
+matrix without warning.
+
+`CMatrix{T} <: AbstractMatrix{T}` and implements `size`, bounds-checked
+`getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`.
+With `IndexLinear()` style over column-major storage, `m[i, j]` reads
+slot `(j-1)*rows + i` (1-based, Julia native), so `CMatrix` plugs into
+`sum`, broadcasting, views, and `LinearAlgebra` routines at zero
+allocation.
+
+# Example
+
+```julia
+using JLWInterop
+
+Base.@ccallable function trace_cmatrix(m::CMatrix{Float64})::Float64
+    n = min(size(m, 1), size(m, 2))
+    s = 0.0
+    @inbounds for i in 1:n
+        s += m[i, i]
+    end
+    return s
+end
+```
+
+The caller (in Julia, Python, or C) is responsible for ensuring `m.data`
+points to at least `m.rows * m.cols` valid `T` slots, in column-major
+order, for the duration of the call, and that the slots are writable
+when `setindex!` is used.
+"""
+struct CMatrix{T} <: AbstractMatrix{T}
+    rows::Int32
+    cols::Int32
+    data::Ptr{T}
+end
+
+Base.size(m::CMatrix) = (Int(m.rows), Int(m.cols))
+Base.IndexStyle(::Type{<:CMatrix}) = IndexLinear()
+
+Base.@propagate_inbounds function Base.getindex(m::CMatrix, i::Int)
+    @boundscheck checkbounds(m, i)
+    return unsafe_load(m.data, i)
+end
+
+Base.@propagate_inbounds function Base.setindex!(m::CMatrix{T}, x, i::Int) where {T}
+    @boundscheck checkbounds(m, i)
+    unsafe_store!(m.data, convert(T, x), i)
+    return m
 end
 
 """
