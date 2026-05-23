@@ -284,6 +284,18 @@ end
             @test occursin("_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
                            bindings)
 
+            # Implements issue #12: CVector{primitive} structs gain numpy
+            # conversion helpers; CVector{struct} does not.
+            @test occursin("import numpy as np", bindings)
+            @test occursin("def from_numpy(cls, arr):", bindings)
+            @test occursin("def as_numpy(self):", bindings)
+            @test occursin("expected_dtype = np.dtype(\"float32\")", bindings)
+            @test occursin("ctypes.POINTER(ctypes.c_float)", bindings)
+            # The CVector_CTree_Float64 class has a struct pointee, so the
+            # recognizer must reject it (no helper emission). There is only
+            # one `from_numpy` definition in the file.
+            @test count(s -> occursin("def from_numpy", s), split(bindings, '\n')) == 1
+
             init = read(init_path, String)
             @test occursin("from ._bindings import (", init)
             @test occursin("copyto_and_sum", init)
@@ -292,6 +304,9 @@ end
             pyproject = read(pyproject_path, String)
             @test occursin("[build-system]", pyproject)
             @test occursin("name = \"libsimple\"", pyproject)
+            # The bindings use numpy via the CVector helpers, so numpy must be
+            # declared as a runtime dependency.
+            @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
 
             golden = read(joinpath(@__DIR__, "expected_libsimple_bindings.py"), String)
             @test bindings == golden
@@ -345,6 +360,70 @@ end
             @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "Foo_3"
             @test JuliaLibWrapping.mangle_python!(typedict, 3, typeinfo) == "Foo_4"
         end
+    end
+
+    @testset "cvector_struct_info" begin
+        # Implements issue #12: structural recognition of the CVector shape.
+        cvinfo = JuliaLibWrapping.cvector_struct_info
+        # The fixture exercises both a matching CVector{Float32} and a
+        # non-matching CVector{CTree{Float64}} (struct pointee).
+        abi = read_abi_info("bindinginfo_libsimple.json")
+        findtype(descs, name) = (k = collect(keys(descs));
+                                 k[findfirst((id)->descs[id].name === name, k)])
+        cv_f32 = abi.typeinfo[findtype(abi.typeinfo, "CVector{Float32}")]
+        cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{CTree{Float64}}")]
+        info = cvinfo(cv_f32, abi.typeinfo)
+        @test info !== nothing
+        @test info.pointee_name == "Float32"
+        @test info.dtype == "float32"
+        @test info.pointee_ctype == "ctypes.c_float"
+        # Struct pointee → no match (no useful numpy mapping).
+        @test cvinfo(cv_tree, abi.typeinfo) === nothing
+
+        # Hand-built rejections: wrong name, wrong field count, wrong field
+        # names, wrong length type (not integer), wrong pointee (struct).
+        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
+        primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
+        ptr_to_flt = PointerDesc("Ptr{Float32}", 2)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primint, 2 => primflt, 3 => ptr_to_flt,
+            4 => StructDesc("CVector{Float32}", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 3, 8),
+            ]),
+            5 => StructDesc("NotACVector", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 3, 8),
+            ]),
+            6 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
+            7 => StructDesc("CVectorBadNames", 16, 8, FieldDesc[
+                FieldDesc("len", 1, 0),
+                FieldDesc("data", 3, 8),
+            ]),
+            8 => StructDesc("CVectorBadLength", 16, 8, FieldDesc[
+                FieldDesc("length", 2, 0),  # Float length — not integer
+                FieldDesc("data", 3, 8),
+            ]),
+            9 => primbool,
+            10 => StructDesc("CVectorBoolLength", 16, 8, FieldDesc[
+                FieldDesc("length", 9, 0),  # Bool — in numpy_dtypes but not Int/UInt
+                FieldDesc("data", 3, 8),
+            ]),
+        )
+        @test cvinfo(ti[4], ti) !== nothing
+        @test cvinfo(ti[5], ti) === nothing  # wrong name
+        @test cvinfo(ti[6], ti) === nothing  # empty
+        @test cvinfo(ti[7], ti) === nothing  # wrong field names
+        @test cvinfo(ti[8], ti) === nothing  # non-integer length
+        @test cvinfo(ti[10], ti) === nothing # Bool length rejected
+
+        # Field order may be either way.
+        flipped = StructDesc("CVector{Float32}", 16, 8, FieldDesc[
+            FieldDesc("data", 3, 0),
+            FieldDesc("length", 1, 8),
+        ])
+        @test cvinfo(flipped, ti) !== nothing
     end
 
     @testset "JLWStatus convention" begin

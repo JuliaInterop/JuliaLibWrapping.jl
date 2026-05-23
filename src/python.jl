@@ -128,6 +128,53 @@ function mangle_python!(typedict::Dict{Int, String}, type_id::Int,
     return mangled
 end
 
+const numpy_dtypes = Dict{String, String}(
+    "Int8" => "int8", "Int16" => "int16", "Int32" => "int32", "Int64" => "int64",
+    "UInt8" => "uint8", "UInt16" => "uint16", "UInt32" => "uint32", "UInt64" => "uint64",
+    "Float32" => "float32", "Float64" => "float64",
+)
+
+"""
+    cvector_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize the JLWInterop `CVector{T}` shape: a struct whose name starts
+with `"CVector"`, with exactly two fields named `length` (a primitive
+integer) and `data` (a pointer to a primitive numeric type recognized by
+[`numpy_dtypes`](@ref)). Returns `(; pointee_name, pointee_ctype, dtype)`
+on a match, otherwise `nothing`. Field order may be either `length, data`
+or `data, length`. Like [`is_jlwstatus_struct`](@ref), recognition is by
+name + shape so authors who copy-paste a compatible definition still get
+the behavior.
+"""
+function cvector_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CVector") || return nothing
+    length(desc.fields) == 2 || return nothing
+    length_field = nothing
+    data_field = nothing
+    for field in desc.fields
+        if field.name == "length"
+            length_field = field
+        elseif field.name == "data"
+            data_field = field
+        end
+    end
+    (length_field === nothing || data_field === nothing) && return nothing
+    length_type = typeinfo[length_field.type]
+    length_type isa PrimitiveTypeDesc || return nothing
+    length_type.name in keys(numpy_dtypes) || return nothing
+    # Reject Float* and Bool as length types — they're in numpy_dtypes but
+    # only integers make sense for a count.
+    startswith(length_type.name, "Int") || startswith(length_type.name, "UInt") || return nothing
+    data_type = typeinfo[data_field.type]
+    data_type isa PointerDesc || return nothing
+    pointee = typeinfo[data_type.pointee_type]
+    pointee isa PrimitiveTypeDesc || return nothing
+    pointee.name in keys(numpy_dtypes) || return nothing
+    return (; pointee_name = pointee.name,
+              pointee_ctype = pytypes[pointee.name],
+              dtype = numpy_dtypes[pointee.name])
+end
+
 const PYTHON_KEYWORDS = Set{String}([
     "False", "None", "True", "and", "as", "assert", "async", "await", "break",
     "class", "continue", "def", "del", "elif", "else", "except", "finally",
@@ -192,10 +239,13 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
 
     needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
                         for m in entrypoints)
+    needs_numpy = any(type isa StructDesc &&
+                      cvector_struct_info(type, typeinfo) !== nothing
+                      for type in values(typeinfo))
 
     bindings_path = joinpath(pkgdir, "_bindings.py")
     open(bindings_path, "w") do f
-        _write_bindings(f, dest, abi_info, typedict, needs_jlwerror)
+        _write_bindings(f, dest, abi_info, typedict, needs_jlwerror, needs_numpy)
     end
 
     # Collect the public names for __init__.py re-export. Tuple-shaped
@@ -237,7 +287,7 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
 
     pyproject_path = joinpath(dest.dir, "pyproject.toml")
     open(pyproject_path, "w") do f
-        _write_pyproject(f, dest)
+        _write_pyproject(f, dest, needs_numpy)
     end
 
     return nothing
@@ -246,11 +296,11 @@ end
 """
     is_jlwstatus_struct(desc::StructDesc, typeinfo) -> Bool
 
-Recognize the JLWInterop error-status convention (issue #15) by structural
-shape: a struct named `JLWStatus` with two fields — an integer `code` field
-and a `message` field that is a tuple-of-bytes struct. Matching by name +
-shape (rather than by package identity) means authors who copy-paste a
-compatible definition still get the behavior.
+Recognize the JLWInterop error-status convention by structural shape: a
+struct named `JLWStatus` with two fields — an integer `code` field and a
+`message` field that is a tuple-of-bytes struct. Matching by name + shape
+(rather than by package identity) means authors who copy-paste a compatible
+definition still get the behavior.
 """
 function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     desc.name == "JLWStatus" || return false
@@ -278,7 +328,7 @@ JLWStatus or it is a struct with a JLWStatus field), return the Python
 attribute path from `_result` to that status (e.g. `""` for direct return,
 or `".status"` for an embedded field). Otherwise return `nothing`.
 Recognition is shallow on purpose — only the immediate return struct's
-top-level fields are inspected. Implements part of issue #15.
+top-level fields are inspected.
 """
 function jlwstatus_access_path(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
     rt = typeinfo[method.return_type]
@@ -295,6 +345,38 @@ function jlwstatus_access_path(method::MethodDesc, typeinfo::OrderedDict{Int, Ty
     return nothing
 end
 
+function _write_cvector_helpers(f::IO, cvinfo)
+    # `cvinfo` is the return of `cvector_struct_info`. Helpers are emitted as
+    # methods on the surrounding ctypes.Structure subclass; the `length` and
+    # `data` field names are guaranteed by the recognizer.
+    ctype = cvinfo.pointee_ctype
+    dtype = cvinfo.dtype
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_numpy(cls, arr):")
+    println(f, "        \"\"\"Return a CVector view of the 1-D contiguous numpy array `arr`.")
+    println(f, "")
+    println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no")
+    println(f, "        silent reinterpretation). The returned object holds a reference to `arr`,")
+    println(f, "        so the caller must keep it alive for the duration of any C call that uses")
+    println(f, "        the buffer.\"\"\"")
+    println(f, "        if arr.ndim != 1:")
+    println(f, "            raise ValueError(f\"expected 1-D array, got {arr.ndim}-D\")")
+    println(f, "        if not arr.flags.c_contiguous:")
+    println(f, "            raise ValueError(\"array must be C-contiguous\")")
+    println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
+    println(f, "        if arr.dtype != expected_dtype:")
+    println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
+    println(f, "        obj = cls(length=arr.size,")
+    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
+    println(f, "        obj._buffer = arr")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_numpy(self):")
+    println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
+    println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.length,))")
+end
+
 const JLWERROR_DEFINITION = """
 class JLWError(RuntimeError):
     \"\"\"Raised when a wrapped function returns a non-zero JLWStatus.code.\"\"\"
@@ -305,7 +387,8 @@ class JLWError(RuntimeError):
 """
 
 function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
-                         typedict::Dict{Int, String}, needs_jlwerror::Bool=false)
+                         typedict::Dict{Int, String}, needs_jlwerror::Bool=false,
+                         needs_numpy::Bool=false)
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
 
@@ -314,6 +397,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "import os")
     println(f, "import sys")
     println(f, "import pathlib")
+    if needs_numpy
+        # Implements issue #12: numpy conversion helpers for CVector structs.
+        println(f, "import numpy as np")
+    end
     println(f)
     println(f, "_HERE = pathlib.Path(__file__).resolve().parent")
     println(f, "_LIBRARY_BASENAME = ", repr(dest.library_basename))
@@ -394,6 +481,12 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
                 end
                 println(f, "    ]")
             end
+            cvinfo = cvector_struct_info(type, typeinfo)
+            if cvinfo !== nothing
+                # Implements issue #12: emit numpy conversion helpers when the
+                # struct matches the CVector{T} shape with a primitive pointee.
+                _write_cvector_helpers(f, cvinfo)
+            end
         end
         println(f)
     end
@@ -428,7 +521,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     end
 end
 
-function _write_pyproject(f::IO, dest::PythonTarget)
+function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "# Auto-generated by JuliaLibWrapping. Edit only if you know what you are doing.")
     println(f, "[build-system]")
     println(f, "requires = [\"setuptools>=64\"]")
@@ -440,6 +533,10 @@ function _write_pyproject(f::IO, dest::PythonTarget)
     println(f, "description = \"Python bindings for ", dest.library_basename,
                ", auto-generated by JuliaLibWrapping\"")
     println(f, "requires-python = \">=3.8\"")
+    if needs_numpy
+        # Implements issue #12: CVector helpers depend on numpy.
+        println(f, "dependencies = [\"numpy>=1.20\"]")
+    end
     println(f)
     println(f, "[tool.setuptools]")
     println(f, "packages = [", repr(dest.package_name), "]")
