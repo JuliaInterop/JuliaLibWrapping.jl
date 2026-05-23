@@ -1,4 +1,4 @@
-"""libsimple idiomatic façade.
+"""cstring_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -16,15 +16,15 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    CVector_Float32,
-    CVectorPair_Float32,
-    MyTwoVec,
-    CVector_CTree_Float64,
-    CTree_Float64,
+    CString,
 )
 
-from ._lowlevel import tree_size  # TODO: hand-wrap — `tree`: argument has unrecognized type `CTree{Float64}`
-from ._lowlevel import copyto_and_sum  # TODO: hand-wrap — `fromto`: argument has unrecognized type `CVectorPair{Float32}`
-from ._lowlevel import countsame  # TODO: hand-wrap — `list`: argument has raw pointer type `Ptr{MyTwoVec}`
+def greeting_length(s):
+    _s = CString.from_str(s)
+    return _lowlevel.greeting_length(_s)
 
-__all__ = ["CVector_Float32", "CVectorPair_Float32", "MyTwoVec", "CVector_CTree_Float64", "CTree_Float64", "tree_size", "copyto_and_sum", "countsame"]
+def greeting():
+    _result = _lowlevel.greeting()
+    return _result.as_str()
+
+__all__ = ["CString", "greeting_length", "greeting"]

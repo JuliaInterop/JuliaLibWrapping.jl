@@ -592,6 +592,15 @@ end
             golden = read(joinpath(@__DIR__, "expected_cstring_lowlevel.py"), String)
             @test bindings == golden
 
+            # Façade auto-wrap: CString args/returns become str in/out.
+            facade = read(joinpath(path, "cstring_demo", "_facade.py"), String)
+            @test occursin("def greeting_length(s):\n    _s = CString.from_str(s)\n" *
+                           "    return _lowlevel.greeting_length(_s)", facade)
+            @test occursin("def greeting():\n    _result = _lowlevel.greeting()\n" *
+                           "    return _result.as_str()", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
+            @test facade == golden_facade
+
             python3 = Sys.which("python3")
             if python3 !== nothing
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
@@ -641,6 +650,14 @@ end
             golden = read(joinpath(@__DIR__, "expected_cmatrix_lowlevel.py"), String)
             @test bindings == golden
 
+            # Façade auto-wrap: CMatrix arg becomes numpy in.
+            facade = read(joinpath(path, "cmatrix_demo", "_facade.py"), String)
+            @test occursin("import numpy as np", facade)
+            @test occursin("def trace_cmatrix(m):\n    _m = CMatrix_Float64.from_numpy(m)\n" *
+                           "    return _lowlevel.trace_cmatrix(_m)", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
+            @test facade == golden_facade
+
             python3 = Sys.which("python3")
             if python3 !== nothing
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
@@ -684,6 +701,17 @@ end
 
             golden = read(joinpath(@__DIR__, "expected_rawptr_lowlevel.py"), String)
             @test bindings == golden
+
+            # Façade: raw-pointer arg is not auto-wrappable; the function
+            # falls back to a mechanical re-export tagged with a TODO that
+            # names the offending arg and its type.
+            facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
+            @test occursin("from ._lowlevel import sum_doubles  # TODO: hand-wrap — " *
+                           "`data`: argument has raw pointer type `Ptr{Float64}`",
+                           facade)
+            @test !occursin("def sum_doubles(", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_rawptr_facade.py"), String)
+            @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing
@@ -742,6 +770,22 @@ end
             @test occursin("from ._facade import *", init)
             @test occursin("    JLWError,", facade)
             @test occursin("\"JLWError\"", facade)
+
+            # Façade auto-wrap policy for the three flavors:
+            #  - direct JLWStatus return → auto-wrap that discards the
+            #    status struct (lowlevel already raises);
+            #  - embedded JLWStatus in a compound struct → mechanical
+            #    TODO (we don't know how to shape the other fields);
+            #  - plain primitive-in/primitive-out → passthrough re-export
+            #    with no TODO noise.
+            @test occursin("def do_thing(x):\n    _lowlevel.do_thing(x)", facade)
+            @test occursin("from ._lowlevel import compute  # TODO: hand-wrap " *
+                           "— returns struct `ResultStruct` with embedded JLWStatus",
+                           facade)
+            @test occursin("from ._lowlevel import plain_add\n", facade)
+            @test !occursin("plain_add  # TODO", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_jlwstatus_facade.py"), String)
+            @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing

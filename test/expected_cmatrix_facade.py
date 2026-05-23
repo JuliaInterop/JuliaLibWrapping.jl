@@ -1,4 +1,4 @@
-"""libsimple idiomatic façade.
+"""cmatrix_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -14,17 +14,14 @@ The mechanical bindings live in `_lowlevel.py` and are regenerated
 on every `write_wrapper` call.
 """
 from . import _lowlevel  # noqa: F401
+import numpy as np  # noqa: F401
 
 from ._lowlevel import (
-    CVector_Float32,
-    CVectorPair_Float32,
-    MyTwoVec,
-    CVector_CTree_Float64,
-    CTree_Float64,
+    CMatrix_Float64,
 )
 
-from ._lowlevel import tree_size  # TODO: hand-wrap — `tree`: argument has unrecognized type `CTree{Float64}`
-from ._lowlevel import copyto_and_sum  # TODO: hand-wrap — `fromto`: argument has unrecognized type `CVectorPair{Float32}`
-from ._lowlevel import countsame  # TODO: hand-wrap — `list`: argument has raw pointer type `Ptr{MyTwoVec}`
+def trace_cmatrix(m):
+    _m = CMatrix_Float64.from_numpy(m)
+    return _lowlevel.trace_cmatrix(_m)
 
-__all__ = ["CVector_Float32", "CVectorPair_Float32", "MyTwoVec", "CVector_CTree_Float64", "CTree_Float64", "tree_size", "copyto_and_sum", "countsame"]
+__all__ = ["CMatrix_Float64", "trace_cmatrix"]

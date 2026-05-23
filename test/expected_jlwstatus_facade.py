@@ -1,4 +1,4 @@
-"""libsimple idiomatic façade.
+"""demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -16,15 +16,15 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    CVector_Float32,
-    CVectorPair_Float32,
-    MyTwoVec,
-    CVector_CTree_Float64,
-    CTree_Float64,
+    JLWStatus,
+    ResultStruct,
+    JLWError,
 )
 
-from ._lowlevel import tree_size  # TODO: hand-wrap — `tree`: argument has unrecognized type `CTree{Float64}`
-from ._lowlevel import copyto_and_sum  # TODO: hand-wrap — `fromto`: argument has unrecognized type `CVectorPair{Float32}`
-from ._lowlevel import countsame  # TODO: hand-wrap — `list`: argument has raw pointer type `Ptr{MyTwoVec}`
+from ._lowlevel import compute  # TODO: hand-wrap — returns struct `ResultStruct` with embedded JLWStatus; idiomatic shaping depends on the other fields
+from ._lowlevel import plain_add
 
-__all__ = ["CVector_Float32", "CVectorPair_Float32", "MyTwoVec", "CVector_CTree_Float64", "CTree_Float64", "tree_size", "copyto_and_sum", "countsame"]
+def do_thing(x):
+    _lowlevel.do_thing(x)
+
+__all__ = ["JLWStatus", "ResultStruct", "JLWError", "do_thing", "compute", "plain_add"]
