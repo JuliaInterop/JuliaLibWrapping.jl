@@ -629,6 +629,57 @@ end
         end
     end
 
+    @testset "raw primitive pointer docstring" begin
+        # Implements issue #14: bare `Ptr{<primitive>}` arguments get a
+        # docstring on the Python wrapper warning about layout/ownership,
+        # and `write_wrapper` emits a single @info during codegen.
+        abi = read_abi_info("bindinginfo_rawptr.json")
+
+        # Helper recognizes the raw-primitive-pointer argument.
+        method = only(abi.entrypoints)
+        @test JuliaLibWrapping.raw_primitive_pointer_args(method, abi.typeinfo) == [1]
+
+        mktempdir() do path
+            dest = PythonTarget(path, "rawptr_demo", "librawptr")
+            bindings = @test_logs (:info,) match_mode=:any begin
+                write_wrapper(dest, abi)
+                read(joinpath(path, "rawptr_demo", "_bindings.py"), String)
+            end
+
+            # Raw pointer is still rendered as ctypes.POINTER — no numpy.
+            @test !occursin("import numpy", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test !occursin("numpy", pyproject)
+
+            # Docstring lands on the wrapper, names the offending arg, and
+            # documents the column-major contract.
+            @test occursin("def sum_doubles(data, n):", bindings)
+            @test occursin("Raw pointer arguments — caller owns layout and lifetime.",
+                           bindings)
+            @test occursin("`data` is a raw pointer to Float64", bindings)
+            @test occursin("column-major (Fortran order)", bindings)
+            @test occursin("`CVector{T}` /\n    `CMatrix{T}`", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_rawptr_bindings.py"), String)
+            @test bindings == golden
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                bindings_path = joinpath(path, "rawptr_demo", "_bindings.py")
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+
+        # Functions with no raw primitive pointers don't trigger the @info
+        # and don't pick up the docstring.
+        abi_cm = read_abi_info("bindinginfo_cmatrix.json")
+        method_cm = only(abi_cm.entrypoints)
+        @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
+    end
+
     @testset "JLWStatus convention" begin
         # Implements issue #15: in-band status struct + Python raise-on-error.
         abi_info = read_abi_info("bindinginfo_jlwstatus.json")

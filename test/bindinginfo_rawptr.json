@@ -1,0 +1,40 @@
+{
+  "_comment": "Hand-authored fixture for issue #14: a function taking a bare `Ptr{Float64}` (not wrapped in CVector/CMatrix). The Python emitter must attach a docstring on the generated wrapper warning about layout and ownership, and emit an @info during codegen. No numpy dependency is triggered (raw pointers are still rendered as ctypes.POINTER).",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 1,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 2,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Float64}",
+      "id": 3,
+      "pointee_type_id": 1
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 1 },
+      "name": "sum_doubles(data::Ptr{Float64}, n::Int64)",
+      "arguments": [
+        { "name": "data", "type_id": 3 },
+        { "name": "n", "type_id": 2 }
+      ],
+      "symbol": "sum_doubles"
+    }
+  ]
+}
