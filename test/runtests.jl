@@ -486,6 +486,100 @@ end
         @test cminfo(scrambled, ti) !== nothing
     end
 
+    @testset "cstring_struct_info" begin
+        # Implements issue #12: structural recognition of the CString shape
+        # (length::Integer, data::Ptr{UInt8}).
+        csinfo = JuliaLibWrapping.cstring_struct_info
+        abi = read_abi_info("bindinginfo_cstring.json")
+        findtype(descs, name) = (k = collect(keys(descs));
+                                 k[findfirst((id)->descs[id].name === name, k)])
+        cs = abi.typeinfo[findtype(abi.typeinfo, "CString")]
+        @test csinfo(cs, abi.typeinfo) === true
+
+        # Hand-built rejections.
+        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        primu16 = PrimitiveTypeDesc("UInt16", false, 16, 2, 2)
+        ptr_to_u8 = PointerDesc("Ptr{UInt8}", 2)
+        ptr_to_u16 = PointerDesc("Ptr{UInt16}", 3)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primint, 2 => primu8, 3 => primu16,
+            4 => ptr_to_u8, 5 => ptr_to_u16,
+            6 => StructDesc("CString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 4, 8),
+            ]),
+            7 => StructDesc("NotACString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 4, 8),
+            ]),
+            8 => StructDesc("CStringU16", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 5, 8),  # Ptr{UInt16} — not UInt8
+            ]),
+            9 => StructDesc("CStringBadNames", 16, 8, FieldDesc[
+                FieldDesc("size", 1, 0),
+                FieldDesc("data", 4, 8),
+            ]),
+        )
+        @test csinfo(ti[6], ti) === true
+        @test csinfo(ti[7], ti) === false  # wrong name prefix
+        @test csinfo(ti[8], ti) === false  # non-UInt8 pointee
+        @test csinfo(ti[9], ti) === false  # wrong field names
+
+        # Field order may be either way.
+        flipped = StructDesc("CString", 16, 8, FieldDesc[
+            FieldDesc("data", 4, 0),
+            FieldDesc("length", 1, 8),
+        ])
+        @test csinfo(flipped, ti) === true
+    end
+
+    @testset "CString vocabulary" begin
+        # Implements issue #12: CString recognition + str/bytes round-trip
+        # in the Python emitter. No numpy dependency triggered.
+        abi = read_abi_info("bindinginfo_cstring.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cstring_demo", "libcstring")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cstring_demo", "_bindings.py")
+            bindings = read(bindings_path, String)
+
+            # No numpy: CString helpers use only `ctypes`.
+            @test !occursin("import numpy", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test !occursin("numpy", pyproject)
+
+            # Struct + helpers.
+            @test occursin("class CString(ctypes.Structure):", bindings)
+            @test occursin("(\"length\", ctypes.c_int32)", bindings)
+            @test occursin("(\"data\", ctypes.POINTER(ctypes.c_uint8))", bindings)
+            @test occursin("def from_str(cls, s):", bindings)
+            @test occursin("def from_bytes(cls, b):", bindings)
+            @test occursin("def as_bytes(self):", bindings)
+            @test occursin("def as_str(self):", bindings)
+            @test occursin("s.encode(\"utf-8\")", bindings)
+            @test occursin("ctypes.string_at(self.data, self.length)", bindings)
+            @test occursin(".decode(\"utf-8\")", bindings)
+
+            # Round-trip-direction entrypoints are emitted as bare bindings.
+            @test occursin("_lib.greeting_length.argtypes = [CString]", bindings)
+            @test occursin("_lib.greeting.restype = CString", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cstring_bindings.py"), String)
+            @test bindings == golden
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
     @testset "CMatrix vocabulary" begin
         # Implements issue #12: CMatrix{T} recognition + column-major numpy
         # helpers in the Python emitter.

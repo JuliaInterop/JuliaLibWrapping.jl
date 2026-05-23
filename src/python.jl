@@ -218,6 +218,41 @@ function cmatrix_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
               dtype = numpy_dtypes[pointee.name])
 end
 
+"""
+    cstring_struct_info(desc::StructDesc, typeinfo) -> Bool
+
+Recognize the JLWInterop `CString` shape: a struct whose name starts with
+`"CString"`, with exactly two fields named `length` (a primitive integer)
+and `data` (a pointer to `UInt8`). The pointee type is restricted to
+`UInt8` specifically (other widths would not round-trip as a UTF-8
+string). Returns `true` on a match, `false` otherwise. Field order may be
+either `length, data` or `data, length`. Recognition is by name + shape
+(see [`is_jlwstatus_struct`](@ref) for the rationale).
+"""
+function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CString") || return false
+    length(desc.fields) == 2 || return false
+    length_field = nothing
+    data_field = nothing
+    for field in desc.fields
+        if field.name == "length"
+            length_field = field
+        elseif field.name == "data"
+            data_field = field
+        end
+    end
+    (length_field === nothing || data_field === nothing) && return false
+    length_type = typeinfo[length_field.type]
+    length_type isa PrimitiveTypeDesc || return false
+    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return false
+    data_type = typeinfo[data_field.type]
+    data_type isa PointerDesc || return false
+    pointee = typeinfo[data_type.pointee_type]
+    pointee isa PrimitiveTypeDesc || return false
+    pointee.name == "UInt8" || return false
+    return true
+end
+
 const PYTHON_KEYWORDS = Set{String}([
     "False", "None", "True", "and", "as", "assert", "async", "await", "break",
     "class", "continue", "def", "del", "elif", "else", "except", "finally",
@@ -421,6 +456,44 @@ function _write_cvector_helpers(f::IO, cvinfo)
     println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.length,))")
 end
 
+function _write_cstring_helpers(f::IO)
+    # CString shape — see `cstring_struct_info`. The `length` and `data`
+    # field names are guaranteed by the recognizer, and the pointee is
+    # UInt8 / ctypes.c_uint8. Unlike CVector and CMatrix this emits no
+    # numpy dependency; helpers use only `ctypes`.
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_str(cls, s):")
+    println(f, "        \"\"\"Return a CString whose buffer holds the UTF-8 encoding of `s`.")
+    println(f, "")
+    println(f, "        Allocates a fresh ctypes buffer and copies the bytes into it; the")
+    println(f, "        returned object holds a reference to that buffer, so the caller")
+    println(f, "        must keep it alive for the duration of any C call that uses it.\"\"\"")
+    println(f, "        if not isinstance(s, str):")
+    println(f, "            raise TypeError(f\"expected str, got {type(s).__name__}\")")
+    println(f, "        return cls.from_bytes(s.encode(\"utf-8\"))")
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_bytes(cls, b):")
+    println(f, "        \"\"\"Return a CString whose buffer holds a copy of the bytes `b`.\"\"\"")
+    println(f, "        if not isinstance(b, (bytes, bytearray)):")
+    println(f, "            raise TypeError(f\"expected bytes-like, got {type(b).__name__}\")")
+    println(f, "        n = len(b)")
+    println(f, "        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()")
+    println(f, "        obj = cls(length=n,")
+    println(f, "                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))")
+    println(f, "        obj._buffer = buf")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_bytes(self):")
+    println(f, "        \"\"\"Return a copy of the underlying bytes as a Python `bytes` object.\"\"\"")
+    println(f, "        return ctypes.string_at(self.data, self.length)")
+    println(f, "")
+    println(f, "    def as_str(self):")
+    println(f, "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"")
+    println(f, "        return self.as_bytes().decode(\"utf-8\")")
+end
+
 function _write_cmatrix_helpers(f::IO, cminfo)
     # Mirror of `_write_cvector_helpers` for the column-major 2-D shape.
     # `rows`, `cols`, and `data` field names are guaranteed by the recognizer.
@@ -574,6 +647,9 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             elseif cminfo !== nothing
                 # Implements issue #12: column-major CMatrix{T} variant.
                 _write_cmatrix_helpers(f, cminfo)
+            elseif cstring_struct_info(type, typeinfo)
+                # Implements issue #12: str/bytes round-trip for CString.
+                _write_cstring_helpers(f)
             end
         end
         println(f)
