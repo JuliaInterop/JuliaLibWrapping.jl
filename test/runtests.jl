@@ -261,10 +261,12 @@ end
             dest = PythonTarget(path, "libsimple", "libsimple")
             write_wrapper(dest, abi_info)
 
-            bindings_path = joinpath(path, "libsimple", "_bindings.py")
+            bindings_path = joinpath(path, "libsimple", "_lowlevel.py")
+            facade_path = joinpath(path, "libsimple", "_facade.py")
             init_path = joinpath(path, "libsimple", "__init__.py")
             pyproject_path = joinpath(path, "pyproject.toml")
             @test isfile(bindings_path)
+            @test isfile(facade_path)
             @test isfile(init_path)
             @test isfile(pyproject_path)
 
@@ -297,9 +299,27 @@ end
             @test count(s -> occursin("def from_numpy", s), split(bindings, '\n')) == 1
 
             init = read(init_path, String)
-            @test occursin("from ._bindings import (", init)
-            @test occursin("copyto_and_sum", init)
-            @test occursin("CTree_Float64", init)
+            @test occursin("from ._facade import *", init)
+            @test occursin("from ._facade import __all__", init)
+
+            # `_facade.py` is the never-overwritten author-editable surface;
+            # the starter stub re-exports every public name from `_lowlevel`.
+            facade = read(facade_path, String)
+            @test occursin("from ._lowlevel import (", facade)
+            @test occursin("copyto_and_sum", facade)
+            @test occursin("CTree_Float64", facade)
+            @test occursin("__all__ = [", facade)
+
+            golden_facade = read(joinpath(@__DIR__, "expected_libsimple_facade.py"), String)
+            @test facade == golden_facade
+
+            # No-clobber contract: a hand-edit must survive a re-emission.
+            sentinel = "# sentinel: hand-edited façade — do not overwrite\n"
+            open(facade_path, "a") do io
+                write(io, sentinel)
+            end
+            write_wrapper(dest, abi_info)
+            @test occursin(sentinel, read(facade_path, String))
 
             pyproject = read(pyproject_path, String)
             @test occursin("[build-system]", pyproject)
@@ -308,7 +328,7 @@ end
             # declared as a runtime dependency.
             @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
 
-            golden = read(joinpath(@__DIR__, "expected_libsimple_bindings.py"), String)
+            golden = read(joinpath(@__DIR__, "expected_libsimple_lowlevel.py"), String)
             @test bindings == golden
 
             python3 = Sys.which("python3")
@@ -319,6 +339,8 @@ end
             else
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr=devnull, stdout=devnull); wait=true))
             end
         end
 
@@ -543,7 +565,7 @@ end
             dest = PythonTarget(path, "cstring_demo", "libcstring")
             write_wrapper(dest, abi)
 
-            bindings_path = joinpath(path, "cstring_demo", "_bindings.py")
+            bindings_path = joinpath(path, "cstring_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
 
             # No numpy: CString helpers use only `ctypes`.
@@ -567,7 +589,7 @@ end
             @test occursin("_lib.greeting_length.argtypes = [CString]", bindings)
             @test occursin("_lib.greeting.restype = CString", bindings)
 
-            golden = read(joinpath(@__DIR__, "expected_cstring_bindings.py"), String)
+            golden = read(joinpath(@__DIR__, "expected_cstring_lowlevel.py"), String)
             @test bindings == golden
 
             python3 = Sys.which("python3")
@@ -588,7 +610,7 @@ end
             dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
             write_wrapper(dest, abi)
 
-            bindings_path = joinpath(path, "cmatrix_demo", "_bindings.py")
+            bindings_path = joinpath(path, "cmatrix_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
 
             # Numpy is imported and declared as a dep when CMatrix is present.
@@ -616,7 +638,7 @@ end
                            bindings)
 
             # Golden-file comparison.
-            golden = read(joinpath(@__DIR__, "expected_cmatrix_bindings.py"), String)
+            golden = read(joinpath(@__DIR__, "expected_cmatrix_lowlevel.py"), String)
             @test bindings == golden
 
             python3 = Sys.which("python3")
@@ -643,7 +665,7 @@ end
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
             bindings = @test_logs (:info,) match_mode=:any begin
                 write_wrapper(dest, abi)
-                read(joinpath(path, "rawptr_demo", "_bindings.py"), String)
+                read(joinpath(path, "rawptr_demo", "_lowlevel.py"), String)
             end
 
             # Raw pointer is still rendered as ctypes.POINTER — no numpy.
@@ -660,12 +682,12 @@ end
             @test occursin("column-major (Fortran order)", bindings)
             @test occursin("`CVector{T}` /\n    `CMatrix{T}`", bindings)
 
-            golden = read(joinpath(@__DIR__, "expected_rawptr_bindings.py"), String)
+            golden = read(joinpath(@__DIR__, "expected_rawptr_lowlevel.py"), String)
             @test bindings == golden
 
             python3 = Sys.which("python3")
             if python3 !== nothing
-                bindings_path = joinpath(path, "rawptr_demo", "_bindings.py")
+                bindings_path = joinpath(path, "rawptr_demo", "_lowlevel.py")
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
             elseif haskey(ENV, "CI")
@@ -687,7 +709,8 @@ end
             dest = PythonTarget(path, "demo", "libdemo")
             write_wrapper(dest, abi_info)
 
-            bindings = read(joinpath(path, "demo", "_bindings.py"), String)
+            bindings = read(joinpath(path, "demo", "_lowlevel.py"), String)
+            facade = read(joinpath(path, "demo", "_facade.py"), String)
             init = read(joinpath(path, "demo", "__init__.py"), String)
 
             # The JLWError exception class is defined once.
@@ -715,13 +738,14 @@ end
                 "def plain_add(a, b):\n    return _lib.plain_add(a, b)",
                 bindings)
 
-            # JLWError is re-exported from the package.
-            @test occursin("    JLWError,", init)
-            @test occursin("\"JLWError\"", init)
+            # JLWError is re-exported from the package via the façade.
+            @test occursin("from ._facade import *", init)
+            @test occursin("    JLWError,", facade)
+            @test occursin("\"JLWError\"", facade)
 
             python3 = Sys.which("python3")
             if python3 !== nothing
-                bindings_path = joinpath(path, "demo", "_bindings.py")
+                bindings_path = joinpath(path, "demo", "_lowlevel.py")
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
             elseif haskey(ENV, "CI")

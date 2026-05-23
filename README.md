@@ -10,7 +10,14 @@
 
 `juliac` (see [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)) can emit a JSON
 ABI-info file describing the entrypoints and types of a compiled Julia library.
-JuliaLibWrapping consumes that file and generates a C header (`.h`) so the library
-can be called from C. The `juliac` ABI-export feature ships in Julia 1.13.
+JuliaLibWrapping consumes that file and generates wrappers for other languages:
+a C header (`.h`) via `CTarget`, or a Python `ctypes` package via
+`PythonTarget`. The `juliac` ABI-export feature ships in Julia 1.13.
+
+The Python target uses a two-tier layout: a regenerable `_lowlevel.py` holds
+the mechanical bindings, and an author-editable `_facade.py` (written once,
+never overwritten) is the public surface. See the
+[documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/#Two-tier-Python-output)
+for details.
 
 See the tests for an example of generating a `.h` file from a `juliac` ABI-info file.
