@@ -320,6 +320,31 @@ end
             )
             @test_throws "unsupported primitive type: 'NotARealType'" JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo)
         end
+
+        @testset "struct name collision" begin
+            # Mirrors the mangle_c! collision testset: the Python emitter
+            # carries a near-identical suffix-bumping branch, and the two
+            # implementations must not silently drift.
+            typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Foo!", 0, 0, FieldDesc[]),
+                2 => StructDesc("Foo?", 0, 0, FieldDesc[]),
+                3 => StructDesc("Foo#", 0, 0, FieldDesc[]),
+            )
+            @test JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo) == "Foo"
+            @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "Foo_2"
+            @test JuliaLibWrapping.mangle_python!(typedict, 3, typeinfo) == "Foo_3"
+
+            typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Foo", 0, 0, FieldDesc[]),     # takes "Foo"
+                2 => StructDesc("Foo_3", 0, 0, FieldDesc[]),   # takes "Foo_3"
+                3 => StructDesc("Foo!", 0, 0, FieldDesc[]),    # wants "Foo_3", bumps to "Foo_4"
+            )
+            @test JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo) == "Foo"
+            @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "Foo_3"
+            @test JuliaLibWrapping.mangle_python!(typedict, 3, typeinfo) == "Foo_4"
+        end
     end
 
     @testset "JLWStatus convention" begin
