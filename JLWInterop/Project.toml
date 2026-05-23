@@ -1,0 +1,13 @@
+name = "JLWInterop"
+uuid = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
+authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

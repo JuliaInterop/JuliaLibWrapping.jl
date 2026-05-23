@@ -14,6 +14,7 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Error handling" => "error_handling.md",
     ],
 )
 
