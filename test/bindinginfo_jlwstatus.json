@@ -1,0 +1,1924 @@
+{
+  "_comment": "Hand-authored fixture for the JLWStatus convention (issue #15). The 256-field NTuple struct mirrors how juliac/abi_export.jl emits NTuple{256, UInt8}: tuples are not isprimitivetype, so they fall into the 'struct' branch with one field per element, named '1'..'N'. The Python emitter's tuple_struct_info recognizes this shape and renders it as a ctypes array. parse_abi_info ignores unknown top-level keys, so this field is invisible to the parser.",
+  "types": [
+    {
+      "kind": "struct",
+      "name": "NTuple{256, UInt8}",
+      "id": 1,
+      "size": 256,
+      "fields": [
+        {
+          "name": "1",
+          "isptr": false,
+          "offset": 0,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "2",
+          "isptr": false,
+          "offset": 1,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "3",
+          "isptr": false,
+          "offset": 2,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "4",
+          "isptr": false,
+          "offset": 3,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "5",
+          "isptr": false,
+          "offset": 4,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "6",
+          "isptr": false,
+          "offset": 5,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "7",
+          "isptr": false,
+          "offset": 6,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "8",
+          "isptr": false,
+          "offset": 7,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "9",
+          "isptr": false,
+          "offset": 8,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "10",
+          "isptr": false,
+          "offset": 9,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "11",
+          "isptr": false,
+          "offset": 10,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "12",
+          "isptr": false,
+          "offset": 11,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "13",
+          "isptr": false,
+          "offset": 12,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "14",
+          "isptr": false,
+          "offset": 13,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "15",
+          "isptr": false,
+          "offset": 14,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "16",
+          "isptr": false,
+          "offset": 15,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "17",
+          "isptr": false,
+          "offset": 16,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "18",
+          "isptr": false,
+          "offset": 17,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "19",
+          "isptr": false,
+          "offset": 18,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "20",
+          "isptr": false,
+          "offset": 19,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "21",
+          "isptr": false,
+          "offset": 20,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "22",
+          "isptr": false,
+          "offset": 21,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "23",
+          "isptr": false,
+          "offset": 22,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "24",
+          "isptr": false,
+          "offset": 23,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "25",
+          "isptr": false,
+          "offset": 24,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "26",
+          "isptr": false,
+          "offset": 25,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "27",
+          "isptr": false,
+          "offset": 26,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "28",
+          "isptr": false,
+          "offset": 27,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "29",
+          "isptr": false,
+          "offset": 28,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "30",
+          "isptr": false,
+          "offset": 29,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "31",
+          "isptr": false,
+          "offset": 30,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "32",
+          "isptr": false,
+          "offset": 31,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "33",
+          "isptr": false,
+          "offset": 32,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "34",
+          "isptr": false,
+          "offset": 33,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "35",
+          "isptr": false,
+          "offset": 34,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "36",
+          "isptr": false,
+          "offset": 35,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "37",
+          "isptr": false,
+          "offset": 36,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "38",
+          "isptr": false,
+          "offset": 37,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "39",
+          "isptr": false,
+          "offset": 38,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "40",
+          "isptr": false,
+          "offset": 39,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "41",
+          "isptr": false,
+          "offset": 40,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "42",
+          "isptr": false,
+          "offset": 41,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "43",
+          "isptr": false,
+          "offset": 42,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "44",
+          "isptr": false,
+          "offset": 43,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "45",
+          "isptr": false,
+          "offset": 44,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "46",
+          "isptr": false,
+          "offset": 45,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "47",
+          "isptr": false,
+          "offset": 46,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "48",
+          "isptr": false,
+          "offset": 47,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "49",
+          "isptr": false,
+          "offset": 48,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "50",
+          "isptr": false,
+          "offset": 49,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "51",
+          "isptr": false,
+          "offset": 50,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "52",
+          "isptr": false,
+          "offset": 51,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "53",
+          "isptr": false,
+          "offset": 52,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "54",
+          "isptr": false,
+          "offset": 53,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "55",
+          "isptr": false,
+          "offset": 54,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "56",
+          "isptr": false,
+          "offset": 55,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "57",
+          "isptr": false,
+          "offset": 56,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "58",
+          "isptr": false,
+          "offset": 57,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "59",
+          "isptr": false,
+          "offset": 58,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "60",
+          "isptr": false,
+          "offset": 59,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "61",
+          "isptr": false,
+          "offset": 60,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "62",
+          "isptr": false,
+          "offset": 61,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "63",
+          "isptr": false,
+          "offset": 62,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "64",
+          "isptr": false,
+          "offset": 63,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "65",
+          "isptr": false,
+          "offset": 64,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "66",
+          "isptr": false,
+          "offset": 65,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "67",
+          "isptr": false,
+          "offset": 66,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "68",
+          "isptr": false,
+          "offset": 67,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "69",
+          "isptr": false,
+          "offset": 68,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "70",
+          "isptr": false,
+          "offset": 69,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "71",
+          "isptr": false,
+          "offset": 70,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "72",
+          "isptr": false,
+          "offset": 71,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "73",
+          "isptr": false,
+          "offset": 72,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "74",
+          "isptr": false,
+          "offset": 73,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "75",
+          "isptr": false,
+          "offset": 74,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "76",
+          "isptr": false,
+          "offset": 75,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "77",
+          "isptr": false,
+          "offset": 76,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "78",
+          "isptr": false,
+          "offset": 77,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "79",
+          "isptr": false,
+          "offset": 78,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "80",
+          "isptr": false,
+          "offset": 79,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "81",
+          "isptr": false,
+          "offset": 80,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "82",
+          "isptr": false,
+          "offset": 81,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "83",
+          "isptr": false,
+          "offset": 82,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "84",
+          "isptr": false,
+          "offset": 83,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "85",
+          "isptr": false,
+          "offset": 84,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "86",
+          "isptr": false,
+          "offset": 85,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "87",
+          "isptr": false,
+          "offset": 86,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "88",
+          "isptr": false,
+          "offset": 87,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "89",
+          "isptr": false,
+          "offset": 88,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "90",
+          "isptr": false,
+          "offset": 89,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "91",
+          "isptr": false,
+          "offset": 90,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "92",
+          "isptr": false,
+          "offset": 91,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "93",
+          "isptr": false,
+          "offset": 92,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "94",
+          "isptr": false,
+          "offset": 93,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "95",
+          "isptr": false,
+          "offset": 94,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "96",
+          "isptr": false,
+          "offset": 95,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "97",
+          "isptr": false,
+          "offset": 96,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "98",
+          "isptr": false,
+          "offset": 97,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "99",
+          "isptr": false,
+          "offset": 98,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "100",
+          "isptr": false,
+          "offset": 99,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "101",
+          "isptr": false,
+          "offset": 100,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "102",
+          "isptr": false,
+          "offset": 101,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "103",
+          "isptr": false,
+          "offset": 102,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "104",
+          "isptr": false,
+          "offset": 103,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "105",
+          "isptr": false,
+          "offset": 104,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "106",
+          "isptr": false,
+          "offset": 105,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "107",
+          "isptr": false,
+          "offset": 106,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "108",
+          "isptr": false,
+          "offset": 107,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "109",
+          "isptr": false,
+          "offset": 108,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "110",
+          "isptr": false,
+          "offset": 109,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "111",
+          "isptr": false,
+          "offset": 110,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "112",
+          "isptr": false,
+          "offset": 111,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "113",
+          "isptr": false,
+          "offset": 112,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "114",
+          "isptr": false,
+          "offset": 113,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "115",
+          "isptr": false,
+          "offset": 114,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "116",
+          "isptr": false,
+          "offset": 115,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "117",
+          "isptr": false,
+          "offset": 116,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "118",
+          "isptr": false,
+          "offset": 117,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "119",
+          "isptr": false,
+          "offset": 118,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "120",
+          "isptr": false,
+          "offset": 119,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "121",
+          "isptr": false,
+          "offset": 120,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "122",
+          "isptr": false,
+          "offset": 121,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "123",
+          "isptr": false,
+          "offset": 122,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "124",
+          "isptr": false,
+          "offset": 123,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "125",
+          "isptr": false,
+          "offset": 124,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "126",
+          "isptr": false,
+          "offset": 125,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "127",
+          "isptr": false,
+          "offset": 126,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "128",
+          "isptr": false,
+          "offset": 127,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "129",
+          "isptr": false,
+          "offset": 128,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "130",
+          "isptr": false,
+          "offset": 129,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "131",
+          "isptr": false,
+          "offset": 130,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "132",
+          "isptr": false,
+          "offset": 131,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "133",
+          "isptr": false,
+          "offset": 132,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "134",
+          "isptr": false,
+          "offset": 133,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "135",
+          "isptr": false,
+          "offset": 134,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "136",
+          "isptr": false,
+          "offset": 135,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "137",
+          "isptr": false,
+          "offset": 136,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "138",
+          "isptr": false,
+          "offset": 137,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "139",
+          "isptr": false,
+          "offset": 138,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "140",
+          "isptr": false,
+          "offset": 139,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "141",
+          "isptr": false,
+          "offset": 140,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "142",
+          "isptr": false,
+          "offset": 141,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "143",
+          "isptr": false,
+          "offset": 142,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "144",
+          "isptr": false,
+          "offset": 143,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "145",
+          "isptr": false,
+          "offset": 144,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "146",
+          "isptr": false,
+          "offset": 145,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "147",
+          "isptr": false,
+          "offset": 146,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "148",
+          "isptr": false,
+          "offset": 147,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "149",
+          "isptr": false,
+          "offset": 148,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "150",
+          "isptr": false,
+          "offset": 149,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "151",
+          "isptr": false,
+          "offset": 150,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "152",
+          "isptr": false,
+          "offset": 151,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "153",
+          "isptr": false,
+          "offset": 152,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "154",
+          "isptr": false,
+          "offset": 153,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "155",
+          "isptr": false,
+          "offset": 154,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "156",
+          "isptr": false,
+          "offset": 155,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "157",
+          "isptr": false,
+          "offset": 156,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "158",
+          "isptr": false,
+          "offset": 157,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "159",
+          "isptr": false,
+          "offset": 158,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "160",
+          "isptr": false,
+          "offset": 159,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "161",
+          "isptr": false,
+          "offset": 160,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "162",
+          "isptr": false,
+          "offset": 161,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "163",
+          "isptr": false,
+          "offset": 162,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "164",
+          "isptr": false,
+          "offset": 163,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "165",
+          "isptr": false,
+          "offset": 164,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "166",
+          "isptr": false,
+          "offset": 165,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "167",
+          "isptr": false,
+          "offset": 166,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "168",
+          "isptr": false,
+          "offset": 167,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "169",
+          "isptr": false,
+          "offset": 168,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "170",
+          "isptr": false,
+          "offset": 169,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "171",
+          "isptr": false,
+          "offset": 170,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "172",
+          "isptr": false,
+          "offset": 171,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "173",
+          "isptr": false,
+          "offset": 172,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "174",
+          "isptr": false,
+          "offset": 173,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "175",
+          "isptr": false,
+          "offset": 174,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "176",
+          "isptr": false,
+          "offset": 175,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "177",
+          "isptr": false,
+          "offset": 176,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "178",
+          "isptr": false,
+          "offset": 177,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "179",
+          "isptr": false,
+          "offset": 178,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "180",
+          "isptr": false,
+          "offset": 179,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "181",
+          "isptr": false,
+          "offset": 180,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "182",
+          "isptr": false,
+          "offset": 181,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "183",
+          "isptr": false,
+          "offset": 182,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "184",
+          "isptr": false,
+          "offset": 183,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "185",
+          "isptr": false,
+          "offset": 184,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "186",
+          "isptr": false,
+          "offset": 185,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "187",
+          "isptr": false,
+          "offset": 186,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "188",
+          "isptr": false,
+          "offset": 187,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "189",
+          "isptr": false,
+          "offset": 188,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "190",
+          "isptr": false,
+          "offset": 189,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "191",
+          "isptr": false,
+          "offset": 190,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "192",
+          "isptr": false,
+          "offset": 191,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "193",
+          "isptr": false,
+          "offset": 192,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "194",
+          "isptr": false,
+          "offset": 193,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "195",
+          "isptr": false,
+          "offset": 194,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "196",
+          "isptr": false,
+          "offset": 195,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "197",
+          "isptr": false,
+          "offset": 196,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "198",
+          "isptr": false,
+          "offset": 197,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "199",
+          "isptr": false,
+          "offset": 198,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "200",
+          "isptr": false,
+          "offset": 199,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "201",
+          "isptr": false,
+          "offset": 200,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "202",
+          "isptr": false,
+          "offset": 201,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "203",
+          "isptr": false,
+          "offset": 202,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "204",
+          "isptr": false,
+          "offset": 203,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "205",
+          "isptr": false,
+          "offset": 204,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "206",
+          "isptr": false,
+          "offset": 205,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "207",
+          "isptr": false,
+          "offset": 206,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "208",
+          "isptr": false,
+          "offset": 207,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "209",
+          "isptr": false,
+          "offset": 208,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "210",
+          "isptr": false,
+          "offset": 209,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "211",
+          "isptr": false,
+          "offset": 210,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "212",
+          "isptr": false,
+          "offset": 211,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "213",
+          "isptr": false,
+          "offset": 212,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "214",
+          "isptr": false,
+          "offset": 213,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "215",
+          "isptr": false,
+          "offset": 214,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "216",
+          "isptr": false,
+          "offset": 215,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "217",
+          "isptr": false,
+          "offset": 216,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "218",
+          "isptr": false,
+          "offset": 217,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "219",
+          "isptr": false,
+          "offset": 218,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "220",
+          "isptr": false,
+          "offset": 219,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "221",
+          "isptr": false,
+          "offset": 220,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "222",
+          "isptr": false,
+          "offset": 221,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "223",
+          "isptr": false,
+          "offset": 222,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "224",
+          "isptr": false,
+          "offset": 223,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "225",
+          "isptr": false,
+          "offset": 224,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "226",
+          "isptr": false,
+          "offset": 225,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "227",
+          "isptr": false,
+          "offset": 226,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "228",
+          "isptr": false,
+          "offset": 227,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "229",
+          "isptr": false,
+          "offset": 228,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "230",
+          "isptr": false,
+          "offset": 229,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "231",
+          "isptr": false,
+          "offset": 230,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "232",
+          "isptr": false,
+          "offset": 231,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "233",
+          "isptr": false,
+          "offset": 232,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "234",
+          "isptr": false,
+          "offset": 233,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "235",
+          "isptr": false,
+          "offset": 234,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "236",
+          "isptr": false,
+          "offset": 235,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "237",
+          "isptr": false,
+          "offset": 236,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "238",
+          "isptr": false,
+          "offset": 237,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "239",
+          "isptr": false,
+          "offset": 238,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "240",
+          "isptr": false,
+          "offset": 239,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "241",
+          "isptr": false,
+          "offset": 240,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "242",
+          "isptr": false,
+          "offset": 241,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "243",
+          "isptr": false,
+          "offset": 242,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "244",
+          "isptr": false,
+          "offset": 243,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "245",
+          "isptr": false,
+          "offset": 244,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "246",
+          "isptr": false,
+          "offset": 245,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "247",
+          "isptr": false,
+          "offset": 246,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "248",
+          "isptr": false,
+          "offset": 247,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "249",
+          "isptr": false,
+          "offset": 248,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "250",
+          "isptr": false,
+          "offset": 249,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "251",
+          "isptr": false,
+          "offset": 250,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "252",
+          "isptr": false,
+          "offset": 251,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "253",
+          "isptr": false,
+          "offset": 252,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "254",
+          "isptr": false,
+          "offset": 253,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "255",
+          "isptr": false,
+          "offset": 254,
+          "isfieldatomic": false,
+          "type_id": 2
+        },
+        {
+          "name": "256",
+          "isptr": false,
+          "offset": 255,
+          "isfieldatomic": false,
+          "type_id": 2
+        }
+      ],
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 2,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 3,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "JLWStatus",
+      "id": 4,
+      "size": 264,
+      "fields": [
+        {
+          "name": "code",
+          "isptr": false,
+          "offset": 0,
+          "isfieldatomic": false,
+          "type_id": 3
+        },
+        {
+          "name": "message",
+          "isptr": false,
+          "offset": 4,
+          "isfieldatomic": false,
+          "type_id": 1
+        }
+      ],
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "ResultStruct",
+      "id": 5,
+      "size": 272,
+      "fields": [
+        {
+          "name": "status",
+          "isptr": false,
+          "offset": 0,
+          "isfieldatomic": false,
+          "type_id": 4
+        },
+        {
+          "name": "value",
+          "isptr": false,
+          "offset": 264,
+          "isfieldatomic": false,
+          "type_id": 6
+        }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 6,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    }
+  ],
+  "functions": [
+    {
+      "returns": {
+        "type_id": 4
+      },
+      "name": "do_thing(x::Int32)",
+      "arguments": [
+        {
+          "name": "x",
+          "type_id": 3
+        }
+      ],
+      "symbol": "do_thing"
+    },
+    {
+      "returns": {
+        "type_id": 5
+      },
+      "name": "compute(x::Float64)",
+      "arguments": [
+        {
+          "name": "x",
+          "type_id": 6
+        }
+      ],
+      "symbol": "compute"
+    },
+    {
+      "returns": {
+        "type_id": 3
+      },
+      "name": "plain_add(a::Int32, b::Int32)",
+      "arguments": [
+        {
+          "name": "a",
+          "type_id": 3
+        },
+        {
+          "name": "b",
+          "type_id": 3
+        }
+      ],
+      "symbol": "plain_add"
+    }
+  ]
+}

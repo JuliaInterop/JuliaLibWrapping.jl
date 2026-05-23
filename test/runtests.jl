@@ -322,6 +322,56 @@ end
         end
     end
 
+    @testset "JLWStatus convention" begin
+        # Implements issue #15: in-band status struct + Python raise-on-error.
+        abi_info = read_abi_info("bindinginfo_jlwstatus.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "demo", "libdemo")
+            write_wrapper(dest, abi_info)
+
+            bindings = read(joinpath(path, "demo", "_bindings.py"), String)
+            init = read(joinpath(path, "demo", "__init__.py"), String)
+
+            # The JLWError exception class is defined once.
+            @test occursin("class JLWError(RuntimeError):", bindings)
+            @test count(==("class JLWError(RuntimeError):"),
+                        split(bindings, '\n')) == 1
+
+            # JLWStatus.message is emitted as a ctypes byte array, not as a
+            # 256-field Structure (this also implicitly tests the new
+            # tuple-struct handling).
+            @test occursin("(\"message\", (ctypes.c_uint8 * 256))", bindings)
+            @test !occursin("NTuple_256_UInt8", bindings)
+
+            # Direct JLWStatus return: check uses `_result.code`.
+            @test occursin(
+                "def do_thing(x):\n    _result = _lib.do_thing(x)\n    if _result.code != 0:",
+                bindings)
+            # Embedded JLWStatus field: check uses `_result.status.code`.
+            @test occursin(
+                "def compute(x):\n    _result = _lib.compute(x)\n    if _result.status.code != 0:",
+                bindings)
+            @test occursin("raise JLWError(_result.status.code, _msg)", bindings)
+            # Non-JLWStatus entrypoint stays a bare mechanical binding.
+            @test occursin(
+                "def plain_add(a, b):\n    return _lib.plain_add(a, b)",
+                bindings)
+
+            # JLWError is re-exported from the package.
+            @test occursin("    JLWError,", init)
+            @test occursin("\"JLWError\"", init)
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                bindings_path = joinpath(path, "demo", "_bindings.py")
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
     @testset "Aqua" begin
         Aqua.test_all(JuliaLibWrapping)
     end
