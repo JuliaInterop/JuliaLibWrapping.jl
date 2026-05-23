@@ -253,6 +253,34 @@ function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
     return true
 end
 
+"""
+    raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
+
+Return positional indices into `method.args` for arguments whose static type is
+a bare `Ptr{T}` where `T` is a primitive numeric type recognized by
+[`numpy_dtypes`](@ref). `Ptr{Cvoid}` is excluded (it lowers to `ctypes.c_void_p`).
+Pointers wrapped inside `CVector` / `CMatrix` / `CString` structs are *not*
+reported — only top-level argument types are examined.
+
+A non-empty result signals an argument that hands the C function a raw memory
+address with no length, ownership, or layout metadata. The Python emitter uses
+this to attach a docstring on the wrapper noting the column-major contract and
+recommending the [`CVector`](@ref) / [`CMatrix`](@ref) vocabulary instead.
+"""
+function raw_primitive_pointer_args(method::MethodDesc,
+                                    typeinfo::OrderedDict{Int, TypeDesc})
+    out = Int[]
+    for (i, arg) in pairs(method.args)
+        t = typeinfo[arg.type]
+        t isa PointerDesc || continue
+        pointee = typeinfo[t.pointee_type]
+        pointee isa PrimitiveTypeDesc || continue
+        pointee.name in keys(numpy_dtypes) || continue
+        push!(out, i)
+    end
+    return out
+end
+
 const PYTHON_KEYWORDS = Set{String}([
     "False", "None", "True", "and", "as", "assert", "async", "await", "break",
     "class", "continue", "def", "del", "elif", "else", "except", "finally",
@@ -313,6 +341,13 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
         if type isa StructDesc && tuple_struct_info(type) === nothing
             mangle_python!(typedict, id, typeinfo)
         end
+    end
+
+    # Implements issue #14: surface bare-pointer arguments at codegen time so
+    # the author sees the layout/ownership caveat without grepping the output.
+    let raw_ptr_methods = [m.symbol for m in entrypoints
+                           if !isempty(raw_primitive_pointer_args(m, typeinfo))]
+        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CVector{T}` / `CMatrix{T}` (JLWInterop) for safer interop." methods=raw_ptr_methods
     end
 
     needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
@@ -668,6 +703,28 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         status_path = jlwstatus_access_path(method, typeinfo)
 
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
+        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
+        if !isempty(raw_ptr_idx)
+            # Implements issue #14: nudge callers about layout / ownership for
+            # bare `Ptr{<primitive>}` arguments — the wrapper cannot infer
+            # length, shape, or memory order, and silent transpose is the
+            # standard failure mode for Julia/numpy interop.
+            println(f, "    \"\"\"Raw pointer arguments — caller owns layout and lifetime.")
+            println(f)
+            for i in raw_ptr_idx
+                pointee_name = typeinfo[typeinfo[method.args[i].type].pointee_type].name
+                println(f, "    `", argnames[i], "` is a raw pointer to ", pointee_name,
+                           ". The wrapper does not check length, shape, or memory order.")
+            end
+            println(f)
+            println(f, "    Julia indexes multidimensional buffers column-major (Fortran order).")
+            println(f, "    A default numpy array is row-major (C order); passing `arr.ctypes.data`")
+            println(f, "    from such an array to a Julia function that interprets it as a matrix")
+            println(f, "    will see a silently transposed view. Use `np.asfortranarray(arr)` before")
+            println(f, "    taking `.ctypes.data`, or — better — wrap the field in `CVector{T}` /")
+            println(f, "    `CMatrix{T}` (JLWInterop) so length and layout travel with the buffer.")
+            println(f, "    \"\"\"")
+        end
         if status_path !== nothing
             # Implements issue #15: raise JLWError when status.code != 0.
             println(f, "    _result = _lib.", method.symbol, "(", join(argnames, ", "), ")")
