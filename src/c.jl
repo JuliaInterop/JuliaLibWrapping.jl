@@ -1,3 +1,17 @@
+"""
+    CTarget(dir, headerbase)
+
+Output configuration for a C header. [`write_wrapper`](@ref) writes a
+single file `joinpath(dir, headerbase * ".h")` containing typedefs for
+every struct in the ABI and `extern` declarations for every entrypoint.
+
+Only the primitive Julia types listed in the emitter's `ctypes` table
+have a direct C mapping; an ABI referencing any other primitive raises
+an error. Pointer types are emitted inline as `T*` rather than as
+separate typedefs. Non-C-safe identifiers are scrubbed by
+[`sanitize_for_c`](@ref) and disambiguated with a numeric suffix on
+collision.
+"""
 struct CTarget <: AbstractTarget
     dir::String
     headerbase::String
@@ -13,6 +27,17 @@ function unwrap_pointer_type(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     end
     return type_id
 end
+
+"""
+    write_wrapper(target::AbstractTarget, abi_info::ABIInfo)
+
+Emit wrapper source files for `abi_info` into the location described by
+`target`. The methods that ship are dispatched on [`CTarget`](@ref) (one
+`.h` file) and [`PythonTarget`](@ref) (a Python `ctypes` package
+directory). Add a method for a new [`AbstractTarget`](@ref) subtype to
+support another output language.
+"""
+function write_wrapper end
 
 function write_wrapper(dest::CTarget, abi_info::ABIInfo)
     (; entrypoints, typeinfo, forward_declared) = abi_info
@@ -116,6 +141,16 @@ const ctypes = Dict{String, String}(
     "Csize_t" => "size_t",
 )
 
+"""
+    sanitize_for_c(str) -> String
+
+Return `str` with all non-alphanumeric (non-underscore) characters
+replaced by `_`, leading/trailing underscores stripped, and runs of
+underscores collapsed. Used to coerce Julia identifiers and type names
+into valid C tokens. Two distinct inputs may collide; callers that need
+uniqueness (e.g. `mangle_c!`) suffix the result with a numeric
+disambiguator.
+"""
 function sanitize_for_c(str::AbstractString)
     # Replace any non alphanumeric characters with '_'
     str = replace(str, r"[^a-zA-Z0-9_]" => "_")
