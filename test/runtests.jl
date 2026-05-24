@@ -798,6 +798,8 @@ end
         end
     end
 
+    include("test_build_library.jl")
+
     @testset "Aqua" begin
         Aqua.test_all(JuliaLibWrapping)
     end
