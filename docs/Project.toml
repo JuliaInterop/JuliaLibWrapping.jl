@@ -1,3 +1,7 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 JuliaLibWrapping = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
+
+[sources]
+JLWInterop = {path = "../JLWInterop"}

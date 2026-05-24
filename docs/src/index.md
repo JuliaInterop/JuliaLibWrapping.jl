@@ -39,11 +39,10 @@ bundling, multi-library, and two-tier output stories.
 - [Concepts](@ref) — the pipeline, the ABI data model, the extension
   point for new target languages, and the runtime-closure / bundling
   story.
+- [JLWInterop](@ref) — the dependency-free vocabulary package
+  (`CVector`, `CMatrix`, `CString`, `JLWStatus`) that compiled
+  libraries and the Python emitter both speak.
 - [Error handling across the ABI](@ref) — the `JLWStatus` convention
   that lets wrapped libraries surface errors as native exceptions in
   the target language.
 - [API reference](@ref) — generated docstrings for the public API.
-- [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
-  — the dependency-free vocabulary package (`CVector`, `CMatrix`,
-  `CString`, `JLWStatus`) that compiled libraries and the Python
-  emitter both speak.

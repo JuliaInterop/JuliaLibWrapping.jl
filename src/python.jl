@@ -293,7 +293,7 @@ reported — only top-level argument types are examined.
 A non-empty result signals an argument that hands the C function a raw memory
 address with no length, ownership, or layout metadata. The Python emitter uses
 this to attach a docstring on the wrapper noting the column-major contract and
-recommending the [`CVector`](@ref) / [`CMatrix`](@ref) vocabulary instead.
+recommending the [`JLWInterop.CVector`](@ref) / [`JLWInterop.CMatrix`](@ref) vocabulary instead.
 """
 function raw_primitive_pointer_args(method::MethodDesc,
                                     typeinfo::OrderedDict{Int, TypeDesc})
