@@ -57,15 +57,21 @@ _jlw_loaded.add(_jlw_this_pkg)
 class CTree_Float64(ctypes.Structure):
     pass
 
+class MyTwoVec(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int32),
+        ("y", ctypes.c_int32),
+    ]
+
 class CVector_Float32(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("dims", (ctypes.c_int32 * 1)),
         ("data", ctypes.POINTER(ctypes.c_float)),
     ]
 
     @classmethod
     def from_numpy(cls, arr):
-        """Return a CVector view of the 1-D contiguous numpy array `arr`.
+        """Return a CArray view of the 1-D numpy array `arr`.
 
         Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no
         silent reinterpretation). The returned object holds a reference to `arr`,
@@ -73,19 +79,19 @@ class CVector_Float32(ctypes.Structure):
         the buffer."""
         if arr.ndim != 1:
             raise ValueError(f"expected 1-D array, got {arr.ndim}-D")
-        if not arr.flags.c_contiguous:
-            raise ValueError("array must be C-contiguous")
+        if not (arr.flags.c_contiguous or arr.flags.f_contiguous):
+            raise ValueError("array must be contiguous")
         expected_dtype = np.dtype("float32")
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float32, got {arr.dtype}")
-        obj = cls(length=arr.size,
+        obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
                   data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
         obj._buffer = arr
         return obj
 
     def as_numpy(self):
         """Return a 1-D numpy view of the underlying buffer (no copy)."""
-        return np.ctypeslib.as_array(self.data, shape=(self.length,))
+        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
 
 class CVectorPair_Float32(ctypes.Structure):
     _fields_ = [
@@ -93,15 +99,9 @@ class CVectorPair_Float32(ctypes.Structure):
         ("to", CVector_Float32),
     ]
 
-class MyTwoVec(ctypes.Structure):
-    _fields_ = [
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
-    ]
-
 class CVector_CTree_Float64(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("dims", (ctypes.c_int32 * 1)),
         ("data", ctypes.POINTER(CTree_Float64)),
     ]
 

@@ -2,7 +2,7 @@
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
-(primitives, `CVector{T}`, `CMatrix{T}`, `CString`, direct `JLWStatus`)
+(primitives, `CArray{T,N}`, `CString`, direct `JLWStatus`)
 are wrapped to accept and return idiomatic Python objects (numpy
 arrays, `str`). Anything else is re-exported from `_lowlevel`
 with a `TODO` comment naming what needs hand-wrapping.

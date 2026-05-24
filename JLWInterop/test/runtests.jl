@@ -44,6 +44,15 @@ using Test
         @test sizeof(JLWStatus) >= 4 + 256
     end
 
+    @testset "CArray aliases" begin
+        # CVector and CMatrix must collapse to CArray specializations, mirroring
+        # `Vector{T} = Array{T,1}` and `Matrix{T} = Array{T,2}` in Base.
+        @test CVector{Float64} === CArray{Float64,1}
+        @test CMatrix{Float64} === CArray{Float64,2}
+        @test CVector === CArray{T,1} where {T}
+        @test CMatrix === CArray{T,2} where {T}
+    end
+
     @testset "CVector AbstractVector interface" begin
         # `GC.@preserve buf` keeps the backing Vector alive for the duration
         # of the CVector view — the same pattern any Julia caller would use.
@@ -181,33 +190,87 @@ using Test
         end
     end
 
-    @testset "CMatrix layout" begin
-        @test fieldnames(CMatrix) == (:rows, :cols, :data)
-        @test fieldtype(CMatrix{Float64}, :rows) === Int32
-        @test fieldtype(CMatrix{Float64}, :cols) === Int32
-        @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
-        @test isbitstype(CMatrix{Float64})
-        @test fieldoffset(CMatrix{Float64}, 1) == 0
-        @test fieldoffset(CMatrix{Float64}, 2) == 4
-        # rows + cols pack into 8 bytes, then pointer-aligned.
-        @test fieldoffset(CMatrix{Float64}, 3) == 8
+    @testset "CArray{T,3} interface" begin
+        # 2 × 3 × 4 = 24 elements in column-major layout.
+        buf = collect(1.0:24.0)
+        GC.@preserve buf begin
+            a = CArray{Float64,3}((2, 3, 4), pointer(buf))
+
+            @test a isa AbstractArray{Float64,3}
+            @test IndexStyle(typeof(a)) === IndexLinear()
+            @test size(a) === (2, 3, 4)
+            @test ndims(a) === 3
+            @test length(a) === 24
+            @test eltype(a) === Float64
+
+            # Column-major linear ⇔ Cartesian.
+            @test a[1, 1, 1] === 1.0
+            @test a[2, 1, 1] === 2.0
+            @test a[1, 2, 1] === 3.0
+            @test a[1, 1, 2] === 7.0   # one full page (2*3) ahead of a[1,1,1]
+            @test a[2, 3, 4] === 24.0
+            @test a[7] === 7.0
+
+            # Bounds checking on both index forms.
+            @test_throws BoundsError a[0]
+            @test_throws BoundsError a[25]
+            @test_throws BoundsError a[3, 1, 1]
+            @test_throws BoundsError a[1, 4, 1]
+            @test_throws BoundsError a[1, 1, 5]
+
+            # AbstractArray machinery: sum, reshape comparison, mutation.
+            @test sum(a) === sum(1.0:24.0)
+            @test collect(a) == reshape(buf, 2, 3, 4)
+
+            a[1, 1, 2] = -1.0
+            @test buf[7] == -1.0
+            @test_throws BoundsError (a[3, 1, 1] = 0.0)
+        end
     end
 
-    @testset "CVector layout" begin
-        # Layout must match what the JuliaLibWrapping Python emitter expects:
-        # length::Int32 first, data::Ptr{T} second. Helpers on the Python side
-        # construct by keyword, but downstream C code reading the struct
-        # depends on this order being stable.
-        @test fieldnames(CVector) == (:length, :data)
-        @test fieldtype(CVector{Float64}, :length) === Int32
+    @testset "CArray layout" begin
+        # The compiled ABI relies on `dims::NTuple{N,Int32}` followed by
+        # `data::Ptr{T}`. Downstream C and Python emitters generate the
+        # corresponding ctypes.Structure / C struct from this layout.
+        @test fieldnames(CArray) == (:dims, :data)
+
+        @test fieldtype(CVector{Float64}, :dims) === NTuple{1, Int32}
         @test fieldtype(CVector{Float64}, :data) === Ptr{Float64}
         @test isbitstype(CVector{Float64})
         @test fieldoffset(CVector{Float64}, 1) == 0
-        # data follows length, on any supported platform pointer alignment
-        # pads length out to 8 bytes.
+        # One Int32 (4 bytes) pads out to pointer alignment (8 bytes).
         @test fieldoffset(CVector{Float64}, 2) == 8
-        v = CVector{Float64}(Int32(0), Ptr{Float64}(0))
-        @test v.length === Int32(0)
+
+        @test fieldtype(CMatrix{Float64}, :dims) === NTuple{2, Int32}
+        @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
+        @test isbitstype(CMatrix{Float64})
+        @test fieldoffset(CMatrix{Float64}, 1) == 0
+        # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
+        @test fieldoffset(CMatrix{Float64}, 2) == 8
+
+        @test fieldtype(CArray{Float64,3}, :dims) === NTuple{3, Int32}
+        @test isbitstype(CArray{Float64,3})
+        @test fieldoffset(CArray{Float64,3}, 1) == 0
+        # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
+        @test fieldoffset(CArray{Float64,3}, 2) == 16
+    end
+
+    @testset "CArray constructors" begin
+        # Tuple-form general constructor accepts any Integer eltype and
+        # coerces to Int32.
+        a = CArray{Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
+        @test a isa CMatrix{Float64}
+        @test a.dims === (Int32(2), Int32(3))
+
+        a2 = CArray{Float64,2}((2, 3), Ptr{Float64}(0))
+        @test a2.dims === (Int32(2), Int32(3))
+
+        # Scalar-form shortcuts for 1-D and 2-D.
+        v = CVector{Float64}(Int32(4), Ptr{Float64}(0))
+        @test v.dims === (Int32(4),)
         @test v.data === Ptr{Float64}(0)
+
+        m = CMatrix{Float64}(2, 3, Ptr{Float64}(0))
+        @test m.dims === (Int32(2), Int32(3))
     end
 end

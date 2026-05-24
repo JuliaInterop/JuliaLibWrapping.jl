@@ -138,36 +138,41 @@ const numpy_dtypes = Dict{String, String}(
 )
 
 """
-    cvector_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+    carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize the JLWInterop `CVector{T}` shape: a struct whose name starts
-with `"CVector"`, with exactly two fields named `length` (a primitive
-integer) and `data` (a pointer to a primitive numeric type recognized by
-[`numpy_dtypes`](@ref)). Returns `(; pointee_name, pointee_ctype, dtype)`
-on a match, otherwise `nothing`. Field order may be either `length, data`
-or `data, length`. Like [`is_jlwstatus_struct`](@ref), recognition is by
-name + shape so authors who copy-paste a compatible definition still get
-the behavior.
+Recognize the JLWInterop `CArray{T,N}` shape (which subsumes `CVector{T} =
+CArray{T,1}` and `CMatrix{T} = CArray{T,2}`): a struct whose name starts
+with `"CArray"`, `"CVector"`, or `"CMatrix"`, with exactly two fields
+named `dims` (a fixed-size array of `N` integers, i.e. an `ArrayDesc`
+of a signed/unsigned integer primitive in [`numpy_dtypes`](@ref)) and `data`
+(a pointer to a primitive numeric type also in `numpy_dtypes`). Field order
+may be either `dims, data` or `data, dims`. Returns
+`(; pointee_name, pointee_ctype, dtype, ndim)` on a match (with `ndim` set
+to the `dims` array's `count`), otherwise `nothing`.
+
+Like [`is_jlwstatus_struct`](@ref), recognition is by name + shape so
+authors who copy-paste a compatible definition still get the behavior.
 """
-function cvector_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CVector") || return nothing
+function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    (startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
+     startswith(desc.name, "CMatrix")) || return nothing
     length(desc.fields) == 2 || return nothing
-    length_field = nothing
+    dims_field = nothing
     data_field = nothing
     for field in desc.fields
-        if field.name == "length"
-            length_field = field
+        if field.name == "dims"
+            dims_field = field
         elseif field.name == "data"
             data_field = field
         end
     end
-    (length_field === nothing || data_field === nothing) && return nothing
-    length_type = typeinfo[length_field.type]
-    length_type isa PrimitiveTypeDesc || return nothing
-    length_type.name in keys(numpy_dtypes) || return nothing
-    # Reject Float* and Bool as length types — they're in numpy_dtypes but
-    # only integers make sense for a count.
-    startswith(length_type.name, "Int") || startswith(length_type.name, "UInt") || return nothing
+    (dims_field === nothing || data_field === nothing) && return nothing
+    dims_type = typeinfo[dims_field.type]
+    dims_type isa ArrayDesc || return nothing
+    dims_eltype = typeinfo[dims_type.element_type]
+    dims_eltype isa PrimitiveTypeDesc || return nothing
+    (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
+    dims_eltype.name in keys(numpy_dtypes) || return nothing
     data_type = typeinfo[data_field.type]
     data_type isa PointerDesc || return nothing
     pointee = typeinfo[data_type.pointee_type]
@@ -175,50 +180,8 @@ function cvector_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
     pointee.name in keys(numpy_dtypes) || return nothing
     return (; pointee_name = pointee.name,
               pointee_ctype = pytypes[pointee.name],
-              dtype = numpy_dtypes[pointee.name])
-end
-
-"""
-    cmatrix_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
-
-Recognize the JLWInterop `CMatrix{T}` shape: a struct whose name starts
-with `"CMatrix"`, with exactly three fields named `rows`, `cols` (primitive
-integers) and `data` (a pointer to a primitive numeric type recognized by
-[`numpy_dtypes`](@ref)). Field order is irrelevant. Returns
-`(; pointee_name, pointee_ctype, dtype)` on a match, otherwise `nothing`.
-Recognition is by name + shape (see [`is_jlwstatus_struct`](@ref) for the
-rationale).
-"""
-function cmatrix_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CMatrix") || return nothing
-    length(desc.fields) == 3 || return nothing
-    rows_field = nothing
-    cols_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "rows"
-            rows_field = field
-        elseif field.name == "cols"
-            cols_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (rows_field === nothing || cols_field === nothing || data_field === nothing) && return nothing
-    for f in (rows_field, cols_field)
-        t = typeinfo[f.type]
-        t isa PrimitiveTypeDesc || return nothing
-        (startswith(t.name, "Int") || startswith(t.name, "UInt")) || return nothing
-        t.name in keys(numpy_dtypes) || return nothing
-    end
-    data_type = typeinfo[data_field.type]
-    data_type isa PointerDesc || return nothing
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa PrimitiveTypeDesc || return nothing
-    pointee.name in keys(numpy_dtypes) || return nothing
-    return (; pointee_name = pointee.name,
-              pointee_ctype = pytypes[pointee.name],
-              dtype = numpy_dtypes[pointee.name])
+              dtype = numpy_dtypes[pointee.name],
+              ndim = dims_type.count)
 end
 
 """
@@ -262,13 +225,13 @@ end
 Return positional indices into `method.args` for arguments whose static type is
 a bare `Ptr{T}` where `T` is a primitive numeric type recognized by
 [`numpy_dtypes`](@ref). `Ptr{Cvoid}` is excluded (it lowers to `ctypes.c_void_p`).
-Pointers wrapped inside `CVector` / `CMatrix` / `CString` structs are *not*
-reported — only top-level argument types are examined.
+Pointers wrapped inside `CArray` / `CString` structs are *not* reported —
+only top-level argument types are examined.
 
 A non-empty result signals an argument that hands the C function a raw memory
 address with no length, ownership, or layout metadata. The Python emitter uses
 this to attach a docstring on the wrapper noting the column-major contract and
-recommending the [`JLWInterop.CVector`](@ref) / [`JLWInterop.CMatrix`](@ref) vocabulary instead.
+recommending the [`JLWInterop.CArray`](@ref) vocabulary instead.
 """
 function raw_primitive_pointer_args(method::MethodDesc,
                                     typeinfo::OrderedDict{Int, TypeDesc})
@@ -352,14 +315,13 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     # the author sees the layout/ownership caveat without grepping the output.
     let raw_ptr_methods = [m.symbol for m in entrypoints
                            if !isempty(raw_primitive_pointer_args(m, typeinfo))]
-        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CVector{T}` / `CMatrix{T}` (JLWInterop) for safer interop." methods=raw_ptr_methods
+        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods=raw_ptr_methods
     end
 
     needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
                         for m in entrypoints)
     needs_numpy = any(type isa StructDesc &&
-                      (cvector_struct_info(type, typeinfo) !== nothing ||
-                       cmatrix_struct_info(type, typeinfo) !== nothing)
+                      carray_struct_info(type, typeinfo) !== nothing
                       for type in values(typeinfo))
 
     lowlevel_path = joinpath(pkgdir, "_lowlevel.py")
@@ -453,42 +415,72 @@ function jlwstatus_access_path(method::MethodDesc, typeinfo::OrderedDict{Int, Ty
     return nothing
 end
 
-function _write_cvector_helpers(f::IO, cvinfo)
-    # `cvinfo` is the return of `cvector_struct_info`. Helpers are emitted as
-    # methods on the surrounding ctypes.Structure subclass; the `length` and
+function _write_carray_helpers(f::IO, cainfo)
+    # `cainfo` is the return of `carray_struct_info`. Helpers are emitted as
+    # methods on the surrounding ctypes.Structure subclass; the `dims` and
     # `data` field names are guaranteed by the recognizer.
-    ctype = cvinfo.pointee_ctype
-    dtype = cvinfo.dtype
+    ctype = cainfo.pointee_ctype
+    dtype = cainfo.dtype
+    ndim = cainfo.ndim
+    # 1-D arrays accept either C- or F-contiguous (equivalent); higher rank
+    # requires Fortran order because CArray storage is column-major.
+    contig_check = ndim == 1 ?
+        "if not (arr.flags.c_contiguous or arr.flags.f_contiguous):" :
+        "if not arr.flags.f_contiguous:"
+    contig_msg = ndim == 1 ?
+        "\"array must be contiguous\"" :
+        ("\"array must be Fortran-contiguous (column-major); \"\n" *
+         "                             \"use np.asfortranarray(arr) to convert\"")
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_numpy(cls, arr):")
-    println(f, "        \"\"\"Return a CVector view of the 1-D contiguous numpy array `arr`.")
+    println(f, "        \"\"\"Return a CArray view of the ", ndim, "-D numpy array `arr`.")
     println(f, "")
-    println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no")
-    println(f, "        silent reinterpretation). The returned object holds a reference to `arr`,")
-    println(f, "        so the caller must keep it alive for the duration of any C call that uses")
-    println(f, "        the buffer.\"\"\"")
-    println(f, "        if arr.ndim != 1:")
-    println(f, "            raise ValueError(f\"expected 1-D array, got {arr.ndim}-D\")")
-    println(f, "        if not arr.flags.c_contiguous:")
-    println(f, "            raise ValueError(\"array must be C-contiguous\")")
+    if ndim == 1
+        println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no")
+        println(f, "        silent reinterpretation). The returned object holds a reference to `arr`,")
+        println(f, "        so the caller must keep it alive for the duration of any C call that uses")
+        println(f, "        the buffer.\"\"\"")
+    else
+        println(f, "        CArray storage is column-major (Julia / Fortran order). A default")
+        println(f, "        row-major (C-order) numpy array is REJECTED rather than silently")
+        println(f, "        reinterpreted — call `np.asfortranarray(arr)` first if needed.")
+        println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch. The returned")
+        println(f, "        object holds a reference to `arr`, so the caller must keep it alive for")
+        println(f, "        the duration of any C call that uses the buffer.\"\"\"")
+    end
+    println(f, "        if arr.ndim != ", ndim, ":")
+    println(f, "            raise ValueError(f\"expected ", ndim, "-D array, got {arr.ndim}-D\")")
+    println(f, "        ", contig_check)
+    println(f, "            raise ValueError(", contig_msg, ")")
     println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
     println(f, "        if arr.dtype != expected_dtype:")
     println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
-    println(f, "        obj = cls(length=arr.size,")
+    println(f, "        obj = cls(dims=(ctypes.c_int32 * ", ndim, ")(*arr.shape),")
     println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
     println(f, "        obj._buffer = arr")
     println(f, "        return obj")
     println(f, "")
     println(f, "    def as_numpy(self):")
-    println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
-    println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.length,))")
+    if ndim == 1
+        println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
+        println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))")
+    else
+        println(f, "        \"\"\"Return a ", ndim, "-D column-major numpy view of the underlying buffer (no copy).")
+        println(f, "")
+        println(f, "        The view has shape `tuple(self.dims)` and Fortran (column-major) strides,")
+        println(f, "        matching the storage layout.\"\"\"")
+        println(f, "        # Read the column-major buffer as reversed-shape C-order then transpose:")
+        println(f, "        # `.T` reverses all axes, yielding a view with the natural Fortran-order")
+        println(f, "        # shape and strides.")
+        println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
+    end
 end
 
 function _write_cstring_helpers(f::IO)
     # CString shape — see `cstring_struct_info`. The `length` and `data`
     # field names are guaranteed by the recognizer, and the pointee is
-    # UInt8 / ctypes.c_uint8. Unlike CVector and CMatrix this emits no
+    # UInt8 / ctypes.c_uint8. Unlike CArray this emits no
     # numpy dependency; helpers use only `ctypes`.
     println(f, "")
     println(f, "    @classmethod")
@@ -523,46 +515,6 @@ function _write_cstring_helpers(f::IO)
     println(f, "        return self.as_bytes().decode(\"utf-8\")")
 end
 
-function _write_cmatrix_helpers(f::IO, cminfo)
-    # Mirror of `_write_cvector_helpers` for the column-major 2-D shape.
-    # `rows`, `cols`, and `data` field names are guaranteed by the recognizer.
-    ctype = cminfo.pointee_ctype
-    dtype = cminfo.dtype
-    println(f, "")
-    println(f, "    @classmethod")
-    println(f, "    def from_numpy(cls, arr):")
-    println(f, "        \"\"\"Return a CMatrix view of the 2-D Fortran-contiguous numpy array `arr`.")
-    println(f, "")
-    println(f, "        CMatrix storage is column-major (Julia / Fortran order). A default")
-    println(f, "        row-major (C-order) numpy array is REJECTED rather than silently")
-    println(f, "        transposed — call `np.asfortranarray(arr)` first if needed.")
-    println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch. The returned")
-    println(f, "        object holds a reference to `arr`, so the caller must keep it alive for")
-    println(f, "        the duration of any C call that uses the buffer.\"\"\"")
-    println(f, "        if arr.ndim != 2:")
-    println(f, "            raise ValueError(f\"expected 2-D array, got {arr.ndim}-D\")")
-    println(f, "        if not arr.flags.f_contiguous:")
-    println(f, "            raise ValueError(\"array must be Fortran-contiguous (column-major); \"")
-    println(f, "                             \"use np.asfortranarray(arr) to convert\")")
-    println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
-    println(f, "        if arr.dtype != expected_dtype:")
-    println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
-    println(f, "        obj = cls(rows=arr.shape[0], cols=arr.shape[1],")
-    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
-    println(f, "        obj._buffer = arr")
-    println(f, "        return obj")
-    println(f, "")
-    println(f, "    def as_numpy(self):")
-    println(f, "        \"\"\"Return a 2-D column-major numpy view of the underlying buffer (no copy).")
-    println(f, "")
-    println(f, "        The view has shape `(rows, cols)` and Fortran (column-major) strides,")
-    println(f, "        matching the storage layout.\"\"\"")
-    println(f, "        # Read the column-major buffer as (cols, rows) row-major then transpose:")
-    println(f, "        # the transpose is a view, and the result has the correct (rows, cols)")
-    println(f, "        # shape with column-major strides.")
-    println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.cols, self.rows)).T")
-end
-
 const JLWERROR_DEFINITION = """
 class JLWError(RuntimeError):
     \"\"\"Raised when a wrapped function returns a non-zero JLWStatus.code.\"\"\"
@@ -584,7 +536,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "import sys")
     println(f, "import pathlib")
     if needs_numpy
-        # Implements issue #12: numpy conversion helpers for CVector structs.
+        # Implements issue #12: numpy conversion helpers for CArray structs.
         println(f, "import numpy as np")
     end
     println(f)
@@ -708,15 +660,12 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
                 end
                 println(f, "    ]")
             end
-            cvinfo = cvector_struct_info(type, typeinfo)
-            cminfo = cvinfo === nothing ? cmatrix_struct_info(type, typeinfo) : nothing
-            if cvinfo !== nothing
-                # Implements issue #12: emit numpy conversion helpers when the
-                # struct matches the CVector{T} shape with a primitive pointee.
-                _write_cvector_helpers(f, cvinfo)
-            elseif cminfo !== nothing
-                # Implements issue #12: column-major CMatrix{T} variant.
-                _write_cmatrix_helpers(f, cminfo)
+            cainfo = carray_struct_info(type, typeinfo)
+            if cainfo !== nothing
+                # Implements issue #12 / N-D extension: emit numpy conversion
+                # helpers when the struct matches the CArray{T,N} shape with a
+                # primitive pointee. Subsumes the former CVector/CMatrix arms.
+                _write_carray_helpers(f, cainfo)
             elseif cstring_struct_info(type, typeinfo)
                 # Implements issue #12: str/bytes round-trip for CString.
                 _write_cstring_helpers(f)
@@ -756,8 +705,8 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             println(f, "    A default numpy array is row-major (C order); passing `arr.ctypes.data`")
             println(f, "    from such an array to a Julia function that interprets it as a matrix")
             println(f, "    will see a silently transposed view. Use `np.asfortranarray(arr)` before")
-            println(f, "    taking `.ctypes.data`, or — better — wrap the field in `CVector{T}` /")
-            println(f, "    `CMatrix{T}` (JLWInterop) so length and layout travel with the buffer.")
+            println(f, "    taking `.ctypes.data`, or — better — wrap the field in `CArray{T,N}`")
+            println(f, "    (JLWInterop) so shape and layout travel with the buffer.")
             println(f, "    \"\"\"")
         end
         if status_path !== nothing
@@ -782,8 +731,7 @@ end
 
 Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:primitive,)` — pass-through
-- `(kind=:cvector, classname=…)` — wrap with `<class>.from_numpy(name)`
-- `(kind=:cmatrix, classname=…)` — wrap with `<class>.from_numpy(name)`
+- `(kind=:carray, classname=…)` — wrap with `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
@@ -794,10 +742,8 @@ function _facade_classify_arg(arg::ArgDesc,
     if t isa PrimitiveTypeDesc
         return (kind=:primitive,)
     elseif t isa StructDesc
-        if cvector_struct_info(t, typeinfo) !== nothing
-            return (kind=:cvector, classname=typedict[arg.type])
-        elseif cmatrix_struct_info(t, typeinfo) !== nothing
-            return (kind=:cmatrix, classname=typedict[arg.type])
+        if carray_struct_info(t, typeinfo) !== nothing
+            return (kind=:carray, classname=typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind=:cstring, classname=typedict[arg.type])
         else
@@ -815,8 +761,7 @@ end
 
 Classify a method's return for façade auto-wrapping. The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
-- `(kind=:cvector_unwrap, classname=…)` — return `_result.as_numpy()`
-- `(kind=:cmatrix_unwrap, classname=…)` — return `_result.as_numpy()`
+- `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out.
@@ -830,10 +775,8 @@ function _facade_classify_return(method::MethodDesc,
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind=:jlwstatus_discard,)
-        elseif cvector_struct_info(rt, typeinfo) !== nothing
-            return (kind=:cvector_unwrap, classname=typedict[method.return_type])
-        elseif cmatrix_struct_info(rt, typeinfo) !== nothing
-            return (kind=:cmatrix_unwrap, classname=typedict[method.return_type])
+        elseif carray_struct_info(rt, typeinfo) !== nothing
+            return (kind=:carray_unwrap, classname=typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind=:cstring_unwrap, classname=typedict[method.return_type])
         elseif jlwstatus_access_path(method, typeinfo) !== nothing
@@ -877,11 +820,10 @@ function _facade_plan(method::MethodDesc,
         return (category=:mechanical, reason=ret.reason,
                 args=arg_classes, ret=ret, uses_numpy=false)
     end
-    uses_numpy = any(c -> c.kind in (:cvector, :cmatrix), arg_classes) ||
-                 ret.kind in (:cvector_unwrap, :cmatrix_unwrap)
+    uses_numpy = any(c -> c.kind === :carray, arg_classes) ||
+                 ret.kind === :carray_unwrap
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
-                 ret.kind in (:cvector_unwrap, :cmatrix_unwrap,
-                              :cstring_unwrap, :jlwstatus_discard)
+                 ret.kind in (:carray_unwrap, :cstring_unwrap, :jlwstatus_discard)
     if !adds_value
         # All-primitive in/out: the lowlevel signature is already idiomatic
         # Python, so re-export it directly with no comment noise.
@@ -901,7 +843,7 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     for (name, cls) in zip(argnames, plan.args)
         if cls.kind === :primitive
             push!(call_args, name)
-        elseif cls.kind === :cvector || cls.kind === :cmatrix
+        elseif cls.kind === :carray
             local_ = "_" * name
             println(f, "    ", local_, " = ", cls.classname, ".from_numpy(", name, ")")
             push!(call_args, local_)
@@ -919,7 +861,7 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # `_lowlevel` already raises JLWError on a non-zero status; the
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
-    elseif ret.kind === :cvector_unwrap || ret.kind === :cmatrix_unwrap
+    elseif ret.kind === :carray_unwrap
         println(f, "    _result = ", call)
         println(f, "    return _result.as_numpy()")
     elseif ret.kind === :cstring_unwrap
@@ -948,7 +890,7 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f)
     println(f, "This file is generated **once** by JuliaLibWrapping as a starter")
     println(f, "façade. Functions whose arguments and return are all recognized")
-    println(f, "(primitives, `CVector{T}`, `CMatrix{T}`, `CString`, direct `JLWStatus`)")
+    println(f, "(primitives, `CArray{T,N}`, `CString`, direct `JLWStatus`)")
     println(f, "are wrapped to accept and return idiomatic Python objects (numpy")
     println(f, "arrays, `str`). Anything else is re-exported from `_lowlevel`")
     println(f, "with a `TODO` comment naming what needs hand-wrapping.")
@@ -1037,7 +979,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
                ", auto-generated by JuliaLibWrapping\"")
     println(f, "requires-python = \">=3.8\"")
     if needs_numpy
-        # Implements issue #12: CVector helpers depend on numpy.
+        # Implements issue #12: CArray helpers depend on numpy.
         println(f, "dependencies = [\"numpy>=1.20\"]")
     end
     println(f)

@@ -53,7 +53,7 @@
       "size": 16,
       "alignment": 8,
       "fields": [
-        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "dims", "type_id": 13, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "data", "type_id": 5, "offset": 8, "isptr": false, "isfieldatomic": false }
       ]
     },
@@ -108,7 +108,7 @@
       "size": 16,
       "alignment": 8,
       "fields": [
-        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "dims", "type_id": 13, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "data", "type_id": 10, "offset": 8, "isptr": false, "isfieldatomic": false }
       ]
     },
@@ -134,6 +134,15 @@
         { "name": "x", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "y", "type_id": 4, "offset": 4, "isptr": false, "isfieldatomic": false }
       ]
+    },
+    {
+      "id": 13,
+      "kind": "array",
+      "name": "NTuple{1, Int32}",
+      "element_type_id": 4,
+      "count": 1,
+      "size": 4,
+      "alignment": 4
     }
   ]
 }

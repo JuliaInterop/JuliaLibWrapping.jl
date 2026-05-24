@@ -2,14 +2,15 @@
     JLWInterop
 
 Canonical types for JuliaLibWrapping cross-ABI conventions. Provides
-[`JLWStatus`](@ref) for in-band error reporting and [`CVector`](@ref) for
-1-D numeric buffers; both are designed to cross a `@ccallable` boundary.
+[`JLWStatus`](@ref) for in-band error reporting and [`CArray`](@ref) (with
+[`CVector`](@ref) and [`CMatrix`](@ref) aliases) for N-D numeric buffers;
+both are designed to cross a `@ccallable` boundary.
 
 A library author opts in by using these types in any `@ccallable`-returned
 or `@ccallable`-accepted struct; the JuliaLibWrapping Python emitter then
 recognizes them by struct name + shape and emits idiomatic code — raising a
 native Python exception on a non-zero `JLWStatus.code`, and exposing
-`from_numpy` / `as_numpy` helpers on each recognized `CVector`.
+`from_numpy` / `as_numpy` helpers on each recognized `CArray`.
 
 This package deliberately has no dependencies so it stays
 `juliac --trim`-friendly: it is intended to be a build-time *and* runtime
@@ -18,7 +19,7 @@ dependency of compiled libraries.
 module JLWInterop
 
 export JLWStatus, jlw_ok, jlw_error
-export CVector, CMatrix, CString
+export CArray, CVector, CMatrix, CString
 
 """
     JLW_MESSAGE_BYTES
@@ -31,34 +32,48 @@ truncated to `JLW_MESSAGE_BYTES - 1` bytes plus a terminating NUL.
 const JLW_MESSAGE_BYTES = 256
 
 """
-    CVector{T}
+    CArray{T,N}
 
-ABI-stable 1-D buffer descriptor for crossing a `@ccallable` boundary:
-`length` contiguous elements of type `T` starting at `data`. `T` should be
-an `isbits` type, in which case `CVector{T}` is itself `isbits` and
-allocation-free to construct, keeping the type `juliac --trim`-friendly.
-The `length` field is `Int32`, matching the rest of the JLWInterop ABI
-vocabulary.
+ABI-stable N-D buffer descriptor for crossing a `@ccallable` boundary:
+`prod(dims)` contiguous elements of type `T` starting at `data`, laid out
+in **column-major** order (the same convention as Julia's `Array{T,N}` and
+Fortran). `T` should be an `isbits` type, in which case `CArray{T,N}` is
+itself `isbits` and allocation-free to construct, keeping the type
+`juliac --trim`-friendly. The `dims` field is `NTuple{N,Int32}`, matching
+the rest of the JLWInterop ABI vocabulary.
 
-`CVector{T}` holds a raw pointer; it does **not** own the underlying
+The 1-D and 2-D specializations have familiar aliases:
+
+```julia
+const CVector{T} = CArray{T,1}
+const CMatrix{T} = CArray{T,2}
+```
+
+`CArray{T,N}` holds a raw pointer; it does **not** own the underlying
 buffer. Whoever allocated the storage (the caller passing the buffer in,
 or the library that returned it) remains responsible for keeping it alive
-for the entire time any `CVector` referring to it is in use, and for
-freeing it afterward. `CVector` performs no allocation, no copy, and no
+for the entire time any `CArray` referring to it is in use, and for
+freeing it afterward. `CArray` performs no allocation, no copy, and no
 finalization.
 
-Use it to expose a 1-D numeric buffer at a `@ccallable` boundary instead of
-a `Vector{T}` (which is not C-ABI compatible). The JuliaLibWrapping Python
-emitter recognizes `CVector{T}` for primitive numeric `T` and generates
-`from_numpy` / `as_numpy` helpers on the corresponding `ctypes.Structure`,
-so the Python caller can pass a `numpy.ndarray` directly.
+Use it to expose a numeric buffer at a `@ccallable` boundary instead of
+a `Vector`/`Matrix`/`Array` (which are not C-ABI compatible). The
+JuliaLibWrapping Python emitter recognizes `CArray{T,N}` for primitive
+numeric `T` and generates `from_numpy` / `as_numpy` helpers on the
+corresponding `ctypes.Structure`. For `N ≥ 2` the storage is column-major,
+so `from_numpy` requires a Fortran-contiguous `numpy.ndarray` and rejects
+the default row-major layout: callers passing a default numpy array must
+write `np.asfortranarray(arr)` (or equivalent) first. This is deliberate —
+silently treating a row-major array as column-major would reinterpret the
+data without warning.
 
-`CVector{T} <: AbstractVector{T}` and implements `size`, bounds-checked
-`getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`.
-That means `CVector` participates in iteration, broadcasting, `sum`, views,
-and any function that accepts an `AbstractVector{T}` — at zero allocation.
-`setindex!` is defined unconditionally, so callers must only invoke it on
-buffers they know to be writable.
+`CArray{T,N} <: AbstractArray{T,N}` and implements `size`, bounds-checked
+`getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`,
+with `IndexLinear()` style over the column-major storage. `CArray`
+participates in iteration, broadcasting, `sum`, views, `LinearAlgebra`
+routines, and any function that accepts an `AbstractArray{T,N}` — at zero
+allocation. `setindex!` is defined unconditionally, so callers must only
+invoke it on buffers they know to be writable.
 
 # Example
 
@@ -69,78 +84,6 @@ Base.@ccallable function sum_cvector(v::CVector{Float64})::Float64
     return sum(v)
 end
 
-Base.@ccallable function copyto_cvector!(dst::CVector{Float64},
-                                         src::CVector{Float64})::Int32
-    n = min(length(dst), length(src))
-    @inbounds for i in 1:n
-        dst[i] = src[i]
-    end
-    return Int32(n)
-end
-```
-
-The caller (in Julia, Python, or C) is responsible for ensuring `v.data`
-points to at least `v.length` valid `T` slots for the duration of the
-call, and that the slots are writable when `setindex!` is used.
-"""
-struct CVector{T} <: AbstractVector{T}
-    length::Int32
-    data::Ptr{T}
-end
-
-Base.size(v::CVector) = (Int(v.length),)
-Base.IndexStyle(::Type{<:CVector}) = IndexLinear()
-
-Base.@propagate_inbounds function Base.getindex(v::CVector, i::Int)
-    @boundscheck checkbounds(v, i)
-    return unsafe_load(v.data, i)
-end
-
-Base.@propagate_inbounds function Base.setindex!(v::CVector{T}, x, i::Int) where {T}
-    @boundscheck checkbounds(v, i)
-    unsafe_store!(v.data, convert(T, x), i)
-    return v
-end
-
-"""
-    CMatrix{T}
-
-ABI-stable 2-D buffer descriptor for crossing a `@ccallable` boundary:
-`rows × cols` elements of type `T` starting at `data`, laid out in
-**column-major** order (the same convention as Julia's `Matrix{T}` and
-Fortran). `T` should be an `isbits` type; `CMatrix{T}` is itself `isbits`
-in that case and allocation-free to construct.
-
-`CMatrix{T}` holds a raw pointer; it does **not** own the underlying
-buffer. Whoever allocated the storage (the caller passing the buffer in,
-or the library that returned it) remains responsible for keeping it alive
-for the entire time any `CMatrix` referring to it is in use, and for
-freeing it afterward. `CMatrix` performs no allocation, no copy, and no
-finalization.
-
-Use it to expose a 2-D numeric buffer at a `@ccallable` boundary instead
-of a `Matrix{T}` (which is not C-ABI compatible). The JuliaLibWrapping
-Python emitter recognizes `CMatrix{T}` for primitive numeric `T` and
-generates `from_numpy` / `as_numpy` helpers on the corresponding
-`ctypes.Structure`. Because the storage is column-major, `from_numpy`
-requires a Fortran-contiguous (column-major) `numpy.ndarray` and rejects
-the default row-major layout: callers passing a default numpy array must
-write `arr.T.copy(order='F')` or equivalent first. This is deliberate —
-silently treating a row-major array as column-major would transpose the
-matrix without warning.
-
-`CMatrix{T} <: AbstractMatrix{T}` and implements `size`, bounds-checked
-`getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`.
-With `IndexLinear()` style over column-major storage, `m[i, j]` reads
-slot `(j-1)*rows + i` (1-based, Julia native), so `CMatrix` plugs into
-`sum`, broadcasting, views, and `LinearAlgebra` routines at zero
-allocation.
-
-# Example
-
-```julia
-using JLWInterop
-
 Base.@ccallable function trace_cmatrix(m::CMatrix{Float64})::Float64
     n = min(size(m, 1), size(m, 2))
     s = 0.0
@@ -149,31 +92,61 @@ Base.@ccallable function trace_cmatrix(m::CMatrix{Float64})::Float64
     end
     return s
 end
+
+Base.@ccallable function sum3d(a::CArray{Float64,3})::Float64
+    return sum(a)
+end
 ```
 
-The caller (in Julia, Python, or C) is responsible for ensuring `m.data`
-points to at least `m.rows * m.cols` valid `T` slots, in column-major
-order, for the duration of the call, and that the slots are writable
-when `setindex!` is used.
+The caller (in Julia, Python, or C) is responsible for ensuring `a.data`
+points to at least `prod(a.dims)` valid `T` slots, in column-major order,
+for the duration of the call, and that the slots are writable when
+`setindex!` is used.
 """
-struct CMatrix{T} <: AbstractMatrix{T}
-    rows::Int32
-    cols::Int32
+struct CArray{T,N} <: AbstractArray{T,N}
+    dims::NTuple{N,Int32}
     data::Ptr{T}
 end
 
-Base.size(m::CMatrix) = (Int(m.rows), Int(m.cols))
-Base.IndexStyle(::Type{<:CMatrix}) = IndexLinear()
+"""
+    CVector{T}
 
-Base.@propagate_inbounds function Base.getindex(m::CMatrix, i::Int)
-    @boundscheck checkbounds(m, i)
-    return unsafe_load(m.data, i)
+Alias for `CArray{T,1}`. See [`CArray`](@ref).
+"""
+const CVector{T} = CArray{T,1}
+
+"""
+    CMatrix{T}
+
+Alias for `CArray{T,2}`, laid out in column-major order. See [`CArray`](@ref).
+"""
+const CMatrix{T} = CArray{T,2}
+
+# `CArray{T,N}((d1,...,dN), ptr)` already works through Julia's default
+# inner constructor (which converts `dims` to `NTuple{N,Int32}`). The
+# outer below lets callers omit `N`, inferring it from the tuple length.
+CArray{T}(dims::Tuple{Vararg{Integer,N}}, data::Ptr{T}) where {T,N} =
+    CArray{T,N}(dims, data)
+
+# Scalar-form shortcuts for the 1-D and 2-D specializations, matching the
+# pre-CArray `CVector{T}(n, data)` / `CMatrix{T}(rows, cols, data)` API.
+CArray{T,1}(n::Integer, data::Ptr{T}) where {T} =
+    CArray{T,1}((n,), data)
+CArray{T,2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
+    CArray{T,2}((rows, cols), data)
+
+Base.size(a::CArray) = Int.(a.dims)
+Base.IndexStyle(::Type{<:CArray}) = IndexLinear()
+
+Base.@propagate_inbounds function Base.getindex(a::CArray, i::Int)
+    @boundscheck checkbounds(a, i)
+    return unsafe_load(a.data, i)
 end
 
-Base.@propagate_inbounds function Base.setindex!(m::CMatrix{T}, x, i::Int) where {T}
-    @boundscheck checkbounds(m, i)
-    unsafe_store!(m.data, convert(T, x), i)
-    return m
+Base.@propagate_inbounds function Base.setindex!(a::CArray{T}, x, i::Int) where {T}
+    @boundscheck checkbounds(a, i)
+    unsafe_store!(a.data, convert(T, x), i)
+    return a
 end
 
 """

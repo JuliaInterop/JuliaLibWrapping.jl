@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for the CMatrix vocabulary type (CMatrix{T} = CArray{T,2}). Mirrors the layout juliac would emit for `struct CMatrix{Float64}; dims::NTuple{2,Int32}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape by name + field layout and emit numpy from_numpy/as_numpy helpers (column-major).",
+  "_comment": "Hand-authored fixture for CArray{T,3} — locks in coverage of higher-rank arrays beyond the CVector (N=1) and CMatrix (N=2) special cases. Mirrors the layout juliac would emit for `struct CArray{Float64,3}; dims::NTuple{3,Int32}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape and emit the rank-agnostic from_numpy/as_numpy helpers (column-major).",
   "types": [
     {
       "kind": "primitive",
@@ -27,21 +27,21 @@
     },
     {
       "kind": "array",
-      "name": "NTuple{2, Int32}",
+      "name": "NTuple{3, Int32}",
       "id": 5,
       "element_type_id": 2,
-      "count": 2,
-      "size": 8,
+      "count": 3,
+      "size": 12,
       "alignment": 4
     },
     {
       "kind": "struct",
-      "name": "CMatrix{Float64}",
+      "name": "CArray{Float64, 3}",
       "id": 4,
-      "size": 16,
+      "size": 24,
       "fields": [
         { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 3, "offset": 16, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     }
@@ -49,11 +49,11 @@
   "functions": [
     {
       "returns": { "type_id": 1 },
-      "name": "trace_cmatrix(m::CMatrix{Float64})",
+      "name": "sum3d(a::CArray{Float64, 3})",
       "arguments": [
-        { "name": "m", "type_id": 4 }
+        { "name": "a", "type_id": 4 }
       ],
-      "symbol": "trace_cmatrix"
+      "symbol": "sum3d"
     }
   ]
 }

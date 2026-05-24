@@ -63,8 +63,8 @@ def sum_doubles(data, n):
     A default numpy array is row-major (C order); passing `arr.ctypes.data`
     from such an array to a Julia function that interprets it as a matrix
     will see a silently transposed view. Use `np.asfortranarray(arr)` before
-    taking `.ctypes.data`, or — better — wrap the field in `CVector{T}` /
-    `CMatrix{T}` (JLWInterop) so length and layout travel with the buffer.
+    taking `.ctypes.data`, or — better — wrap the field in `CArray{T,N}`
+    (JLWInterop) so shape and layout travel with the buffer.
     """
     return _lib.sum_doubles(data, n)
 

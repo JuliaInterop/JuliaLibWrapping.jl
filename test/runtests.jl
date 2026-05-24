@@ -5,7 +5,7 @@ using Test
 using Aqua
 using ExplicitImports
 
-import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, TypeDesc
+import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, ArrayDesc, TypeDesc
 import JuliaLibWrapping: sort_declarations!, mangle_c!
 
 function onlymatch(f, collection)
@@ -56,8 +56,11 @@ end
         tdesc = typeinfo[findtype(typeinfo, "CVector{Float32}")]
         @test tdesc.name == "CVector{Float32}"
         @test length(tdesc.fields) == 2
-        @test tdesc.fields[1].name == "length"
-        @test typeinfo[tdesc.fields[1].type].name == "Int32"
+        @test tdesc.fields[1].name == "dims"
+        dims_desc = typeinfo[tdesc.fields[1].type]
+        @test dims_desc isa ArrayDesc
+        @test dims_desc.count == 1
+        @test typeinfo[dims_desc.element_type].name == "Int32"
         @test tdesc.fields[1].offset == 0
         @test tdesc.fields[2].name == "data"
         @test typeinfo[tdesc.fields[2].type].name == "Ptr{Float32}"
@@ -213,7 +216,7 @@ end
             @test occursin("#include <stdint.h>", content)
             @test occursin("#include <stdbool.h>", content)
             @test occursin("typedef struct CVector_Float32 {", content)
-            @test occursin("    int32_t length;", content)
+            @test occursin("    int32_t dims[1];", content)
             @test occursin("    float* data;", content)
             @test occursin("CVector_Float32 from;", content)
             @test occursin("CVector_Float32 to;", content)
@@ -275,7 +278,7 @@ end
             @test occursin("_LIBRARY_ENV_VAR = \"LIBSIMPLE_LIBRARY\"", bindings)
             @test occursin("class CTree_Float64(ctypes.Structure):\n    pass", bindings)
             @test occursin("class CVector_Float32(ctypes.Structure):", bindings)
-            @test occursin("(\"length\", ctypes.c_int32)", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int32 * 1))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_float))", bindings)
             # `from` is a Python keyword; it must be renamed to be reachable
             # via attribute access.
@@ -286,8 +289,8 @@ end
             @test occursin("_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
                            bindings)
 
-            # Implements issue #12: CVector{primitive} structs gain numpy
-            # conversion helpers; CVector{struct} does not.
+            # Implements issue #12: CArray{primitive,N} structs gain numpy
+            # conversion helpers; CArray{struct,N} does not.
             @test occursin("import numpy as np", bindings)
             @test occursin("def from_numpy(cls, arr):", bindings)
             @test occursin("def as_numpy(self):", bindings)
@@ -324,7 +327,7 @@ end
             pyproject = read(pyproject_path, String)
             @test occursin("[build-system]", pyproject)
             @test occursin("name = \"libsimple\"", pyproject)
-            # The bindings use numpy via the CVector helpers, so numpy must be
+            # The bindings use numpy via the CArray helpers, so numpy must be
             # declared as a runtime dependency.
             @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
 
@@ -435,128 +438,100 @@ end
         end
     end
 
-    @testset "cvector_struct_info" begin
-        # Implements issue #12: structural recognition of the CVector shape.
-        cvinfo = JuliaLibWrapping.cvector_struct_info
-        # The fixture exercises both a matching CVector{Float32} and a
-        # non-matching CVector{CTree{Float64}} (struct pointee).
+    @testset "carray_struct_info" begin
+        # Structural recognition of the CArray{T,N} shape: a struct named
+        # CArray/CVector/CMatrix (since `CVector = CArray{_,1}` and
+        # `CMatrix = CArray{_,2}` may print under either name) with `dims`
+        # (NTuple{N,Int32} → ArrayDesc) and `data` (Ptr{T}) fields, for
+        # primitive numeric T recognized by `numpy_dtypes`.
+        cainfo = JuliaLibWrapping.carray_struct_info
+
+        # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
+        # and CVector{CTree{Float64}} (struct pointee, no match).
         abi = read_abi_info("bindinginfo_libsimple.json")
         findtype(descs, name) = (k = collect(keys(descs));
                                  k[findfirst((id)->descs[id].name === name, k)])
         cv_f32 = abi.typeinfo[findtype(abi.typeinfo, "CVector{Float32}")]
         cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{CTree{Float64}}")]
-        info = cvinfo(cv_f32, abi.typeinfo)
+        info = cainfo(cv_f32, abi.typeinfo)
         @test info !== nothing
         @test info.pointee_name == "Float32"
         @test info.dtype == "float32"
         @test info.pointee_ctype == "ctypes.c_float"
+        @test info.ndim == 1
         # Struct pointee → no match (no useful numpy mapping).
-        @test cvinfo(cv_tree, abi.typeinfo) === nothing
+        @test cainfo(cv_tree, abi.typeinfo) === nothing
 
-        # Hand-built rejections: wrong name, wrong field count, wrong field
-        # names, wrong length type (not integer), wrong pointee (struct).
+        # cmatrix fixture exercises the N=2 case under the CMatrix alias name.
+        abi_cm = read_abi_info("bindinginfo_cmatrix.json")
+        cm_f64 = abi_cm.typeinfo[findtype(abi_cm.typeinfo, "CMatrix{Float64}")]
+        info2 = cainfo(cm_f64, abi_cm.typeinfo)
+        @test info2 !== nothing
+        @test info2.pointee_name == "Float64"
+        @test info2.ndim == 2
+
+        # carray3 fixture exercises N=3 under the CArray name directly.
+        abi_c3 = read_abi_info("bindinginfo_carray3.json")
+        ca_f64_3 = abi_c3.typeinfo[findtype(abi_c3.typeinfo, "CArray{Float64, 3}")]
+        info3 = cainfo(ca_f64_3, abi_c3.typeinfo)
+        @test info3 !== nothing
+        @test info3.pointee_name == "Float64"
+        @test info3.ndim == 3
+
+        # Hand-built rejections: wrong name, wrong field names, non-integer
+        # dims element, non-numpy pointee, dims-as-primitive (not array).
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
         primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
         ptr_to_flt = PointerDesc("Ptr{Float32}", 2)
+        arr_int32_1 = ArrayDesc("NTuple{1, Int32}", 1, 1, 4, 4)
+        arr_flt_1 = ArrayDesc("NTuple{1, Float32}", 2, 1, 4, 4)
+        arr_bool_1 = ArrayDesc("NTuple{1, Bool}", 7, 1, 1, 1)
         ti = OrderedDict{Int, TypeDesc}(
             1 => primint, 2 => primflt, 3 => ptr_to_flt,
-            4 => StructDesc("CVector{Float32}", 16, 8, FieldDesc[
-                FieldDesc("length", 1, 0),
+            4 => arr_int32_1, 5 => arr_flt_1,
+            6 => StructDesc("CVector{Float32}", 16, 8, FieldDesc[
+                FieldDesc("dims", 4, 0),
                 FieldDesc("data", 3, 8),
             ]),
-            5 => StructDesc("NotACVector", 16, 8, FieldDesc[
-                FieldDesc("length", 1, 0),
+            7 => primbool,
+            8 => arr_bool_1,
+            9 => StructDesc("NotACArray", 16, 8, FieldDesc[
+                FieldDesc("dims", 4, 0),
                 FieldDesc("data", 3, 8),
             ]),
-            6 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
-            7 => StructDesc("CVectorBadNames", 16, 8, FieldDesc[
-                FieldDesc("len", 1, 0),
+            10 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
+            11 => StructDesc("CVectorBadNames", 16, 8, FieldDesc[
+                FieldDesc("len", 4, 0),
                 FieldDesc("data", 3, 8),
             ]),
-            8 => StructDesc("CVectorBadLength", 16, 8, FieldDesc[
-                FieldDesc("length", 2, 0),  # Float length — not integer
+            12 => StructDesc("CVectorFloatDims", 16, 8, FieldDesc[
+                FieldDesc("dims", 5, 0),  # NTuple{1,Float32} — not Int*
                 FieldDesc("data", 3, 8),
             ]),
-            9 => primbool,
-            10 => StructDesc("CVectorBoolLength", 16, 8, FieldDesc[
-                FieldDesc("length", 9, 0),  # Bool — in numpy_dtypes but not Int/UInt
+            13 => StructDesc("CVectorPrimDims", 16, 8, FieldDesc[
+                FieldDesc("dims", 1, 0),  # primitive Int32, not ArrayDesc
+                FieldDesc("data", 3, 8),
+            ]),
+            14 => StructDesc("CVectorBoolDims", 16, 8, FieldDesc[
+                FieldDesc("dims", 8, 0),  # Bool element — in numpy_dtypes but not Int/UInt
                 FieldDesc("data", 3, 8),
             ]),
         )
-        @test cvinfo(ti[4], ti) !== nothing
-        @test cvinfo(ti[5], ti) === nothing  # wrong name
-        @test cvinfo(ti[6], ti) === nothing  # empty
-        @test cvinfo(ti[7], ti) === nothing  # wrong field names
-        @test cvinfo(ti[8], ti) === nothing  # non-integer length
-        @test cvinfo(ti[10], ti) === nothing # Bool length rejected
+        @test cainfo(ti[6], ti) !== nothing
+        @test cainfo(ti[9], ti) === nothing   # wrong name prefix
+        @test cainfo(ti[10], ti) === nothing  # empty
+        @test cainfo(ti[11], ti) === nothing  # wrong field names
+        @test cainfo(ti[12], ti) === nothing  # non-integer dims element
+        @test cainfo(ti[13], ti) === nothing  # dims is primitive, not ArrayDesc
+        @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected
 
         # Field order may be either way.
         flipped = StructDesc("CVector{Float32}", 16, 8, FieldDesc[
             FieldDesc("data", 3, 0),
-            FieldDesc("length", 1, 8),
+            FieldDesc("dims", 4, 8),
         ])
-        @test cvinfo(flipped, ti) !== nothing
-    end
-
-    @testset "cmatrix_struct_info" begin
-        # Implements issue #12: structural recognition of the CMatrix shape
-        # (rows::Int32, cols::Int32, data::Ptr{T}) for primitive numeric T.
-        cminfo = JuliaLibWrapping.cmatrix_struct_info
-        abi = read_abi_info("bindinginfo_cmatrix.json")
-        findtype(descs, name) = (k = collect(keys(descs));
-                                 k[findfirst((id)->descs[id].name === name, k)])
-        cm_f64 = abi.typeinfo[findtype(abi.typeinfo, "CMatrix{Float64}")]
-        info = cminfo(cm_f64, abi.typeinfo)
-        @test info !== nothing
-        @test info.pointee_name == "Float64"
-        @test info.dtype == "float64"
-        @test info.pointee_ctype == "ctypes.c_double"
-
-        # Hand-built rejections.
-        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
-        primflt = PrimitiveTypeDesc("Float64", true, 64, 8, 8)
-        ptr_to_flt = PointerDesc("Ptr{Float64}", 2)
-        ti = OrderedDict{Int, TypeDesc}(
-            1 => primint, 2 => primflt, 3 => ptr_to_flt,
-            4 => StructDesc("CMatrix{Float64}", 16, 8, FieldDesc[
-                FieldDesc("rows", 1, 0),
-                FieldDesc("cols", 1, 4),
-                FieldDesc("data", 3, 8),
-            ]),
-            5 => StructDesc("NotACMatrix", 16, 8, FieldDesc[
-                FieldDesc("rows", 1, 0),
-                FieldDesc("cols", 1, 4),
-                FieldDesc("data", 3, 8),
-            ]),
-            6 => StructDesc("CMatrixOnlyTwoFields", 12, 8, FieldDesc[
-                FieldDesc("rows", 1, 0),
-                FieldDesc("data", 3, 8),
-            ]),
-            7 => StructDesc("CMatrixBadNames", 16, 8, FieldDesc[
-                FieldDesc("nrows", 1, 0),
-                FieldDesc("ncols", 1, 4),
-                FieldDesc("data", 3, 8),
-            ]),
-            8 => StructDesc("CMatrixFloatRows", 16, 8, FieldDesc[
-                FieldDesc("rows", 2, 0),  # Float64 — not integer
-                FieldDesc("cols", 1, 4),
-                FieldDesc("data", 3, 8),
-            ]),
-        )
-        @test cminfo(ti[4], ti) !== nothing
-        @test cminfo(ti[5], ti) === nothing  # wrong name prefix
-        @test cminfo(ti[6], ti) === nothing  # missing cols
-        @test cminfo(ti[7], ti) === nothing  # wrong field names
-        @test cminfo(ti[8], ti) === nothing  # non-integer rows
-
-        # Field order is irrelevant — recognizer matches by name.
-        scrambled = StructDesc("CMatrix{Float64}", 16, 8, FieldDesc[
-            FieldDesc("data", 3, 0),
-            FieldDesc("cols", 1, 8),
-            FieldDesc("rows", 1, 12),
-        ])
-        @test cminfo(scrambled, ti) !== nothing
+        @test cainfo(flipped, ti) !== nothing
     end
 
     @testset "cstring_struct_info" begin
@@ -663,8 +638,8 @@ end
     end
 
     @testset "CMatrix vocabulary" begin
-        # Implements issue #12: CMatrix{T} recognition + column-major numpy
-        # helpers in the Python emitter.
+        # CMatrix{T} = CArray{T,2}: recognition + column-major numpy helpers
+        # in the Python emitter.
         abi = read_abi_info("bindinginfo_cmatrix.json")
         mktempdir() do path
             dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
@@ -678,10 +653,10 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
 
-            # The struct class is emitted and decorated with helpers.
+            # The struct class is emitted with the new `dims` array field and
+            # decorated with helpers.
             @test occursin("class CMatrix_Float64(ctypes.Structure):", bindings)
-            @test occursin("(\"rows\", ctypes.c_int32)", bindings)
-            @test occursin("(\"cols\", ctypes.c_int32)", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int32 * 2))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_double))", bindings)
 
             # from_numpy enforces column-major (Fortran) layout — silently
@@ -690,11 +665,11 @@ end
             @test occursin("if arr.ndim != 2:", bindings)
             @test occursin("if not arr.flags.f_contiguous:", bindings)
             @test occursin("expected_dtype = np.dtype(\"float64\")", bindings)
-            @test occursin("rows=arr.shape[0], cols=arr.shape[1]", bindings)
+            @test occursin("dims=(ctypes.c_int32 * 2)(*arr.shape)", bindings)
 
             # as_numpy returns a view with column-major strides.
             @test occursin("def as_numpy(self):", bindings)
-            @test occursin("np.ctypeslib.as_array(self.data, shape=(self.cols, self.rows)).T",
+            @test occursin("np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
                            bindings)
 
             # Golden-file comparison.
@@ -707,6 +682,45 @@ end
             @test occursin("def trace_cmatrix(m):\n    _m = CMatrix_Float64.from_numpy(m)\n" *
                            "    return _lowlevel.trace_cmatrix(_m)", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CArray{T,3} vocabulary" begin
+        # Locks in 3-D coverage: the rank-agnostic CArray recognizer should
+        # accept `CArray{Float64,3}` and the emitter should produce the same
+        # helper shape as for N=1,2 but with ndim=3 dispatches.
+        abi = read_abi_info("bindinginfo_carray3.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "carray3_demo", "libcarray3")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "carray3_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            @test occursin("class CArray_Float64_3(ctypes.Structure):", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int32 * 3))", bindings)
+            @test occursin("if arr.ndim != 3:", bindings)
+            @test occursin("if not arr.flags.f_contiguous:", bindings)
+            @test occursin("dims=(ctypes.c_int32 * 3)(*arr.shape)", bindings)
+            @test occursin("np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
+                           bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_carray3_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "carray3_demo", "_facade.py"), String)
+            @test occursin("def sum3d(a):\n    _a = CArray_Float64_3.from_numpy(a)\n" *
+                           "    return _lowlevel.sum3d(_a)", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
@@ -748,7 +762,7 @@ end
                            bindings)
             @test occursin("`data` is a raw pointer to Float64", bindings)
             @test occursin("column-major (Fortran order)", bindings)
-            @test occursin("`CVector{T}` /\n    `CMatrix{T}`", bindings)
+            @test occursin("`CArray{T,N}`", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_rawptr_lowlevel.py"), String)
             @test bindings == golden
