@@ -1,5 +1,5 @@
 """
-    PythonTarget(dir, package_name, library_basename)
+    PythonTarget(dir, package_name, library_basename; bundle_subdir = nothing)
 
 Output configuration for a Python ctypes-based wrapper package. `dir` is the
 directory into which the package will be written; a sub-directory named
@@ -7,16 +7,35 @@ directory into which the package will be written; a sub-directory named
 is the shared library's basename without an OS-specific suffix (e.g. `"libsimple"`,
 which will be loaded from `libsimple.so` / `libsimple.dylib` / `libsimple.dll`
 depending on the host).
+
+When `bundle_subdir` is a string (e.g. `"bundle"`), the emitter assumes the
+shared library and its juliac runtime closure (`libjulia`, sysimage, stdlibs,
+artifacts) will be laid out under that subdirectory of the Python package in
+the standard `--bundle` shape (`<bundle_subdir>/lib/<lib>`,
+`<bundle_subdir>/lib/julia/`, `<bundle_subdir>/artifacts/`). The generated
+loader looks for the library inside the bundle first, the generated
+`pyproject.toml` widens `package-data` to include the bundle tree, and
+[`build_library`](@ref) with `bundle = true` will copy the bundle there.
+The default `nothing` preserves the flat single-`.so`-next-to-the-package
+layout and is the right choice for callers placing the library by hand.
 """
 struct PythonTarget <: AbstractTarget
     dir::String
     package_name::String
     library_basename::String
+    bundle_subdir::Union{Nothing, String}
 end
+
+PythonTarget(dir::AbstractString, package_name::AbstractString,
+             library_basename::AbstractString; bundle_subdir = nothing) =
+    PythonTarget(String(dir), String(package_name), String(library_basename),
+                 bundle_subdir === nothing ? nothing : String(bundle_subdir))
 
 function Base.show(io::IO, t::PythonTarget)
     print(io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
-              ", ", repr(t.library_basename), ")")
+              ", ", repr(t.library_basename))
+    t.bundle_subdir === nothing || print(io, "; bundle_subdir = ", repr(t.bundle_subdir))
+    print(io, ")")
 end
 
 const pytypes = Dict{String, String}(
@@ -600,11 +619,27 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "    else:")
     println(f, "        suffixes = (\".so\", \".dylib\")")
     println(f, "    tried = []")
-    println(f, "    for suffix in suffixes:")
-    println(f, "        candidate = _HERE / (_LIBRARY_BASENAME + suffix)")
-    println(f, "        tried.append(str(candidate))")
-    println(f, "        if candidate.exists():")
-    println(f, "            return str(candidate)")
+    if dest.bundle_subdir !== nothing
+        # Bundle-aware layout: search the juliac --bundle tree first so the
+        # baked-in RUNPATH (`$ORIGIN/../lib[/julia]` on Linux,
+        # `@loader_path/../lib*` on macOS) resolves libjulia and friends from
+        # inside the bundle. Fall back to the flat layout so the same loader
+        # still works for a developer who drops a bare .so beside the package.
+        println(f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
+                   " / \"lib\", _HERE)")
+        println(f, "    for directory in search_dirs:")
+        println(f, "        for suffix in suffixes:")
+        println(f, "            candidate = directory / (_LIBRARY_BASENAME + suffix)")
+        println(f, "            tried.append(str(candidate))")
+        println(f, "            if candidate.exists():")
+        println(f, "                return str(candidate)")
+    else
+        println(f, "    for suffix in suffixes:")
+        println(f, "        candidate = _HERE / (_LIBRARY_BASENAME + suffix)")
+        println(f, "        tried.append(str(candidate))")
+        println(f, "        if candidate.exists():")
+        println(f, "            return str(candidate)")
+    end
     println(f, "    raise FileNotFoundError(")
     println(f, "        f\"Could not locate shared library {_LIBRARY_BASENAME!r}. \"")
     println(f, "        f\"Tried: {tried}. Set {_LIBRARY_ENV_VAR} to an explicit path.\"")
@@ -997,5 +1032,24 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "packages = [", repr(dest.package_name), "]")
     println(f)
     println(f, "[tool.setuptools.package-data]")
-    println(f, dest.package_name, " = [\"*.so\", \"*.dylib\", \"*.dll\"]")
+    if dest.bundle_subdir === nothing
+        println(f, dest.package_name, " = [\"*.so\", \"*.dylib\", \"*.dll\"]")
+    else
+        # Setuptools' package-data does not recurse, so each level of the
+        # `juliac --bundle` tree (lib/, lib/julia/, artifacts/**) must be
+        # enumerated. Native-library suffixes are listed redundantly with
+        # `*` so a developer who hand-drops a bare lib next to the package
+        # still gets it picked up.
+        sub = dest.bundle_subdir
+        globs = [
+            "\"*.so\"", "\"*.dylib\"", "\"*.dll\"",
+            "\"$sub/lib/*\"",
+            "\"$sub/lib/julia/*\"",
+            "\"$sub/bin/*\"",
+            "\"$sub/artifacts/*\"",
+            "\"$sub/artifacts/*/*\"",
+            "\"$sub/artifacts/*/**/*\"",
+        ]
+        println(f, dest.package_name, " = [", join(globs, ", "), "]")
+    end
 end
