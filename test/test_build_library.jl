@@ -96,6 +96,39 @@ using Test
         @test occursin(":wild", err.msg)
     end
 
+    @testset "bundle validation (issue #17)" begin
+        entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
+        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+
+        # bundle = true is incompatible with the :script backend.
+        err = try
+            build_library(entry, AbstractTarget[]; project = proj,
+                          libname = "abi_stress", backend = :script,
+                          bundle = true)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("requires backend = :juliac", err.msg)
+
+        # bundle = true with a PythonTarget lacking bundle_subdir must
+        # fail-fast: silently writing into the package would leave the
+        # generated loader looking in the wrong place.
+        err = try
+            build_library(entry,
+                [PythonTarget("/tmp", "pkg", "libfoo")];
+                project = proj, libname = "abi_stress",
+                bundle = true)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("needs `bundle_subdir", err.msg)
+        @test occursin("\"pkg\"", err.msg)
+    end
+
     @testset "end-to-end" begin
         # Drive the full pipeline against examples/abi_stress for both
         # backends. The compile step is expensive (~minutes), so this is
@@ -142,6 +175,54 @@ using Test
                     end
                 end
             end
+        end
+    end
+
+    @testset "end-to-end with bundle (issue #17)" begin
+        # Opt-in: the bundle build copies libjulia + stdlibs + artifacts
+        # and is multi-hundred-MB, so we don't run it in default CI. Set
+        # JLW_TEST_BUNDLE=true to exercise it locally; the test then runs
+        # `python3 -c 'import abi_stress_py'` against the generated
+        # package as the real "does the wheel work?" check.
+        get(ENV, "JLW_TEST_BUNDLE", "false") == "true" || (@info "Skipping bundle e2e test (set JLW_TEST_BUNDLE=true to run)"; return)
+        ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
+        ext === nothing && error("JLW_TEST_BUNDLE set but JuliaC.jl is not loaded")
+        VERSION >= v"1.13.0-rc1" || error("JLW_TEST_BUNDLE set but julia < 1.13")
+        python3 = Sys.which("python3")
+        python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH")
+        # The generated _lowlevel.py imports numpy (CVector helpers).
+        # Surface that gap up-front rather than failing inside the import
+        # with a confusing-looking error.
+        has_numpy = success(run(pipeline(`$python3 -c "import numpy"`;
+                                        stderr=devnull, stdout=devnull); wait=true))
+        has_numpy || error("JLW_TEST_BUNDLE set but `python3 -c 'import numpy'` failed; install numpy in this python")
+
+        entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
+                         "src", "abi_stress.jl")
+        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+        mktempdir() do out
+            result = build_library(entry,
+                [PythonTarget(out, "abi_stress_py", "abi_stress";
+                              bundle_subdir = "bundle")];
+                project = proj, libname = "abi_stress",
+                libdir = out, bundle = true)
+            @test result.bundle_dir !== nothing
+            @test isdir(result.bundle_dir)
+
+            pkgdir = joinpath(out, "abi_stress_py")
+            bundled_lib = joinpath(pkgdir, "bundle", "lib",
+                                   "abi_stress." * Base.Libc.Libdl.dlext)
+            @test isfile(bundled_lib)
+            # libjulia must be next to the user lib so the baked-in
+            # RUNPATH ($ORIGIN/../lib[/julia]) resolves it.
+            @test any(startswith.(readdir(joinpath(pkgdir, "bundle", "lib")), "libjulia"))
+
+            # The real test: can Python import the package and call a
+            # function? `out` is added to PYTHONPATH so `abi_stress_py`
+            # is importable without `pip install`.
+            cmd = addenv(`$python3 -c "import abi_stress_py; print('ok')"`,
+                         "PYTHONPATH" => out)
+            @test success(run(pipeline(cmd; stderr=stderr, stdout=stdout); wait=true))
         end
     end
 end

@@ -348,6 +348,40 @@ end
             t = PythonTarget("/tmp/foo", "libsimple", "libsimple")
             @test sprint(show, t) ==
                   "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\")"
+            tb = PythonTarget("/tmp/foo", "libsimple", "libsimple";
+                              bundle_subdir = "bundle")
+            @test sprint(show, tb) ==
+                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; bundle_subdir = \"bundle\")"
+            @test tb.bundle_subdir == "bundle"
+        end
+
+        @testset "bundle-aware output (issue #17)" begin
+            abi_info = read_abi_info("bindinginfo_libsimple.json")
+            mktempdir() do path
+                dest = PythonTarget(path, "libsimple", "libsimple";
+                                    bundle_subdir = "bundle")
+                write_wrapper(dest, abi_info)
+
+                bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+                # Bundle path is searched first so the baked-in RUNPATH
+                # resolves libjulia from inside the wheel.
+                @test occursin("search_dirs = (_HERE / \"bundle\" / \"lib\", _HERE)", bindings)
+                @test occursin("for directory in search_dirs:", bindings)
+                @test occursin("candidate = directory / (_LIBRARY_BASENAME + suffix)", bindings)
+                @test occursin("_LIBRARY_ENV_VAR = \"LIBSIMPLE_LIBRARY\"", bindings)
+
+                pyproject = read(joinpath(path, "pyproject.toml"), String)
+                @test occursin("\"bundle/lib/*\"", pyproject)
+                @test occursin("\"bundle/lib/julia/*\"", pyproject)
+                @test occursin("\"bundle/artifacts/*/**/*\"", pyproject)
+
+                python3 = Sys.which("python3")
+                if python3 !== nothing
+                    bp = joinpath(path, "libsimple", "_lowlevel.py")
+                    cmd = `$python3 -c "import ast; ast.parse(open('$bp').read())"`
+                    @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                end
+            end
         end
 
         @testset "unsupported primitive" begin

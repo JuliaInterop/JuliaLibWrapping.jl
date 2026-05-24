@@ -10,7 +10,9 @@ const _TRIM_MODES = (:no, :safe, :unsafe, Symbol("unsafe-warn"))
                   project=dirname(entry), libname, libdir=pwd(),
                   abi_path=joinpath(libdir, libname*".abi.json"),
                   trim=:safe, compile_ccallable=true,
-                  julia=`julia`, backend=:auto, verbose=false)
+                  julia=`julia`, backend=:auto, verbose=false,
+                  bundle=false, bundle_dir=joinpath(libdir, libname*"-bundle"),
+                  privatize=false)
 
 Run the full `juliac` → ABI JSON → wrapper pipeline in one call.
 
@@ -18,7 +20,9 @@ Run the full `juliac` → ABI JSON → wrapper pipeline in one call.
 `juliac` will compile; `targets` is a vector of [`AbstractTarget`](@ref)s that
 will each receive a `write_wrapper` call once the ABI JSON is available.
 
-Returns a NamedTuple `(library, abi_path, abi_info, target_outputs, backend)`.
+Returns a NamedTuple `(library, abi_path, abi_info, target_outputs, backend,
+bundle_dir)`. `bundle_dir` is the path to the produced bundle tree when
+`bundle = true`, and `nothing` otherwise.
 
 # Backends
 
@@ -52,6 +56,26 @@ result = build_library(
 Relative `[sources]` paths in the entry project's `Project.toml` cannot be
 resolved from there, so this function rejects them up front. Either use
 absolute paths or `Pkg.develop` the dependency.
+
+# Bundling for distribution (issue #17)
+
+A juliac-produced `.so` depends on `libjulia`, a sysimage, stdlibs, and
+artifacts — none of which a `pip install`-ing Python user has on their
+machine. Pass `bundle = true` to also produce a self-contained directory
+tree (the `juliac --bundle` layout) and copy it into every
+[`PythonTarget`](@ref)'s package. The Python loader generated for those
+targets searches the bundle first, so the baked-in `RUNPATH` resolves
+`libjulia` from inside the wheel at import time.
+
+`bundle = true` requires the `:juliac` backend and that each [`PythonTarget`](@ref)
+declare a `bundle_subdir` (e.g.
+`PythonTarget(out, "mylib_py", "mylib"; bundle_subdir = "bundle")`).
+Targets that are not Python (e.g. [`CTarget`](@ref)) are unaffected — C
+consumers manage their own linkage.
+
+`privatize = true` salts the bundled libjulia files with a random prefix so
+they cannot collide with a system libjulia. Off by default; opt in if the
+wrapper might be loaded into a process that also has a different libjulia.
 """
 function build_library(entry::AbstractString,
                        targets::AbstractVector{<:AbstractTarget};
@@ -63,7 +87,10 @@ function build_library(entry::AbstractString,
                        compile_ccallable::Bool = true,
                        julia::Cmd = `julia`,
                        backend::Symbol = :auto,
-                       verbose::Bool = false)
+                       verbose::Bool = false,
+                       bundle::Bool = false,
+                       bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
+                       privatize::Bool = false)
     isfile(entry) || isdir(entry) ||
         throw(ArgumentError("entry not found: $entry"))
     isdir(project) ||
@@ -73,6 +100,18 @@ function build_library(entry::AbstractString,
     end
     backend ∈ (:auto, :juliac, :script) ||
         throw(ArgumentError("backend must be :auto, :juliac, or :script; got :$backend"))
+    if bundle && backend === :script
+        throw(ArgumentError("bundle = true requires backend = :juliac; the :script backend does not expose the bundle hook used here."))
+    end
+    if bundle
+        for t in targets
+            t isa PythonTarget || continue
+            t.bundle_subdir === nothing && throw(ArgumentError(
+                "PythonTarget for package \"$(t.package_name)\" needs `bundle_subdir = \"bundle\"` " *
+                "(or some other subdir name) when `build_library` is called with `bundle = true`; " *
+                "the bundle tree is copied into that subdirectory of the package."))
+        end
+    end
 
     _validate_sources_absolute(project)
 
@@ -90,7 +129,9 @@ function build_library(entry::AbstractString,
 
     if chosen === :juliac
         ext._build_library_juliac(entry; project, libname, libdir, abi_path,
-                                  trim, compile_ccallable, verbose)
+                                  trim, compile_ccallable, verbose,
+                                  bundle, bundle_dir = (bundle ? bundle_dir : nothing),
+                                  privatize)
     else
         _build_library_script(entry; project, libname, libdir, abi_path,
                               trim, compile_ccallable, julia, verbose)
@@ -100,13 +141,37 @@ function build_library(entry::AbstractString,
         error("juliac completed but no ABI JSON was written to $abi_path")
     abi_info = read_abi_info(abi_path)
 
+    if bundle
+        isdir(bundle_dir) ||
+            error("juliac --bundle completed but no bundle tree at $bundle_dir")
+        for t in targets
+            t isa PythonTarget || continue
+            _copy_bundle_into_python_package(t, bundle_dir)
+        end
+    end
+
     target_outputs = Vector{NamedTuple}(undef, length(targets))
     for (i, t) in pairs(targets)
         write_wrapper(t, abi_info)
         target_outputs[i] = (target = typeof(t), dir = t.dir)
     end
 
-    return (; library = library_path, abi_path, abi_info, target_outputs, backend = chosen)
+    return (; library = library_path, abi_path, abi_info, target_outputs,
+            backend = chosen, bundle_dir = bundle ? bundle_dir : nothing)
+end
+
+# Copy the juliac --bundle tree into a Python package. Run before
+# `write_wrapper` so the package directory always exists with the runtime
+# closure in place; `write_wrapper` then drops the Python sources alongside.
+function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractString)
+    pkgdir = joinpath(t.dir, t.package_name)
+    mkpath(pkgdir)
+    dest = joinpath(pkgdir, t.bundle_subdir::String)
+    # Wipe any stale copy so a smaller-than-before bundle does not leave
+    # orphan files behind that the new package-data manifest would pick up.
+    ispath(dest) && rm(dest; recursive = true)
+    cp(bundle_dir, dest)
+    return dest
 end
 
 function _validate_sources_absolute(project::AbstractString)
