@@ -32,6 +32,27 @@ def _resolve_library_path():
 
 _lib = ctypes.CDLL(_resolve_library_path())
 
+_JLW_LOADED_ATTR = "_jlw_loaded_packages"
+_jlw_loaded = getattr(sys, _JLW_LOADED_ATTR, None)
+if _jlw_loaded is None:
+    _jlw_loaded = set()
+    setattr(sys, _JLW_LOADED_ATTR, _jlw_loaded)
+_jlw_this_pkg = __package__ or __name__
+if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
+    import warnings
+    warnings.warn(
+        f"Loading JuliaLibWrapping-generated package {_jlw_this_pkg!r} into a "
+        f"process that already loaded {sorted(_jlw_loaded)!r}. Multiple "
+        "JLW-wrapped libraries in one process is not a supported "
+        "configuration: the dynamic linker silently shares a single "
+        "libjulia across them, which assumes byte-compatible Julia "
+        "versions and shares one Julia runtime. See the JuliaLibWrapping "
+        "docs section on multiple wrapped libraries in one process.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+_jlw_loaded.add(_jlw_this_pkg)
+
 # Forward declarations for recursive types
 class CTree_Float64(ctypes.Structure):
     pass

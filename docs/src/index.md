@@ -100,6 +100,36 @@ for the current MVP — `pyproject.toml` builds a generic sdist/wheel and
 the developer is responsible for any platform tagging the distribution
 target requires.
 
+## Multiple wrapped libraries in one process
+
+One JLW-wrapped library per Python process is the supported configuration.
+If your users need to combine two Julia libraries, compile them as a single
+`juliac` library that exports both APIs.
+
+The reason is that `juliac` libraries embed `libjulia` as a runtime
+dependency, and the Julia runtime is not designed to coexist with another
+copy of itself in the same process. With the default bundle layout each
+wheel ships its own `bundle/lib/libjulia.so.1.13`, but the dynamic linker
+satisfies the second library's `DT_NEEDED libjulia.so.1.13` with the first
+library's already-loaded copy — first one wins. That silently "works" only
+when both libraries were built against byte-compatible Julia versions and
+their sysimages don't collide on global runtime state; mismatched versions
+may crash or miscompute.
+
+Passing `privatize = true` to [`build_library`](@ref) salts each bundle's
+`libjulia` with a random SONAME prefix so the dynamic linker maps both
+copies independently. That removes the silent-sharing footgun at the
+linker layer, but two Julia runtimes in one process — independent GC root
+sets, two thread pools, two BLAS trampoline initializations, two signal
+handler registrations — is itself untested territory. We have no evidence
+the combination is robust.
+
+To make the situation loud rather than silent, every generated
+`_lowlevel.py` records its package name on a process-global sentinel
+(`sys._jlw_loaded_packages`) at import time and emits a `RuntimeWarning`
+when a second JLW-wrapped package is imported into the same process.
+Tracked as [issue #28](https://github.com/JuliaInterop/JuliaLibWrapping.jl/issues/28).
+
 ## Two-tier Python output
 
 `write_wrapper(PythonTarget, …)` emits three files into the generated package
