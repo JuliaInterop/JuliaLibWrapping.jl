@@ -312,8 +312,10 @@ const PYTHON_KEYWORDS = Set{String}([
     sanitize_python_argname(name, seen::Set{String}) -> String
 
 Return a Python-identifier form of `name`: characters illegal in identifiers
-are stripped via [`sanitize_for_c`](@ref), an empty result becomes `"_"`, and
-any reserved Python keyword is suffixed with `_`.
+are stripped via [`sanitize_for_c`](@ref), an empty result becomes `"_"`, a
+leading digit (legal in juliac-emitted tuple field names like `"1"`, `"2"`,
+…, but illegal in a Python identifier) is prefixed with `_`, and any reserved
+Python keyword is suffixed with `_`.
 
 When a `seen` set is supplied, the returned name is also made unique within
 that scope (callers should pass one `Set{String}` per scope — e.g. one per
@@ -326,6 +328,7 @@ numeric tail. The chosen name is inserted into `seen` before returning.
 function sanitize_python_argname(name::AbstractString, seen=nothing)
     sanitized = sanitize_for_c(name)
     isempty(sanitized) && (sanitized = "_")
+    isdigit(first(sanitized)) && (sanitized = "_" * sanitized)
     sanitized in PYTHON_KEYWORDS && (sanitized *= "_")
     if seen !== nothing
         if sanitized in seen

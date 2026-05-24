@@ -416,6 +416,23 @@ end
             @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "Foo_3"
             @test JuliaLibWrapping.mangle_python!(typedict, 3, typeinfo) == "Foo_4"
         end
+
+        @testset "sanitize_python_argname" begin
+            sanitize = JuliaLibWrapping.sanitize_python_argname
+            # Heterogeneous tuples (issue #21): juliac emits Tuple{Int32,Float64}
+            # as a struct with fields named "1", "2" — leading digits are illegal
+            # Python identifiers, so the emitter must prefix an underscore.
+            @test sanitize("1") == "_1"
+            @test sanitize("2") == "_2"
+            # Uniqueness still applies after the digit prefix.
+            seen = Set{String}()
+            @test sanitize("1", seen) == "_1"
+            @test sanitize("1", seen) == "_12"
+            # Existing behaviors still hold.
+            @test sanitize("name!") == "name"
+            @test sanitize("") == "_"
+            @test sanitize("class") == "class_"
+        end
     end
 
     @testset "cvector_struct_info" begin
