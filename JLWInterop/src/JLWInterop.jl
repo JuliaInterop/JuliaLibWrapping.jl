@@ -20,6 +20,14 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CVector, CMatrix, CString
 
+"""
+    JLW_MESSAGE_BYTES
+
+The fixed size, in bytes, of the inline `message` buffer inside
+[`JLWStatus`](@ref). Sets the maximum message length an error can
+carry across the ABI; longer strings passed to [`jlw_error`](@ref) are
+truncated to `JLW_MESSAGE_BYTES - 1` bytes plus a terminating NUL.
+"""
 const JLW_MESSAGE_BYTES = 256
 
 """

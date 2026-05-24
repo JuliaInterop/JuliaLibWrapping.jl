@@ -7,7 +7,7 @@ generated wrappers can translate them into native exceptions.
 
 ## The `JLWStatus` convention
 
-The canonical status struct is defined in the [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
+The canonical status struct is defined in the [JLWInterop](@ref)
 subdir package and has the following shape:
 
 ```julia

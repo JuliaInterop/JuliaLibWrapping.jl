@@ -1,10 +1,12 @@
 using JuliaLibWrapping
+using JLWInterop
 using Documenter
 
 DocMeta.setdocmeta!(JuliaLibWrapping, :DocTestSetup, :(using JuliaLibWrapping); recursive=true)
+DocMeta.setdocmeta!(JLWInterop, :DocTestSetup, :(using JLWInterop); recursive=true)
 
 makedocs(;
-    modules=[JuliaLibWrapping],
+    modules=[JuliaLibWrapping, JLWInterop],
     authors="Tim Holy <tim.holy@gmail.com> and contributors",
     sitename="JuliaLibWrapping.jl",
     format=Documenter.HTML(;
@@ -15,10 +17,10 @@ makedocs(;
     pages=[
         "Home" => "index.md",
         "Concepts" => "concepts.md",
+        "JLWInterop" => "jlwinterop.md",
         "Error handling" => "error_handling.md",
         "API reference" => "api.md",
     ],
-    warnonly=[:cross_references],  # CVector/CMatrix live in JLWInterop
 )
 
 deploydocs(;
