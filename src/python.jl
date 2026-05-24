@@ -147,6 +147,15 @@ function mangle_python!(typedict::Dict{Int, String}, type_id::Int,
     return mangled
 end
 
+"""
+    numpy_dtypes :: Dict{String, String}
+
+Map from Julia primitive type name to the corresponding numpy dtype
+string. Used by the Python façade emitter to decide which pointer
+element types can be exposed as numpy arrays in `CVector` / `CMatrix`
+helpers; primitives absent from this table (notably `Bool`, the
+platform-aliased C ints) are not auto-wrapped.
+"""
 const numpy_dtypes = Dict{String, String}(
     "Int8" => "int8", "Int16" => "int16", "Int32" => "int32", "Int64" => "int64",
     "UInt8" => "uint8", "UInt16" => "uint16", "UInt32" => "uint32", "UInt64" => "uint64",

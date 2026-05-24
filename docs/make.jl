@@ -14,8 +14,11 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Concepts" => "concepts.md",
         "Error handling" => "error_handling.md",
+        "API reference" => "api.md",
     ],
+    warnonly=[:cross_references],  # CVector/CMatrix live in JLWInterop
 )
 
 deploydocs(;
