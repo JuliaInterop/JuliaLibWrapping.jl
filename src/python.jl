@@ -651,6 +651,34 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "_lib = ctypes.CDLL(_resolve_library_path())")
     println(f)
 
+    # Detect a second JLW-wrapped library being loaded into the same process.
+    # The default bundle layout makes the dynamic linker satisfy the second
+    # library's `libjulia` dependency with the first library's already-loaded
+    # copy (first one wins, byte-compatible Julia versions assumed); with
+    # `privatize = True` each library gets its own libjulia but two Julia
+    # runtimes in one process is itself untested. See issue #28.
+    println(f, "_JLW_LOADED_ATTR = \"_jlw_loaded_packages\"")
+    println(f, "_jlw_loaded = getattr(sys, _JLW_LOADED_ATTR, None)")
+    println(f, "if _jlw_loaded is None:")
+    println(f, "    _jlw_loaded = set()")
+    println(f, "    setattr(sys, _JLW_LOADED_ATTR, _jlw_loaded)")
+    println(f, "_jlw_this_pkg = __package__ or __name__")
+    println(f, "if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:")
+    println(f, "    import warnings")
+    println(f, "    warnings.warn(")
+    println(f, "        f\"Loading JuliaLibWrapping-generated package {_jlw_this_pkg!r} into a \"")
+    println(f, "        f\"process that already loaded {sorted(_jlw_loaded)!r}. Multiple \"")
+    println(f, "        \"JLW-wrapped libraries in one process is not a supported \"")
+    println(f, "        \"configuration: the dynamic linker silently shares a single \"")
+    println(f, "        \"libjulia across them, which assumes byte-compatible Julia \"")
+    println(f, "        \"versions and shares one Julia runtime. See the JuliaLibWrapping \"")
+    println(f, "        \"docs section on multiple wrapped libraries in one process.\",")
+    println(f, "        RuntimeWarning,")
+    println(f, "        stacklevel=2,")
+    println(f, "    )")
+    println(f, "_jlw_loaded.add(_jlw_this_pkg)")
+    println(f)
+
     if needs_jlwerror
         # Implements issue #15: error-propagation convention via JLWStatus.
         print(f, JLWERROR_DEFINITION)
