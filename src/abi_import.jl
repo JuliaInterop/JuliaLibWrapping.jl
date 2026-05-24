@@ -24,6 +24,14 @@ struct PointerDesc
     pointee_type::Int # type of pointee
 end
 
+struct ArrayDesc
+    name::String
+    element_type::Int
+    count::Int
+    size::Int
+    alignment::Int
+end
+
 struct ArgDesc
     name::String
     type::Int
@@ -37,7 +45,7 @@ struct MethodDesc
     args::Vector{ArgDesc}
 end
 
-const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc}
+const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc, ArrayDesc}
 
 function from_json(::Type{PrimitiveTypeDesc}, type::Dict{String,Any})
     return PrimitiveTypeDesc(
@@ -69,6 +77,16 @@ function from_json(::Type{PointerDesc}, json::Dict{String, Any})
     return PointerDesc(json["name"], json["pointee_type_id"])
 end
 
+function from_json(::Type{ArrayDesc}, json::Dict{String, Any})
+    return ArrayDesc(
+        json["name"],
+        json["element_type_id"],
+        json["count"],
+        json["size"],
+        json["alignment"],
+    )
+end
+
 function from_json(::Type{TypeDesc}, json::Dict{String, Any})
     kind = json["kind"]::String
     if kind === "primitive"
@@ -77,6 +95,8 @@ function from_json(::Type{TypeDesc}, json::Dict{String, Any})
         return from_json(StructDesc, json)
     elseif kind === "pointer"
         return from_json(PointerDesc, json)
+    elseif kind === "array"
+        return from_json(ArrayDesc, json)
     else
         error("unexpected kind '$(json["kind"])' in type metadata")
     end
@@ -112,6 +132,8 @@ function build_type_graph(typedescs::OrderedDict{Int, TypeDesc};
             else
                 # pointee types don't affect data layout (no edges to add)
             end
+        elseif desc isa ArrayDesc
+            add_edge!(g, desc.element_type, id)
         elseif desc isa PrimitiveTypeDesc
             # dependency is tracked from the `struct` side
         end

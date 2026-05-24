@@ -39,6 +39,12 @@ support another output language.
 """
 function write_wrapper end
 
+# Field suffix for C array declarations: `T name[N];` rather than `T name;`.
+function c_field_array_suffix(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
+    desc = typeinfo[type_id]
+    return desc isa ArrayDesc ? "[" * string(desc.count) * "]" : ""
+end
+
 function write_wrapper(dest::CTarget, abi_info::ABIInfo)
     (; entrypoints, typeinfo, forward_declared) = abi_info
 
@@ -71,26 +77,42 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
                 println(f, "typedef struct ", mangled_name, " {")
                 for field in type.fields
                     ft = mangle_c!(typedict, field.type, typeinfo)
-                    if !in(unwrap_pointer_type(field.type, typeinfo), printed)
+                    field_desc = typeinfo[field.type]
+                    elt_id = field_desc isa ArrayDesc ? field_desc.element_type : field.type
+                    if !in(unwrap_pointer_type(elt_id, typeinfo), printed)
                         ft = "struct " * ft
                     end
-                    println(f, "    ", ft, " ", sanitize_for_c(field.name), ";")
+                    suffix = c_field_array_suffix(field.type, typeinfo)
+                    println(f, "    ", ft, " ", sanitize_for_c(field.name), suffix, ";")
                 end
                 println(f, "} ", mangled_name, ";")
             elseif type isa PrimitiveTypeDesc
                 # We only rely on built-in primitive types (c.f. `ctypes`)
             elseif type isa PointerDesc
                 # We emit pointer types in-line - no need for a separate typedef
+            elseif type isa ArrayDesc
+                # Arrays render inline at field-emit sites (`T name[N]`); no typedef.
             else @assert false "unknown descriptor type" end
             push!(printed, id)
         end
         println(f)
 
         for method in entrypoints
+            if typeinfo[method.return_type] isa ArrayDesc
+                error("C entrypoint `", method.symbol,
+                      "`: returning an array type is not representable in C; ",
+                      "wrap the result in a struct.")
+            end
             mangled_rt = mangle_c!(typedict, method.return_type, typeinfo)
             print(f, mangled_rt, " ", method.symbol, "(")
             isfirst = true
             for arg in method.args
+                if typeinfo[arg.type] isa ArrayDesc
+                    error("C entrypoint `", method.symbol, "`: argument `",
+                          arg.name, "` has array type, which decays to a ",
+                          "pointer in C parameters; wrap it in a struct or ",
+                          "pass `Ptr{<element>}` plus a length.")
+                end
                 if isfirst
                     isfirst = false
                 else
@@ -175,6 +197,12 @@ function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedD
         mangled = mangle_c!(typedict, type.pointee_type, typeinfo) * "*"
     elseif type isa StructDesc
         mangled = sanitize_for_c(type.name)
+    elseif type isa ArrayDesc
+        # In C, arrays do not have a single token that composes anywhere a
+        # type can appear — `T name[N]` requires the `[N]` to follow the
+        # declarator. Callers that emit an array-typed field add `[N]` after
+        # the field name; here we just hand back the element type's C name.
+        return mangle_c!(typedict, type.element_type, typeinfo)
     end
 
     # Check for any name collision and unique the symbol, if necessary.
