@@ -47,12 +47,10 @@ result = build_library(
 ```
 
 `build_library` invokes `juliac` to produce the shared library and ABI
-JSON, then applies [`write_wrapper`](@ref) to each target. The supported
-route is [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl) (a weak
-dependency): load it with `using JuliaC` before calling
-`build_library`. ABI developers who want to try features ahead of
-JuliaC.jl can opt into the unstable in-tree
-`share/julia/juliac/juliac.jl` script by passing `backend = :script`.
+JSON, then applies [`write_wrapper`](@ref) to each target. The pipeline
+is driven through [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)
+(a weak dependency): load it with `using JuliaC` before calling
+`build_library`.
 
 Relative `[sources]` paths in the entry project's `Project.toml` are
 rejected up front, because `juliac` relocates the project into a

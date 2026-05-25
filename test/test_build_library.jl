@@ -100,18 +100,6 @@ using Test
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
         proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
 
-        # bundle = true is incompatible with the :script backend.
-        err = try
-            build_library(entry, AbstractTarget[]; project = proj,
-                          libname = "abi_stress", backend = :script,
-                          bundle = true)
-            nothing
-        catch e
-            e
-        end
-        @test err isa ArgumentError
-        @test occursin("requires backend = :juliac", err.msg)
-
         # bundle = true with a PythonTarget lacking bundle_subdir must
         # fail-fast: silently writing into the package would leave the
         # generated loader looking in the wrong place.
@@ -130,11 +118,11 @@ using Test
     end
 
     @testset "end-to-end" begin
-        # Drive the full pipeline against examples/abi_stress for both
-        # backends. The compile step is expensive (~minutes), so this is
-        # gated on having a usable juliac available. On CI it's a hard
-        # error if the prerequisites are present but the build fails,
-        # mirroring the python3 pattern elsewhere.
+        # Drive the full pipeline against examples/abi_stress. The compile
+        # step is expensive (~minutes), so this is gated on having a
+        # usable juliac available. On CI it's a hard error if the
+        # prerequisites are present but the build fails, mirroring the
+        # python3 pattern elsewhere.
         has_julia = Sys.which("julia") !== nothing
         has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
         juliac_ok = has_julia && VERSION >= v"1.13.0-rc1" && has_cc
@@ -144,35 +132,27 @@ using Test
             entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
                              "src", "abi_stress.jl")
             proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
-            for backend in (:juliac, :script)
-                @testset "backend = $backend" begin
-                    mktempdir() do out
-                        # Use the currently-running interpreter so the
-                        # :script backend works regardless of what
-                        # `julia` resolves to on PATH.
-                        result = build_library(entry,
-                            [CTarget(out, "abi_stress"),
-                             PythonTarget(out, "abi_stress_py", "abi_stress")];
-                            project = proj, libname = "abi_stress",
-                            libdir = out, backend,
-                            julia = Base.julia_cmd())
-                        @test isfile(result.library)
-                        @test isfile(result.abi_path)
-                        @test result.abi_info isa JuliaLibWrapping.ABIInfo
-                        @test result.backend === backend
+            mktempdir() do out
+                result = build_library(entry,
+                    [CTarget(out, "abi_stress"),
+                     PythonTarget(out, "abi_stress_py", "abi_stress")];
+                    project = proj, libname = "abi_stress",
+                    libdir = out)
+                @test isfile(result.library)
+                @test isfile(result.abi_path)
+                @test result.abi_info isa JuliaLibWrapping.ABIInfo
+                @test result.backend === :juliac
 
-                        header = read(joinpath(out, "abi_stress.h"), String)
-                        @test occursin("tree_size", header)
-                        @test occursin("countsame", header)
+                header = read(joinpath(out, "abi_stress.h"), String)
+                @test occursin("tree_size", header)
+                @test occursin("countsame", header)
 
-                        lowlevel = joinpath(out, "abi_stress_py", "_lowlevel.py")
-                        @test isfile(lowlevel)
-                        python3 = Sys.which("python3")
-                        if python3 !== nothing
-                            cmd = `$python3 -c "import ast; ast.parse(open('$lowlevel').read())"`
-                            @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
-                        end
-                    end
+                lowlevel = joinpath(out, "abi_stress_py", "_lowlevel.py")
+                @test isfile(lowlevel)
+                python3 = Sys.which("python3")
+                if python3 !== nothing
+                    cmd = `$python3 -c "import ast; ast.parse(open('$lowlevel').read())"`
+                    @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
                 end
             end
         end
