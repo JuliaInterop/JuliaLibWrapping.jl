@@ -309,7 +309,7 @@ end
 
 Return a success status: code 0 with an empty message buffer.
 """
-jlw_ok() = JLWStatus(Int32(0), ntuple(_ -> 0x00, JLW_MESSAGE_BYTES))
+jlw_ok() = JLWStatus(Int32(0), ntuple(_ -> 0x00, Val(JLW_MESSAGE_BYTES)))
 
 """
     jlw_error(code::Integer, msg::AbstractString) -> JLWStatus
@@ -323,7 +323,7 @@ Constructing this status performs no heap allocation.
 function jlw_error(code::Integer, msg::AbstractString)
     bytes = codeunits(msg)
     n = min(length(bytes), JLW_MESSAGE_BYTES - 1)
-    buf = ntuple(JLW_MESSAGE_BYTES) do i
+    buf = ntuple(Val(JLW_MESSAGE_BYTES)) do i
         i <= n ? bytes[i] : 0x00
     end
     return JLWStatus(Int32(code), buf)
