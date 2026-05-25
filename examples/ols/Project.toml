@@ -1,0 +1,17 @@
+name = "ols"
+uuid = "7e81292c-b63a-42d7-9477-255b6fedc2ed"
+version = "0.0.1"
+
+[deps]
+JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+# Note: `[sources]` is intentionally absent. `build.jl` materializes a
+# transient project in a temp directory with `[sources]` pointing at an
+# absolute path to the in-tree `JLWInterop/`, so this file stays free of
+# any machine-specific path. Tutorial readers who hand-write their own
+# entry project will add their own `[sources]` here.
+
+[compat]
+JLWInterop = "0.1"
+julia = "1.13"

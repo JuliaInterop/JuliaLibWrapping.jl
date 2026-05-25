@@ -11,6 +11,10 @@ It turns the ABI metadata that `juliac` emits into wrappers that let
 non-Julia programs call the compiled library as if it were any other
 native dependency.
 
+New to the package? Start with the [tutorial](@ref "Tutorial: wrap an
+OLS regression library") — it walks a small library end to end, from
+Julia source through `pip install` to numpy-flavored Python.
+
 ## Who it is for
 
 Authors of Julia libraries who want to ship a compiled artifact that
@@ -36,6 +40,9 @@ bundling, multi-library, and two-tier output stories.
 
 ## Where to go next
 
+- [Tutorial: wrap an OLS regression library](@ref) — the on-ramp:
+  one library, end to end, from Julia source through `pip install`
+  to numpy-flavored Python.
 - [Concepts](@ref) — the pipeline, the ABI data model, the extension
   point for new target languages, and the runtime-closure / bundling
   story.
