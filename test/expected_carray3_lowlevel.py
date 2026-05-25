@@ -6,8 +6,8 @@ import pathlib
 import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcmatrix"
-_LIBRARY_ENV_VAR = "CMATRIX_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcarray3"
+_LIBRARY_ENV_VAR = "CARRAY3_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -53,15 +53,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CMatrix_Float64(ctypes.Structure):
+class CArray_Float64_3(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 2)),
+        ("dims", (ctypes.c_int32 * 3)),
         ("data", ctypes.POINTER(ctypes.c_double)),
     ]
 
     @classmethod
     def from_numpy(cls, arr):
-        """Return a CArray view of the 2-D numpy array `arr`.
+        """Return a CArray view of the 3-D numpy array `arr`.
 
         CArray storage is column-major (Julia / Fortran order). A default
         row-major (C-order) numpy array is REJECTED rather than silently
@@ -69,21 +69,21 @@ class CMatrix_Float64(ctypes.Structure):
         Raises ValueError on ndim, contiguity, or dtype mismatch. The returned
         object holds a reference to `arr`, so the caller must keep it alive for
         the duration of any C call that uses the buffer."""
-        if arr.ndim != 2:
-            raise ValueError(f"expected 2-D array, got {arr.ndim}-D")
+        if arr.ndim != 3:
+            raise ValueError(f"expected 3-D array, got {arr.ndim}-D")
         if not arr.flags.f_contiguous:
             raise ValueError("array must be Fortran-contiguous (column-major); "
                              "use np.asfortranarray(arr) to convert")
         expected_dtype = np.dtype("float64")
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float64, got {arr.dtype}")
-        obj = cls(dims=(ctypes.c_int32 * 2)(*arr.shape),
+        obj = cls(dims=(ctypes.c_int32 * 3)(*arr.shape),
                   data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
         obj._buffer = arr
         return obj
 
     def as_numpy(self):
-        """Return a 2-D column-major numpy view of the underlying buffer (no copy).
+        """Return a 3-D column-major numpy view of the underlying buffer (no copy).
 
         The view has shape `tuple(self.dims)` and Fortran (column-major) strides,
         matching the storage layout."""
@@ -92,8 +92,8 @@ class CMatrix_Float64(ctypes.Structure):
         # shape and strides.
         return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T
 
-_lib.trace_cmatrix.argtypes = [CMatrix_Float64]
-_lib.trace_cmatrix.restype = ctypes.c_double
-def trace_cmatrix(m):
-    return _lib.trace_cmatrix(m)
+_lib.sum3d.argtypes = [CArray_Float64_3]
+_lib.sum3d.restype = ctypes.c_double
+def sum3d(a):
+    return _lib.sum3d(a)
 

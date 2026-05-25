@@ -59,41 +59,43 @@ jlw_error
 JLW_MESSAGE_BYTES
 ```
 
-## `CVector{T}` — 1-D numeric buffer
+## `CArray{T,N}` — N-D numeric buffer (column-major)
 
-`CVector{T}` is `(length::Int32, data::Ptr{T})`. The caller owns the
-storage; `CVector` borrows. For primitive numeric `T`, the Python
-emitter generates `from_numpy` / `as_numpy` helpers so a Python
-caller can pass a `numpy.ndarray` directly without copying.
+`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T})`, laid out
+in **column-major** order — the same convention as `Array{T,N}` and
+Fortran, not C. The caller owns the storage; `CArray` borrows. For
+primitive numeric `T`, the Python emitter generates
+`from_numpy` / `as_numpy` helpers so a Python caller can pass a
+`numpy.ndarray` directly without copying.
 
-Because `CVector{T} <: AbstractVector{T}`, it participates in
-iteration, broadcasting, `sum`, views, and any function that accepts
-an `AbstractVector{T}` — at zero allocation. `setindex!` is defined
-unconditionally; only call it on storage you know to be writable.
+The 1-D and 2-D specializations have familiar aliases:
 
-```@docs
-CVector
+```julia
+const CVector{T} = CArray{T,1}
+const CMatrix{T} = CArray{T,2}
 ```
 
-## `CMatrix{T}` — 2-D numeric buffer (column-major)
+mirroring Julia's own `Vector{T} = Array{T,1}` / `Matrix{T} = Array{T,2}`.
+You can use either the alias or the underlying `CArray{T,N}` form; they
+are the same type.
 
-`CMatrix{T}` is `(rows::Int32, cols::Int32, data::Ptr{T})`, laid out
-in **column-major** order — the same convention as `Matrix{T}` and
-Fortran, not C. The same ownership discipline as `CVector` applies.
-
-The column-major choice has a sharp consequence on the Python side:
-the generated `from_numpy` helper requires a Fortran-contiguous
-(column-major) array and **rejects** a default row-major `ndarray`.
-Silently treating a row-major buffer as column-major would transpose
-the matrix without warning, which is a footgun no caller asks for.
+The column-major choice has a sharp consequence on the Python side
+for `N ≥ 2`: the generated `from_numpy` helper requires a
+Fortran-contiguous array and **rejects** a default row-major
+`ndarray`. Silently treating a row-major buffer as column-major would
+transpose without warning, which is a footgun no caller asks for.
 Python callers wrapping a default numpy array must `.copy(order='F')`
-first.
+(or `np.asfortranarray(arr)`) first.
 
-`CMatrix{T} <: AbstractMatrix{T}` with `IndexLinear()`, so `m[i, j]`
-reads slot `(j-1)*rows + i` and the type plugs into `LinearAlgebra`
-routines at zero allocation.
+`CArray{T,N} <: AbstractArray{T,N}` with `IndexLinear()` style, so
+the type participates in iteration, broadcasting, `sum`, views, and
+any function that accepts an `AbstractArray{T,N}` — at zero
+allocation. `setindex!` is defined unconditionally; only call it on
+storage you know to be writable.
 
 ```@docs
+CArray
+CVector
 CMatrix
 ```
 

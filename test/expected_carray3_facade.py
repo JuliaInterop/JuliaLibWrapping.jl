@@ -1,4 +1,4 @@
-"""demo idiomatic façade.
+"""carray3_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -14,17 +14,14 @@ The mechanical bindings live in `_lowlevel.py` and are regenerated
 on every `write_wrapper` call.
 """
 from . import _lowlevel  # noqa: F401
+import numpy as np  # noqa: F401
 
 from ._lowlevel import (
-    JLWStatus,
-    ResultStruct,
-    JLWError,
+    CArray_Float64_3,
 )
 
-from ._lowlevel import compute  # TODO: hand-wrap — returns struct `ResultStruct` with embedded JLWStatus; idiomatic shaping depends on the other fields
-from ._lowlevel import plain_add
+def sum3d(a):
+    _a = CArray_Float64_3.from_numpy(a)
+    return _lowlevel.sum3d(_a)
 
-def do_thing(x):
-    _lowlevel.do_thing(x)
-
-__all__ = ["JLWStatus", "ResultStruct", "JLWError", "do_thing", "compute", "plain_add"]
+__all__ = ["CArray_Float64_3", "sum3d"]
