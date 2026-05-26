@@ -1,0 +1,26 @@
+# Build-tooling environment for the OLS tutorial.
+#
+# `build.jl` pushes this directory onto `LOAD_PATH` so that
+# `using JuliaLibWrapping` resolves here. This is intentionally
+# separate from the entry project (`../Project.toml`), which describes
+# the *runtime* dependency closure baked into `ols.so` by `juliac`.
+#
+# Instantiate once:
+#
+#     julia --project=examples/ols/build-env -e 'using Pkg; Pkg.instantiate()'
+#
+# The `[sources]` line below pins JuliaLibWrapping to the in-tree
+# checkout; tutorial readers writing their own library will drop it
+# once JuliaLibWrapping is registered.
+
+[deps]
+JuliaC = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
+JuliaLibWrapping = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
+
+[sources]
+JuliaLibWrapping = {path = "../../.."}
+
+[compat]
+JuliaC = "0.3"
+JuliaLibWrapping = "0.1"
+julia = "1.13"

@@ -1,31 +1,34 @@
 # Build the OLS tutorial library end-to-end with a bundled Python package.
-# Run from this directory with the Julia 1.13 release candidate:
+# Run from this directory with a recent enough Julia 1.13:
 #
-#   julia +rc --project=. build.jl
+#   julia --project=. build.jl
 #
-# Output lands in `out/`:
-#   out/ols.so         — the compiled shared library
-#   out/ols.h          — the C header
-#   out/ols_py/        — the Python package (with `bundle/` runtime closure)
+# Output lands in `out/`. See `../../docs/src/tutorial.md` for the full
+# walkthrough. The build-env at `./build-env/` must be instantiated once:
 #
-# The bundled tree is several hundred MiB; that is what lets a downstream
-# `pip install ./out/ols_py` work in a clean venv with no system Julia.
+#   julia --project=build-env -e 'using Pkg; Pkg.instantiate()'
 #
-# `juliac` requires `[sources]` entries in the entry project's `Project.toml`
-# to be absolute paths, so this script materializes a transient project in a
-# temp directory with `[sources]` pointing at the in-tree `JLWInterop/`. The
-# committed `Project.toml` therefore stays free of any machine-specific path.
+# In a tutorial-shaped library (post-registration of JuliaLibWrapping and
+# JLWInterop) this script collapses to:
+#
+#     push!(LOAD_PATH, joinpath(@__DIR__, "build-env"))
+#     using JuliaLibWrapping, JuliaC
+#     standard_build(@__DIR__; libname = "ols", verbose = true)
+#
+# `using JuliaC` is what activates JuliaLibWrapping's weak dependency
+# on JuliaC.jl — without it, `build_library` errors with a hint.
+#
+# The extra machinery below exists only because we are dogfooding against
+# the in-tree `JLWInterop/` checkout: `juliac` requires `[sources]` paths
+# in the entry project to be absolute, so we materialize a transient copy
+# of `Project.toml` with `[sources]` injected. Once `JLWInterop` is
+# registered, the `prepare_project` step disappears too.
 
 using TOML: TOML
-using JuliaLibWrapping
-using JuliaC
 
 const HERE        = @__DIR__
-const OUT         = joinpath(HERE, "out")
-const ENTRY       = joinpath(HERE, "src", "ols.jl")
 const JLW_INTEROP = abspath(joinpath(HERE, "..", "..", "JLWInterop"))
 
-# Materialize a temp project with absolute `[sources]` for this machine.
 function prepare_project()
     toml = TOML.parsefile(joinpath(HERE, "Project.toml"))
     sources = get(toml, "sources", Dict{String, Any}())
@@ -38,13 +41,12 @@ function prepare_project()
     return tmp
 end
 
-result = build_library(ENTRY,
-    [CTarget(OUT, "ols"),
-     PythonTarget(OUT, "ols_py", "ols"; bundle_subdir = "bundle")];
-    project = prepare_project(),
+push!(LOAD_PATH, joinpath(HERE, "build-env"))
+using JuliaLibWrapping, JuliaC
+
+result = standard_build(HERE;
     libname = "ols",
-    libdir  = OUT,
-    bundle  = true,
+    project = prepare_project(),
     verbose = true,
 )
 

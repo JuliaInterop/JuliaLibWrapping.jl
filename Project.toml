@@ -1,6 +1,6 @@
 name = "JuliaLibWrapping"
 uuid = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
-version = "1.0.0-DEV"
+version = "0.1"
 authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
 
 [deps]

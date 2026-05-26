@@ -10,12 +10,11 @@ library, run [`build_library`](@ref) to compile it and emit wrappers,
 worked example lives in `examples/ols/` and stays buildable as the
 package evolves.
 
-The subject is ordinary least squares (OLS) regression. The algorithm
-is incidental — what matters is that one library exercises every
-recognized [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
-type:
+The subject is ordinary least squares (OLS) regression, which exercises several
+[JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
+types:
 
-| Vocabulary type            | Where it appears in `ols`            |
+| JLWInterop type            | Where it appears in `ols`            |
 |----------------------------|--------------------------------------|
 | `CMatrix{Float64}`         | design matrix `X`                    |
 | `CVector{Float64}`         | response `y`, coefficients, predictions |
@@ -23,6 +22,12 @@ type:
 | `CString`                  | output buffer for `summary_report`   |
 | `JLWStatus` (direct)       | return of `predict`                  |
 | `JLWStatus` (embedded)     | `FitResult.status` field             |
+
+`CMatrix` and `CVector` are specific cases of `CArray`, the multi-dimensional
+array type in JLWInterop.
+
+The core of the algorithm is a single statement, `X \ y`, using Julia's own
+LinearAlgebra for computation.
 
 ## 1. The Julia source
 
@@ -59,7 +64,7 @@ Base.@ccallable function summary_report(result::FitResult,
 
 `coeffs_buf` and `out` are *caller-allocated* buffers: the library
 writes into them but does not own them. This is the same discipline
-JLWInterop documents for all its pointer-bearing types — see
+JLWInterop documents for all its pointer-bearing types, notably
 `CArray` and `CString`.
 
 Errors travel back as a `JLWStatus`,
@@ -68,14 +73,6 @@ a return struct (`fit`'s `FitResult`). The Python emitter recognizes
 both forms and translates a non-zero `code` into a
 `JLWError` exception — see [Error handling](@ref "Error handling
 across the ABI").
-
-!!! note "About the algorithm"
-    `fit` is a one-liner: `coeffs = X \\ y`. The interesting story is
-    the wrapping, not the math. Production code with many predictors,
-    rank-deficient inputs, or weighting concerns would substitute a
-    proper factorization — the wrapping contract (`CMatrix{Float64}`
-    in, caller-allocated `CVector{Float64}` out, `JLWStatus` for
-    failures) does not change.
 
 ## 2. The entry `Project.toml`
 
@@ -90,66 +87,87 @@ version = "0.0.1"
 JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
-[sources]
-JLWInterop = {path = "/absolute/path/to/JuliaLibWrapping/JLWInterop"}
-
 [compat]
 JLWInterop = "0.1"
 julia = "1.13"
 ```
 
-Two things to call out:
+There are two things to point out:
 
-- The `julia = "1.13"` floor is mandatory; the `juliac` feature that
-  emits the ABI JSON shipped in Julia 1.13.
-- `[sources]` paths must be **absolute**. `juliac` relocates the
-  project into a temporary directory before compiling, so a relative
-  path cannot be resolved. [`build_library`](@ref) rejects relative
-  `[sources]` up front with a clear error.
+- The requirement for `julia = "1.13"` cannot be changed to an earlier Julia
+  release, as the features needed to build language bindings shipped in Julia
+  1.13. The OLS example here calls into BLAS via `\`, and that path needs Julia
+  1.13.0-rc2 or later (or any build of the `backports-release-1.13` branch from
+  2026-05-20 onward).
 
-The in-tree `examples/ols/Project.toml` deliberately omits `[sources]`
-so the file does not bake in a machine-specific path; its `build.jl`
-instead materializes a transient project in a temp directory with
-`[sources]` computed from `@__DIR__` and passes that as the `project=`
-argument to [`build_library`](@ref). Authoring a fresh library, you
-would normally just write `[sources]` once with your local absolute
-path.
+- The `[deps]` here describe what must be baked into `ols.so`. Keep it minimal,
+  without build tooling or test dependencies. If you need a `[sources]` entry to
+  point at a local checkout, use an absolute path: `juliac` relocates the
+  project into a temporary directory before compiling, so relative `[sources]`
+  paths cannot be resolved, and [`build_library`](@ref) rejects them.
 
 ## 3. Build the library and Python package
 
-`examples/ols/build.jl` is the driver:
+Two distinct environments are in play during a build:
 
-```julia
-using JuliaLibWrapping
-using JuliaC
+- The **entry project** (`examples/ols/Project.toml`, activated by
+  `julia --project=.`) declares the runtime deps just described.
+- A **build-env** (`examples/ols/build-env/Project.toml`) declares the
+  build tooling — [JuliaLibWrapping](https://github.com/JuliaInterop/JuliaLibWrapping.jl)
+  and [JuliaC](https://github.com/JuliaLang/JuliaC.jl). `build.jl` pushes
+  this directory onto `LOAD_PATH` so that `using JuliaLibWrapping`
+  resolves there. Keeping the build tooling out of the entry project's
+  `[deps]` is what lets your library remain reasonably minimal.
 
-const HERE  = @__DIR__
-const OUT   = joinpath(HERE, "out")
-const ENTRY = joinpath(HERE, "src", "ols.jl")
+The build-env's `Project.toml` is just:
 
-result = build_library(ENTRY,
-    [CTarget(OUT, "ols"),
-     PythonTarget(OUT, "ols_py", "ols"; bundle_subdir = "bundle")];
-    project = HERE,
-    libname = "ols",
-    libdir  = OUT,
-    bundle  = true,
-    verbose = true,
-)
+```toml
+[deps]
+JuliaC = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
+JuliaLibWrapping = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
+
+[compat]
+JuliaC = "0.3"
+JuliaLibWrapping = "0.1"
+julia = "1.13"
 ```
 
-Run it with the Julia 1.13 release candidate:
+Instantiate it once:
+
+```sh
+julia --project=examples/ols/build-env -e 'using Pkg; Pkg.instantiate()'
+```
+
+To handle the two-environment split, we'll push `build-env` onto `LOAD_PATH`,
+making it reachable, and then pop it again once the build concludes.
+Here is the `build.jl` script:
+
+```julia
+push!(LOAD_PATH, joinpath(@__DIR__, "build-env"))
+using JuliaLibWrapping, JuliaC
+
+standard_build(@__DIR__; libname = "ols", verbose = true)
+pop!(LOAD_PATH)
+```
+
+`using JuliaC` is what activates JuliaLibWrapping's weak dependency on
+[JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl); without it
+[`build_library`](@ref) errors with a hint pointing at this line.
+
+[`standard_build`](@ref) is a convenience wrapper around
+[`build_library`](@ref) for the conventional layout — `src/<libname>.jl`
+as the entry, `out/` as the artifact directory, both a C header and a
+bundled Python `ctypes` package named `<libname>_py`. For layouts
+outside that convention, or to drop one of the targets, call
+[`build_library`](@ref) directly; `standard_build`'s docstring shows
+the equivalent expansion.
+
+Then run the build:
 
 ```sh
 cd examples/ols
-julia +rc --project=. build.jl
+julia --project=. build.jl
 ```
-
-`JuliaLibWrapping` and `JuliaC` need to be loadable — typically
-`Pkg.develop` them into your global v1.13 environment, so the entry
-project's stripped-down `[deps]` (just `JLWInterop`) reflects the
-*runtime* dependencies of the compiled library rather than the build
-tooling.
 
 After a successful build, `out/` contains:
 
@@ -169,11 +187,6 @@ Julia on their machine. See the bundling section of the
 [overview](@ref "Bundling for distribution") for what is in the bundle
 tree and how the loader finds `libjulia` from inside the wheel.
 
-The default backend is `:juliac` (via [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl));
-ABI developers chasing features ahead of JuliaC.jl can opt into the
-unstable in-tree `share/julia/juliac/juliac.jl` script via
-`backend = :script`.
-
 ## 4. Install the Python package
 
 Create a clean virtualenv with no system Julia, and install:
@@ -192,9 +205,10 @@ required.
 
 ## 5. Call it from Python
 
-`predict` is auto-wrapped — its arguments and return are all
-recognized, so the façade accepts numpy arrays and raises `JLWError`
-on a non-zero status:
+To verify that things work, first we'll try calling `predict`, which is
+auto-wrapped because its arguments and return are all recognized as known types
+to JuliaLibWrapping's emitter. We'll call `predict` twice, once with correct
+inputs and once with incorrect ones to verify that errors work as expected:
 
 ```python
 import numpy as np
@@ -213,17 +227,17 @@ except JLWError as e:
     print(e.code, e.message)   # 1, "coeffs length must match X cols"
 ```
 
-`np.asfortranarray` is required for any `CMatrix{T}` argument:
-JLWInterop's `CArray` is column-major, and the façade rejects a
-row-major view rather than silently transposing.
+`np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
+`CArray` is column-major, and the automatically created façade rejects a
+row-major view rather than silently transposing. In a moment you'll
+see how to edit the wrapper, so you can choose any interface you wish.
 
-`fit` returns a `FitResult` struct that *contains* a `JLWStatus`.
-The emitter doesn't know how to shape that idiomatically (numpy of
-`coeffs`? a tuple? the whole struct?), so the starter façade
-re-exports it from `_lowlevel` with a `TODO: hand-wrap` comment
-naming the obstacle. You edit `_facade.py` to provide the wrapper
-you want. The mechanical layer still raises `JLWError` on a non-zero
-status, so a sklearn-flavored hand wrap is just:
+In contrast with `predict`, `fit` is not automatically wrapped: it returns a
+`FitResult`, and JuliaLibWrapping declines to make choices about what that
+should look like from the Python perspective. The starter façade re-exports it
+from `_lowlevel` with a `TODO: hand-wrap` comment naming the obstacle. You edit
+`_facade.py` to provide the wrapper you want. The mechanical layer still raises
+`JLWError` on a non-zero status, so a sklearn-flavored hand wrap is just:
 
 ```python
 # in ols_py/_facade.py, replacing the auto-generated TODO line
@@ -267,7 +281,9 @@ When you add a new `Base.@ccallable` to `ols.jl`:
   it can, leaving `# TODO: hand-wrap` markers where it cannot).
 - `__init__.py` is regenerated to re-export from `_facade`.
 
-A common pattern is to keep `_facade.py` checked into your own
-repository alongside the build script, treating it as hand-written
-glue that occasionally absorbs new auto-wrappers when you delete
-and regenerate it.
+A common pattern is to keep `_facade.py` checked into your own repository
+alongside the build script, treating it as hand-written glue. If you need to
+automatically wrap new functions, currently the best option is to create a
+branch in which you delete it, regenerate it with a fresh build, and then copy
+the new pieces you want to keep into your existing hand-edited `_facade.py` and
+make any additional edits needed for the new code.

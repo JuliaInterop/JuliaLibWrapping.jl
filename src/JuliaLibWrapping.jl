@@ -4,7 +4,7 @@ using OrderedCollections: OrderedDict
 using Graphs: SimpleDiGraph, add_edge!, strongly_connected_components, topological_sort
 using JSON: JSON
 
-export parse_abi_info, read_abi_info, write_wrapper, build_library
+export parse_abi_info, read_abi_info, write_wrapper, build_library, standard_build
 export AbstractTarget, CTarget, PythonTarget, ABIInfo
 
 include("abi_import.jl")
