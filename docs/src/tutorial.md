@@ -31,8 +31,8 @@ LinearAlgebra for computation.
 
 ## 1. The Julia source
 
-`examples/ols/src/ols.jl` defines three [`Base.@ccallable`] entrypoints
-on top of JLWInterop's vocabulary:
+`examples/ols/src/ols.jl` defines three `Base.@ccallable` entrypoints.
+Note that all three of these take arguments with types defined in JLWInterop:
 
 ```julia
 module ols
@@ -62,10 +62,12 @@ Base.@ccallable function summary_report(result::FitResult,
                                          buf::CString)::JLWStatus
 ```
 
+!!! tip
+    To see the full source code, check the `examples/ols/src` directory.
+
 `coeffs_buf` and `out` are *caller-allocated* buffers: the library
-writes into them but does not own them. This is the same discipline
-JLWInterop documents for all its pointer-bearing types, notably
-`CArray` and `CString`.
+writes into them but does not own them. This is generally true for
+JLWInterop types that hold pointers, `CArray` and `CString`.
 
 Errors travel back as a `JLWStatus`,
 either returned directly (`predict`, `summary_report`) or embedded in
@@ -81,7 +83,7 @@ A minimal `Project.toml` for the library:
 ```toml
 name = "ols"
 uuid = "7e81292c-b63a-42d7-9477-255b6fedc2ed"
-version = "0.0.1"
+version = "0.1.0"
 
 [deps]
 JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
@@ -132,10 +134,14 @@ JuliaLibWrapping = "0.1"
 julia = "1.13"
 ```
 
-Instantiate it once:
+Henceforth it will be assumed that you are in the directory containing both
+environments (e.g., `examples/ols`):
+
+Instantiate each environment from your shell:
 
 ```sh
-julia --project=examples/ols/build-env -e 'using Pkg; Pkg.instantiate()'
+julia --project=build-env -e 'using Pkg; Pkg.instantiate()'
+julia --project -e 'using Pkg; Pkg.instantiate()'
 ```
 
 To handle the two-environment split, we'll push `build-env` onto `LOAD_PATH`,
@@ -162,10 +168,9 @@ outside that convention, or to drop one of the targets, call
 [`build_library`](@ref) directly; `standard_build`'s docstring shows
 the equivalent expansion.
 
-Then run the build:
+Then run the build from your shell:
 
 ```sh
-cd examples/ols
 julia --project=. build.jl
 ```
 
@@ -189,14 +194,22 @@ tree and how the loader finds `libjulia` from inside the wheel.
 
 ## 4. Install the Python package
 
-Create a clean virtualenv with no system Julia, and install:
+Create a clean virtualenv with no system Julia, and install. Put the
+virtualenv **outside** the entry-project directory (here, `/tmp/ols-venv`):
+`juliac` copies the whole project tree on every build, and a venv nested
+inside it has symlinks that break that copy.
 
 ```sh
 python -m venv /tmp/ols-venv
 source /tmp/ols-venv/bin/activate
 pip install numpy
-pip install ./examples/ols/out/
+pip install -e ./out
 ```
+
+The leading `./` matters: `pip install out` would treat `out` as a
+package name and fetch an unrelated project from PyPI. The `-e`
+(editable) flag installs the package in place, so the `_facade.py`
+edits you make in the next section take effect without reinstalling.
 
 The bundled `libjulia` and stdlibs live inside the wheel; the loader
 in `_lowlevel.py` searches `bundle/lib/` first so the baked-in
@@ -204,6 +217,8 @@ in `_lowlevel.py` searches `bundle/lib/` first so the baked-in
 required.
 
 ## 5. Call it from Python
+
+### Verifying that the basics work
 
 To verify that things work, first we'll try calling `predict`, which is
 auto-wrapped because its arguments and return are all recognized as known types
@@ -227,10 +242,16 @@ except JLWError as e:
     print(e.code, e.message)   # 1, "coeffs length must match X cols"
 ```
 
+This should be run (or copy/pasted line-by-line) in a python shell running
+in the activated environment. If `out` is `array([2.04, 4.02, 6.  , 7.98, 9.96])`,
+and you see the expected error message, all is working as expected.
+
 `np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
 row-major view rather than silently transposing. In a moment you'll
 see how to edit the wrapper, so you can choose any interface you wish.
+
+### Making edits to the wrapper
 
 In contrast with `predict`, `fit` is not automatically wrapped: it returns a
 `FitResult`, and JuliaLibWrapping declines to make choices about what that
@@ -250,15 +271,23 @@ def fit(X, y):
         _lowlevel.CVector_Float64.from_numpy(y),
         _lowlevel.CVector_Float64.from_numpy(coeffs),
     )
-    return coeffs, float(result.r_squared)
+    return coeffs, result
 ```
+
+Note that `fit` accepts a plain (row-major) `X` and converts it with
+`np.asfortranarray` internally, so callers are spared the manual step
+that `predict` required. Alongside the coefficients we return the raw
+`result` struct, which carries `r_squared` and is what `summary_report`
+(next) consumes. A production wrapper might instead bundle these into a
+small result object exposing `coeffs`, `r_squared`, and a `.summary()`
+method; this returns the pieces directly to keep the example short.
 
 `summary_report` is also a hand-wrap case (its `FitResult` argument
 is an unrecognized struct). The caller allocates a writable
 `CString` buffer, passes it in, and decodes the bytes after the call:
 
 ```python
-def summary(result_struct, capacity=256):
+def summary_report(result_struct, capacity=256):
     import ctypes
     buf_bytes = (ctypes.c_uint8 * capacity)()
     buf = _lowlevel.CString(
@@ -268,6 +297,35 @@ def summary(result_struct, capacity=256):
     _lowlevel.summary_report(result_struct, buf)
     return bytes(buf_bytes).rstrip(b"\x00").decode("utf-8")
 ```
+
+### Trying out `fit` and `summary_report`
+
+With both wrappers in place, the two compose directly. `fit` is the
+inverse direction of `predict`: hand it a design matrix and observed
+responses, get back the coefficients. To make the result easy to check,
+we feed it the predictions from the `predict` call above as the
+observations — a perfectly linear `y`, so `fit` should recover the same
+`[0.06, 1.98]` with an `R²` of `1.0`. Restart Python first so the
+`_facade.py` edits are picked up (the editable install means no
+reinstall is needed):
+
+```python
+import numpy as np
+from ols_py import fit, summary_report
+
+X = np.column_stack([np.ones(5), np.arange(1.0, 6.0)])   # row-major is fine here
+y = np.array([2.04, 4.02, 6.0, 7.98, 9.96])              # the predictions from §5, now treated as data
+
+coeffs, result = fit(X, y)
+print(coeffs)                   # ≈ [0.06, 1.98] — the coefficients predict() used
+print(result.r_squared)         # 1.0 (the points lie exactly on a line)
+print(summary_report(result))   # "OLS fit: 2 coefficients, R^2 = 1.0"
+```
+
+The `result` returned by `fit` is exactly the `FitResult` struct
+`summary_report` expects, so the two chain without any glue. Try perturbing one
+entry of `y` and re-running: the coefficients shift slightly and
+`result.r_squared` drops below `1.0`, which the summary string reflects.
 
 ## 6. Adding an entrypoint later
 
@@ -280,6 +338,31 @@ When you add a new `Base.@ccallable` to `ols.jl`:
   rebuild; JuliaLibWrapping will regenerate it (auto-wrapping where
   it can, leaving `# TODO: hand-wrap` markers where it cannot).
 - `__init__.py` is regenerated to re-export from `_facade`.
+
+You trigger all of this by re-running the same build:
+
+```sh
+julia --project=. build.jl
+```
+
+with one current caveat: the build is **not yet idempotent** over an
+existing `out/`. The bundle step copies files without overwriting, so a
+second build into a populated `out/` fails with something like
+`'…/ols-bundle/share/julia/cert.pem' exists`. Until
+[JuliaLibWrapping#46](https://github.com/JuliaInterop/JuliaLibWrapping.jl/issues/46)
+is resolved, clear the bundle tree first:
+
+```sh
+rm -rf out/ols-bundle
+julia --project=. build.jl
+```
+
+Clear only the bundle tree, **not** the whole `out/`: a blanket
+`rm -rf out` also deletes your hand-edited `_facade.py`, which would
+then be regenerated as a fresh starter (losing your wrappers).
+`_lowlevel.py`, `pyproject.toml`, and `__init__.py` are rewritten in
+place, and because you installed with `pip install -e`, a restarted
+Python session picks them up with no reinstall.
 
 A common pattern is to keep `_facade.py` checked into your own repository
 alongside the build script, treating it as hand-written glue. If you need to

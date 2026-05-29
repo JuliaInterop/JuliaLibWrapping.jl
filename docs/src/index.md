@@ -17,8 +17,8 @@ Julia source through `pip install` to numpy-flavored Python.
 
 ## Who it is for
 
-Authors of Julia libraries who want to ship a compiled artifact that
-downstream users — typically C or Python programmers — can consume
+Authors of Julia libraries who want to ship compiled code that
+downstream users — currently C or Python programmers — can use
 without installing a Julia runtime themselves. The compiled library is
 produced by `juliac`; this package produces the binding code that makes
 it usable from the target language.
@@ -40,16 +40,16 @@ bundling, multi-library, and two-tier output stories.
 
 ## Where to go next
 
-- [Tutorial: wrap an OLS regression library](@ref) — the on-ramp:
-  one library, end to end, from Julia source through `pip install`
-  to numpy-flavored Python.
-- [Concepts](@ref) — the pipeline, the ABI data model, the extension
+- [Tutorial: wrap an OLS regression library](@ref): build a small library with a
+  Python wrapper using numpy.
+- [Concepts](@ref): the pipeline, the ABI data model, the extension
   point for new target languages, and the runtime-closure / bundling
   story.
-- [JLWInterop](@ref) — the dependency-free vocabulary package
-  (`CVector`, `CMatrix`, `CString`, `JLWStatus`) that compiled
-  libraries and the Python emitter both speak.
-- [Error handling across the ABI](@ref) — the `JLWStatus` convention
+- [JLWInterop](@ref): a small package needed by almost any wrapped Julia module.
+  Defines a few interoperability types (`CArray`, `CString`, and `JLWStatus`)
+  that your Julia wrapper-code should use to ensure interopability with the
+  language binding.
+- [Error handling across the ABI](@ref): the `JLWStatus` convention
   that lets wrapped libraries surface errors as native exceptions in
   the target language.
-- [API reference](@ref) — generated docstrings for the public API.
+- [API reference](@ref): the public API, in full detail.
