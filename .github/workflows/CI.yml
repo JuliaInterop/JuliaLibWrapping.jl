@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
@@ -22,6 +22,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The two packages live in sibling subdirectories of this monorepo.
+        # `setup-julia`'s `project` input resolves `min` from each package's
+        # own [compat], so they can carry different lower bounds.
+        package:
+          - JuliaLibWrapping
+          - JLWInterop
         version:
           - 'min'
           - 'pre'
@@ -30,19 +36,32 @@ jobs:
           - ubuntu-latest
         arch:
           - x64
+        include:
+          - package: JuliaLibWrapping
+            coverage_dirs: JuliaLibWrapping/src,JuliaLibWrapping/ext
+          - package: JLWInterop
+            coverage_dirs: JLWInterop/src
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
+          project: ${{ matrix.package }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
+        with:
+          project: ${{ matrix.package }}
       - uses: julia-actions/julia-runtest@v1
+        with:
+          project: ${{ matrix.package }}
       - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: ${{ matrix.coverage_dirs }}
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
+          flags: ${{ matrix.package }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
   docs:
@@ -57,15 +76,18 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: 'pre'
+          project: JuliaLibWrapping/docs
       - uses: julia-actions/cache@v3
-      - name: Configure doc environment
-        shell: julia --project=docs --color=yes {0}
+      - name: Build and deploy documentation
+        # The docs environment pulls JuliaLibWrapping and JLWInterop in via
+        # its own [sources], so a plain instantiate is enough — no separate
+        # Pkg.develop step. julia-docdeploy is not used because it hard-codes
+        # a top-level `docs/` directory, which no longer holds.
+        shell: julia --project=JuliaLibWrapping/docs --color=yes {0}
         run: |
           using Pkg
-          Pkg.develop(PackageSpec(path=pwd()))
           Pkg.instantiate()
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-docdeploy@v1
+          include("JuliaLibWrapping/docs/make.jl")
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
