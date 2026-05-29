@@ -79,15 +79,16 @@ jobs:
           project: JuliaLibWrapping/docs
       - uses: julia-actions/cache@v3
       - name: Build and deploy documentation
-        # The docs environment pulls JuliaLibWrapping and JLWInterop in via
-        # its own [sources], so a plain instantiate is enough — no separate
-        # Pkg.develop step. julia-docdeploy is not used because it hard-codes
-        # a top-level `docs/` directory, which no longer holds.
-        shell: julia --project=JuliaLibWrapping/docs --color=yes {0}
+        # The docs environment pulls JuliaLibWrapping and JLWInterop in via its
+        # own [sources], so a plain instantiate is enough — no separate
+        # Pkg.develop step. make.jl is run directly as a script (not via
+        # `include` under a `julia {0}` shell, where a relative include path
+        # resolves against the temp script's directory rather than the repo
+        # root); makedocs derives its root from make.jl's own location.
+        # julia-docdeploy is avoided because it hard-codes a top-level `docs/`.
         run: |
-          using Pkg
-          Pkg.instantiate()
-          include("JuliaLibWrapping/docs/make.jl")
+          julia --project=JuliaLibWrapping/docs -e 'using Pkg; Pkg.instantiate()'
+          julia --project=JuliaLibWrapping/docs --color=yes JuliaLibWrapping/docs/make.jl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
