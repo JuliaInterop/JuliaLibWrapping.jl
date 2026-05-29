@@ -156,6 +156,57 @@ function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractS
     return dest
 end
 
+"""
+    standard_build(dir = pwd(); libname, kwargs...)
+
+Convenience wrapper around [`build_library`](@ref) for the conventional
+single-library layout:
+
+    dir/
+    ├── Project.toml          # entry project (runtime deps only)
+    ├── src/
+    │   └── <libname>.jl      # @ccallable entrypoints
+    └── out/                  # generated artifacts
+
+Emits both a C header and a Python `ctypes` package (`<libname>_py`),
+bundled for distribution. Equivalent to:
+
+```julia
+build_library(joinpath(dir, "src", libname*".jl"),
+    [CTarget(joinpath(dir, "out"), libname),
+     PythonTarget(joinpath(dir, "out"), libname*"_py", libname;
+                  bundle_subdir = "bundle")];
+    project = dir, libname, libdir = joinpath(dir, "out"),
+    bundle = true, kwargs...)
+```
+
+The kwargs `out`, `entry`, `python_package`, `project`, and `bundle`
+override the defaults above; anything else is forwarded to
+`build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
+defaults to `dir`, but can be pointed at a separate location when the
+on-disk source layout and the entry `Project.toml` live in different
+directories (e.g. a transient project materialized with absolute
+`[sources]` paths for `juliac`). For layouts outside this convention,
+call `build_library` directly.
+"""
+function standard_build(dir::AbstractString = pwd();
+                        libname::AbstractString,
+                        project::AbstractString = dir,
+                        out::AbstractString = joinpath(dir, "out"),
+                        entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
+                        python_package::AbstractString = libname * "_py",
+                        bundle::Bool = true,
+                        kwargs...)
+    targets = AbstractTarget[
+        CTarget(out, libname),
+        PythonTarget(out, python_package, libname;
+                     bundle_subdir = bundle ? "bundle" : nothing),
+    ]
+    return build_library(entry, targets;
+                         project, libname, libdir = out, bundle,
+                         kwargs...)
+end
+
 function _validate_sources_absolute(project::AbstractString)
     pf = joinpath(project, "Project.toml")
     isfile(pf) || return  # nothing to validate

@@ -16,6 +16,7 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Tutorial" => "tutorial.md",
         "Concepts" => "concepts.md",
         "JLWInterop" => "jlwinterop.md",
         "Error handling" => "error_handling.md",
