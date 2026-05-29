@@ -1,9 +1,9 @@
 *.jl.*.cov
 *.jl.cov
 *.jl.mem
-/docs/Manifest*.toml
-/docs/build/
-/examples/*/out/
+/JuliaLibWrapping/docs/Manifest*.toml
+/JuliaLibWrapping/docs/build/
+/JuliaLibWrapping/examples/*/out/
 Manifest.toml
 Manifest-v*.toml
 CLAUDE.md

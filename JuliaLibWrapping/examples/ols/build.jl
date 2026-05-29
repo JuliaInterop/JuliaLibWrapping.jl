@@ -27,7 +27,7 @@
 using TOML: TOML
 
 const HERE        = @__DIR__
-const JLW_INTEROP = abspath(joinpath(HERE, "..", "..", "JLWInterop"))
+const JLW_INTEROP = abspath(joinpath(HERE, "..", "..", "..", "JLWInterop"))
 
 function prepare_project()
     toml = TOML.parsefile(joinpath(HERE, "Project.toml"))
