@@ -11,3 +11,4 @@ path = ".."
 
 [compat]
 JLWInterop = "0.1"
+JuliaLibWrapping = "0.1"

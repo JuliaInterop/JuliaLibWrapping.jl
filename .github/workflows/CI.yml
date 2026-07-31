@@ -42,7 +42,7 @@ jobs:
           - package: JLWInterop
             coverage_dirs: JLWInterop/src
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
@@ -58,7 +58,7 @@ jobs:
       - uses: julia-actions/julia-processcoverage@v1
         with:
           directories: ${{ matrix.coverage_dirs }}
-      - uses: codecov/codecov-action@v6
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           flags: ${{ matrix.package }}
@@ -72,7 +72,7 @@ jobs:
       contents: write
       statuses: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: 'pre'
