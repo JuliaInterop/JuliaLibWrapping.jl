@@ -29,6 +29,7 @@ jobs:
           - JuliaLibWrapping
           - JLWInterop
         version:
+          - 'min'
           - 'pre'
           - 'nightly'
         os:
