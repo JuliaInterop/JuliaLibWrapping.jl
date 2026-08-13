@@ -4,6 +4,8 @@
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/)
 [![Build Status](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
+JuliaLibWrapping generates language-bindings for shared libraries compiled from Julia packages.
+
 This repository is a monorepo holding two packages, in sibling subdirectories:
 
 - **[`JuliaLibWrapping/`](JuliaLibWrapping/)** — generates C headers and Python
