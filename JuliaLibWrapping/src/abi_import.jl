@@ -47,7 +47,7 @@ end
 
 const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc, ArrayDesc}
 
-function from_json(::Type{PrimitiveTypeDesc}, type::Dict{String,Any})
+function from_json(::Type{PrimitiveTypeDesc}, type::AbstractDict{String, Any})
     return PrimitiveTypeDesc(
 	type["name"],
 	type["signed"],
@@ -57,7 +57,7 @@ function from_json(::Type{PrimitiveTypeDesc}, type::Dict{String,Any})
     )
 end
 
-function from_json(::Type{StructDesc}, type::Dict{String, Any})
+function from_json(::Type{StructDesc}, type::AbstractDict{String, Any})
     return StructDesc(
         type["name"],
         type["size"],
@@ -73,11 +73,11 @@ function from_json(::Type{StructDesc}, type::Dict{String, Any})
     )
 end
 
-function from_json(::Type{PointerDesc}, json::Dict{String, Any})
+function from_json(::Type{PointerDesc}, json::AbstractDict{String, Any})
     return PointerDesc(json["name"], json["pointee_type_id"])
 end
 
-function from_json(::Type{ArrayDesc}, json::Dict{String, Any})
+function from_json(::Type{ArrayDesc}, json::AbstractDict{String, Any})
     return ArrayDesc(
         json["name"],
         json["element_type_id"],
@@ -87,7 +87,7 @@ function from_json(::Type{ArrayDesc}, json::Dict{String, Any})
     )
 end
 
-function from_json(::Type{TypeDesc}, json::Dict{String, Any})
+function from_json(::Type{TypeDesc}, json::AbstractDict{String, Any})
     kind = json["kind"]::String
     if kind === "primitive"
         return from_json(PrimitiveTypeDesc, json)
@@ -102,7 +102,7 @@ function from_json(::Type{TypeDesc}, json::Dict{String, Any})
     end
 end
 
-function from_json(::Type{MethodDesc}, method::Dict{String, Any})
+function from_json(::Type{MethodDesc}, method::AbstractDict{String, Any})
     return MethodDesc(
         method["symbol"],
         method["name"],
