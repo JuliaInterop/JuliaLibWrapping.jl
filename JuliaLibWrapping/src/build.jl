@@ -12,7 +12,7 @@ const _TRIM_MODES = (:no, :safe, :unsafe, Symbol("unsafe-warn"))
                   trim=:safe, compile_ccallable=true,
                   backend=:auto, verbose=false,
                   bundle=false, bundle_dir=joinpath(libdir, libname*"-bundle"),
-                  privatize=false)
+                  privatize=false, cpu_target=nothing)
 
 Run the full `juliac` → ABI JSON → wrapper pipeline in one call.
 
@@ -72,6 +72,15 @@ consumers manage their own linkage.
 `privatize = true` salts the bundled libjulia files with a random prefix so
 they cannot collide with a system libjulia. Off by default; opt in if the
 wrapper might be loaded into a process that also has a different libjulia.
+
+# CPU target
+
+`cpu_target` sets the multi-microarchitecture target for the compiled
+library, using the same syntax as the `--cpu-target` `julia` flag or the
+`JULIA_CPU_TARGET` environment variable (e.g.
+`"generic;sandybridge,-xsaveopt,clone_all"`). The default, `nothing`, defers
+to `JULIA_CPU_TARGET` if it is set in the environment, or otherwise to the
+host CPU.
 """
 function build_library(entry::AbstractString,
                        targets::AbstractVector{<:AbstractTarget};
@@ -85,7 +94,8 @@ function build_library(entry::AbstractString,
                        verbose::Bool = false,
                        bundle::Bool = false,
                        bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
-                       privatize::Bool = false)
+                       privatize::Bool = false,
+                       cpu_target::Union{Nothing,AbstractString} = nothing)
     isfile(entry) || isdir(entry) ||
         throw(ArgumentError("entry not found: $entry"))
     isdir(project) ||
@@ -117,7 +127,7 @@ function build_library(entry::AbstractString,
     ext._build_library_juliac(entry; project, libname, libdir, abi_path,
                               trim, compile_ccallable, verbose,
                               bundle, bundle_dir = (bundle ? bundle_dir : nothing),
-                              privatize)
+                              privatize, cpu_target)
 
     isfile(abi_path) ||
         error("juliac completed but no ABI JSON was written to $abi_path")
