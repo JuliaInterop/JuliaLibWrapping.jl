@@ -185,19 +185,20 @@ bundled for distribution. Equivalent to:
 build_library(joinpath(dir, "src", libname*".jl"),
     [CTarget(joinpath(dir, "out"), libname),
      PythonTarget(joinpath(dir, "out"), libname*"_py", libname;
-                  bundle_subdir = "bundle")];
+                  bundle_subdir = "bundle", version = $(repr(_DEFAULT_PACKAGE_VERSION)))];
     project = dir, libname, libdir = joinpath(dir, "out"),
     bundle = true, kwargs...)
 ```
 
-The kwargs `out`, `entry`, `python_package`, `project`, and `bundle`
-override the defaults above; anything else is forwarded to
+The kwargs `out`, `entry`, `python_package`, `project`, `bundle`, and
+`version` override the defaults above; anything else is forwarded to
 `build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
 defaults to `dir`, but can be pointed at a separate location when the
 on-disk source layout and the entry `Project.toml` live in different
 directories (e.g. a transient project materialized with absolute
-`[sources]` paths for `juliac`). For layouts outside this convention,
-call `build_library` directly.
+`[sources]` paths for `juliac`). `version` sets the version in the generated
+Python package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
+outside this convention, call `build_library` directly.
 """
 function standard_build(dir::AbstractString = pwd();
                         libname::AbstractString,
@@ -206,11 +207,13 @@ function standard_build(dir::AbstractString = pwd();
                         entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
                         python_package::AbstractString = libname * "_py",
                         bundle::Bool = true,
+                        version::AbstractString = _DEFAULT_PACKAGE_VERSION,
                         kwargs...)
     targets = AbstractTarget[
         CTarget(out, libname),
         PythonTarget(out, python_package, libname;
-                     bundle_subdir = bundle ? "bundle" : nothing),
+                     bundle_subdir = bundle ? "bundle" : nothing,
+                     version),
     ]
     return build_library(entry, targets;
                          project, libname, libdir = out, bundle,
@@ -239,4 +242,3 @@ function _validate_sources_absolute(project::AbstractString)
     end
     return
 end
-

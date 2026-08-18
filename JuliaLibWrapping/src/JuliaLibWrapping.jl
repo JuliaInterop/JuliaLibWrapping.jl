@@ -24,6 +24,9 @@ subtype and a `write_wrapper` method for it.
 """
 abstract type AbstractTarget end
 
+# Default version for generated packages.
+const _DEFAULT_PACKAGE_VERSION = "0.0.0"
+
 include("c.jl")
 include("python.jl")
 include("build.jl")
