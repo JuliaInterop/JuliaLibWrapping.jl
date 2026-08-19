@@ -1,4 +1,4 @@
-# Tests for `build_library` — see issue #16.
+# Tests for `build_library`.
 
 using JuliaLibWrapping
 using JuliaC
@@ -96,7 +96,7 @@ using Test
         @test occursin(":wild", err.msg)
     end
 
-    @testset "bundle validation (issue #17)" begin
+    @testset "bundle validation" begin
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
         proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
 
@@ -158,7 +158,7 @@ using Test
         end
     end
 
-    @testset "end-to-end with bundle (issue #17)" begin
+    @testset "end-to-end with bundle" begin
         # Opt-in: the bundle build copies libjulia + stdlibs + artifacts
         # and is multi-hundred-MB, so we don't run it in default CI. Set
         # JLW_TEST_BUNDLE=true to exercise it locally; the test then runs

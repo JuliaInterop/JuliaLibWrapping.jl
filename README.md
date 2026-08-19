@@ -6,7 +6,7 @@
 
 JuliaLibWrapping generates language bindings for shared libraries compiled from Julia packages.
 
-This repository is a monorepo holding two packages, in sibling subdirectories:
+This repository contains two packages:
 
 - **[`JuliaLibWrapping/`](JuliaLibWrapping/)** — generates C headers and Python
   `ctypes` packages from the JSON ABI-info file emitted by
@@ -17,5 +17,4 @@ This repository is a monorepo holding two packages, in sibling subdirectories:
 - **[`JLWInterop/`](JLWInterop/)** — a small, dependency-free package defining
   shared ABI types such as `CArray`, `CString`, and `JLWStatus`. Compiled
   libraries use these types, and the generated Python wrappers recognize their
-  layouts. It is a runtime dependency of *compiled* libraries, kept separate to remain
-  `juliac --trim`-friendly.
+  layouts. It is a `juliac --trim`-friendly runtime dependency of compiled libraries.

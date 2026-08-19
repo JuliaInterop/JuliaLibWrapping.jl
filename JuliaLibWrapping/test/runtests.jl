@@ -289,8 +289,7 @@ end
             @test occursin("_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
                            bindings)
 
-            # Implements issue #12: CArray{primitive,N} structs gain numpy
-            # conversion helpers; CArray{struct,N} does not.
+            # Only primitive-element CArrays gain numpy helpers.
             @test occursin("import numpy as np", bindings)
             @test occursin("def from_numpy(cls, arr):", bindings)
             @test occursin("def as_numpy(self):", bindings)
@@ -380,7 +379,7 @@ end
                 "/tmp/foo", "libsimple", "libsimple"; version = "")
         end
 
-        @testset "bundle-aware output (issue #17)" begin
+        @testset "bundle-aware output" begin
             abi_info = read_abi_info("bindinginfo_libsimple.json")
             mktempdir() do path
                 dest = PythonTarget(path, "libsimple", "libsimple";
@@ -444,9 +443,7 @@ end
 
         @testset "sanitize_python_argname" begin
             sanitize = JuliaLibWrapping.sanitize_python_argname
-            # Heterogeneous tuples (issue #21): juliac emits Tuple{Int32,Float64}
-            # as a struct with fields named "1", "2" — leading digits are illegal
-            # Python identifiers, so the emitter must prefix an underscore.
+            # Prefix numeric tuple-field names to form Python identifiers.
             @test sanitize("1") == "_1"
             @test sanitize("2") == "_2"
             # Uniqueness still applies after the digit prefix.
@@ -557,8 +554,7 @@ end
     end
 
     @testset "cstring_struct_info" begin
-        # Implements issue #12: structural recognition of the CString shape
-        # (length::Integer, data::Ptr{UInt8}).
+        # Recognize the CString layout structurally.
         csinfo = JuliaLibWrapping.cstring_struct_info
         abi = read_abi_info("bindinginfo_cstring.json")
         findtype(descs, name) = (k = collect(keys(descs));
@@ -606,8 +602,7 @@ end
     end
 
     @testset "CString vocabulary" begin
-        # Implements issue #12: CString recognition + str/bytes round-trip
-        # in the Python emitter. No numpy dependency triggered.
+        # CString conversion does not require numpy.
         abi = read_abi_info("bindinginfo_cstring.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstring_demo", "libcstring")
@@ -756,9 +751,7 @@ end
     end
 
     @testset "raw primitive pointer docstring" begin
-        # Implements issue #14: bare `Ptr{<primitive>}` arguments get a
-        # docstring on the Python wrapper warning about layout/ownership,
-        # and `write_wrapper` emits a single @info during codegen.
+        # Bare primitive pointers produce ownership guidance during generation.
         abi = read_abi_info("bindinginfo_rawptr.json")
 
         # Helper recognizes the raw-primitive-pointer argument.
@@ -818,7 +811,7 @@ end
     end
 
     @testset "JLWStatus convention" begin
-        # Implements issue #15: in-band status struct + Python raise-on-error.
+        # In-band status values become Python exceptions.
         abi_info = read_abi_info("bindinginfo_jlwstatus.json")
         mktempdir() do path
             dest = PythonTarget(path, "demo", "libdemo")

@@ -95,11 +95,7 @@ julia = "1.13"
 
 Two details matter:
 
-- The requirement for `julia = "1.13"` cannot be changed to an earlier Julia
-  release, as the features needed to build language bindings shipped in Julia
-  1.13. The OLS example here calls into BLAS via `\`, and that path needs Julia
-  1.13.0-rc2 or later (or any build of the `backports-release-1.13` branch from
-  2026-05-20 onward).
+- ABI export requires Julia 1.13 or later.
 
 - The `[deps]` here describe what must be baked into `ols.so`. Keep it minimal,
   without build tooling or test dependencies. If you need a `[sources]` entry to
@@ -243,8 +239,8 @@ value is `array([2.04, 4.02, 6.  , 7.98, 9.96])`, followed by the error message.
 
 `np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
-row-major view rather than silently transposing. In a moment you'll
-can edit the wrapper to accept a different interface.
+row-major view rather than silently transposing. You can edit the wrapper to
+accept a different interface.
 
 ### Making edits to the wrapper
 
@@ -340,24 +336,9 @@ You trigger all of this by re-running the same build:
 julia --project=. build.jl
 ```
 
-with one current caveat: the build is **not yet idempotent** over an
-existing `out/`. The bundle step copies files without overwriting, so a
-second build into a populated `out/` fails with something like
-`'…/ols-bundle/share/julia/cert.pem' exists`. Until
-[JuliaLibWrapping#46](https://github.com/JuliaInterop/JuliaLibWrapping.jl/issues/46)
-is resolved, clear the bundle tree first:
-
-```sh
-rm -rf out/ols-bundle
-julia --project=. build.jl
-```
-
-Clear only the bundle tree, **not** the whole `out/`: a blanket
-`rm -rf out` also deletes your hand-edited `_facade.py`, which would
-then be regenerated as a fresh starter (losing your wrappers).
-`_lowlevel.py`, `pyproject.toml`, and `__init__.py` are rewritten in
-place, and because you installed with `pip install -e`, a restarted
-Python session picks them up with no reinstall.
+`_lowlevel.py`, `pyproject.toml`, and `__init__.py` are rewritten in place.
+Because the package was installed with `pip install -e`, restart Python to
+pick up those changes without reinstalling.
 
 Keep `_facade.py` under version control alongside the build script. To generate
 wrappers for new functions, delete it on a branch, rebuild, and merge the

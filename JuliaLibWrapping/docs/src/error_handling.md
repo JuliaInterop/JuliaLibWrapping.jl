@@ -24,10 +24,8 @@ A library opts in by *either*
 
 Either form is recognized by the Python backend.
 
-The fixed 256-byte message buffer is deliberate: a `Cstring` or `Ptr{UInt8}`
-would raise an ownership question (who frees it, when?) that has no good
-answer under `juliac --trim`. An inline buffer keeps `JLWStatus` an `isbits`
-type with no heap allocation, at the cost of a bounded message length.
+The inline buffer keeps `JLWStatus` allocation-free and avoids pointer
+ownership concerns. Messages are bounded to 255 bytes plus a NUL terminator.
 
 ## Authoring a library
 
@@ -76,11 +74,3 @@ The C header generator does not currently auto-emit a status-check macro;
 C callers should check `result.status.code` themselves and read the message
 with, for example, `printf("%.256s\n", result.status.message)`. A `JLW_CHECK`-style
 helper macro is a possible follow-up.
-
-## Recognition is structural
-
-The Python emitter matches on struct name (`"JLWStatus"`) plus field shape
-(`code::Int32` followed by a 256-byte tuple `message`). Authors who copy and
-paste a compatible definition — rather than depending on JLWInterop — still
-get the same wrapper behavior. The canonical package merely keeps the
-definitions consistent across libraries.

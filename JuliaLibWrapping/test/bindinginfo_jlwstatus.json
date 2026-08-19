@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for the JLWStatus convention (issue #15). The 256-byte buffer is emitted as a single `kind: array` entry (issue #21 part 2). parse_abi_info ignores unknown top-level keys, so this field is invisible to the parser.",
+  "_comment": "JLWStatus fixture. The 256-byte buffer is one `kind: array` entry.",
   "types": [
     {
       "kind": "array",

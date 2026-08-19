@@ -1,4 +1,4 @@
-# Driver for the juliac → ABI JSON → wrappers pipeline. See issue #16.
+# juliac → ABI JSON → wrapper driver.
 
 using TOML: TOML
 using Libdl: Libdl
@@ -24,18 +24,10 @@ Returns a NamedTuple `(library, abi_path, abi_info, target_outputs, backend,
 bundle_dir)`. `bundle_dir` is the path to the produced bundle tree when
 `bundle = true`, and `nothing` otherwise.
 
-# Backend
-
-`build_library` drives [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)
-(a weak dependency); load it with `using JuliaC` before calling this
-function. `backend = :auto` (the default) and `backend = :juliac` are
-synonyms; the keyword is retained so additional backends can be added
-without changing the calling interface.
-
 # Example
 
 ```julia
-using JuliaLibWrapping
+using JuliaLibWrapping, JuliaC
 out = mktempdir()
 result = build_library(
     joinpath(@__DIR__, "src/mylib.jl"),
@@ -46,6 +38,16 @@ result = build_library(
 )
 ```
 
+# Extended help
+
+# Backend
+
+`build_library` drives [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)
+(a weak dependency); load it with `using JuliaC` before calling this
+function. `backend = :auto` (the default) and `backend = :juliac` are
+synonyms; the keyword is retained so additional backends can be added
+without changing the calling interface.
+
 # `[sources]` paths must be absolute
 
 `juliac` relocates the project into a temporary directory before compiling.
@@ -53,7 +55,7 @@ Relative `[sources]` paths in the entry project's `Project.toml` cannot be
 resolved from there, so this function rejects them up front. Either use
 absolute paths or `Pkg.develop` the dependency.
 
-# Bundling for distribution (issue #17)
+# Bundling
 
 A juliac-produced `.so` depends on `libjulia`, a sysimage, stdlibs, and
 artifacts — none of which a `pip install`-ing Python user has on their
@@ -152,15 +154,12 @@ function build_library(entry::AbstractString,
             backend = :juliac, bundle_dir = bundle ? bundle_dir : nothing)
 end
 
-# Copy the juliac --bundle tree into a Python package. Run before
-# `write_wrapper` so the package directory always exists with the runtime
-# closure in place; `write_wrapper` then drops the Python sources alongside.
+# Copy the bundle before emitting Python sources.
 function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractString)
     pkgdir = joinpath(t.dir, t.package_name)
     mkpath(pkgdir)
     dest = joinpath(pkgdir, t.bundle_subdir::String)
-    # Wipe any stale copy so a smaller-than-before bundle does not leave
-    # orphan files behind that the new package-data manifest would pick up.
+    # Avoid retaining files from an older, larger bundle.
     ispath(dest) && rm(dest; recursive = true)
     cp(bundle_dir, dest)
     return dest

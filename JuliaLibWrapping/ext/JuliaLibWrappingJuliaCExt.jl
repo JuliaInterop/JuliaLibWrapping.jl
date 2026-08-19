@@ -1,15 +1,11 @@
 module JuliaLibWrappingJuliaCExt
 
-# Implements the :juliac backend of `build_library` using the JuliaC.jl
-# library API. See issues #16 (driver) and #17 (bundling).
+# `build_library` backend using the JuliaC.jl API.
 
 using JuliaC: ImageRecipe, LinkRecipe, BundleRecipe,
               compile_products, link_products, bundle_products
 
-# `LinkRecipe.rpath` accepts the documented public value "@bundle"
-# (JuliaC exposes this in the LinkRecipe docstring); the corresponding
-# `RPATH_BUNDLE` constant is internal, so we use the string form to keep
-# depend only on public API.
+# Use JuliaC's public `"@bundle"` rpath value.
 const _RPATH_BUNDLE = "@bundle"
 
 function _build_library_juliac(entry::AbstractString;
