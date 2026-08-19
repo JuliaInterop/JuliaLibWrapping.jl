@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for issue #14: a function taking a bare `Ptr{Float64}` (not wrapped in CVector/CMatrix). The Python emitter must attach a docstring on the generated wrapper warning about layout and ownership, and emit an @info during codegen. No numpy dependency is triggered (raw pointers are still rendered as ctypes.POINTER).",
+  "_comment": "Fixture for a bare `Ptr{Float64}` argument.",
   "types": [
     {
       "kind": "primitive",

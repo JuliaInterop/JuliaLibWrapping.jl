@@ -4,14 +4,11 @@ CurrentModule = JuliaLibWrapping
 
 # Concepts
 
-This page describes the pipeline architecture, the data model that
-flows through it, and the cross-cutting concerns (bundling, runtime
-sharing, two-tier output) that shape the generated wrappers.
+This page describes the pipeline, data model, bundling, and generated files.
 
 ## The pipeline
 
-The transformation from a Julia source file to a wrapper package runs
-in three stages with an optional driver in front:
+Wrapper generation has three stages:
 
     source.jl
       │   juliac
@@ -25,7 +22,7 @@ in three stages with an optional driver in front:
     .h / Python package
 
 [`build_library`](@ref) chains the whole sequence; the stages are also
-callable individually when you want finer control or are testing the
+callable individually when you need finer control or want to test the
 emitters against fixture JSON.
 
 ## Driving the pipeline
@@ -73,7 +70,7 @@ and a list of `MethodDesc`s whose `ArgDesc`s likewise reference types
 by id. All cross-references use ids, not names; the descriptors form a
 graph.
 
-`sort_declarations!` is the conceptual core of the import stage. C
+`sort_declarations!` orders the imported declarations. C
 requires a type to be defined before use, so the dict must be sorted
 into dependency order. The implementation builds the type-dependency
 graph (Graphs.jl), finds strongly-connected components for
@@ -100,7 +97,7 @@ Adding a new target means defining a struct subtype of `AbstractTarget`
 and a method `write_wrapper(::YourTarget, ::ABIInfo)` that walks the
 sorted descriptors and emits whatever your target language requires.
 
-## Two-tier Python output
+## Generated and editable Python modules
 
 `write_wrapper(PythonTarget, …)` emits three files into the generated
 package directory:
@@ -108,40 +105,27 @@ package directory:
 - `_lowlevel.py` — the mechanical `ctypes` bindings: `Structure`
   subclasses and functions carrying the raw C signature. **Always
   regenerated** on every `write_wrapper` call.
-- `_facade.py` — the idiomatic surface that consumers of the package
-  actually call. JuliaLibWrapping writes this **once** as a starter
-  façade, then never touches it again. The starter is *not* a blank
-  stub: any entrypoint whose arguments and return are all recognized —
+- `_facade.py` — the package's public API. JuliaLibWrapping creates this
+  file only if it does not exist. Its initial version wraps entrypoints whose
+  arguments and return are recognized —
   primitive scalars, `CVector{T}`, `CMatrix{T}`, `CString`, or a
   direct `JLWStatus` return — is auto-wrapped to accept and return
   idiomatic Python objects (numpy arrays, `str`). Entrypoints with a
   raw pointer, an unrecognized struct, or an embedded `JLWStatus`
-  field are re-exported from `_lowlevel` and tagged with a `# TODO:
-  hand-wrap` comment naming the obstacle. Edit anything freely; to
-  regenerate (for example, after adding new entrypoints), delete the
-  file and re-run `write_wrapper`.
-- `__init__.py` — always regenerated; re-exports from `_facade` so the
-  façade is the package's public surface.
+  field are re-exported with a `# TODO: hand-wrap` comment. Delete the file and
+  rerun `write_wrapper` to regenerate it.
+- `__init__.py` — always regenerated; re-exports names from `_facade`.
 
-The intent is that scientific users of the wrapped library import the
-package top-level and see only the façade. The mechanical layer
-remains available under `pkg._lowlevel` for power users who need it.
+Users normally import the package-level API from `_facade`. The generated
+bindings remain available under `pkg._lowlevel` when direct access is needed.
 
-Recognition of `CVector` / `CMatrix` / `CString` / `JLWStatus` is
-**structural** — by struct name plus field shape — so authors who
-copy-paste a compatible definition into their own library still get
-the same wrapper behavior.
+Recognition of `CArray`, `CString`, and `JLWStatus` is structural. Use
 [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
-is the canonical source of these definitions; using it keeps libraries
-from drifting out of structural compatibility.
+for their canonical definitions.
 
 ## Bundling for distribution
 
-A `juliac`-compiled `.so` is not self-contained: it links against
-`libjulia`, depends on a sysimage, and pulls in stdlibs and JLL
-artifacts. A Python user who runs `pip install` does not have any of
-that on their machine, so the default flat `lib<name>.so`-next-to-the-
-package layout fails at import time for the actual target audience.
+A `juliac` library depends on `libjulia`, a sysimage, stdlibs, and artifacts.
 
 Pass `bundle = true` to [`build_library`](@ref) to also assemble the
 full runtime closure (the `juliac --bundle` layout) and copy it into
@@ -174,27 +158,22 @@ The resulting package layout is
         │   └── julia/…           # libjulia-internal, stdlibs, BLAS, …
         └── artifacts/…
 
-The generated `_lowlevel.py` loader searches `bundle/lib/` before the
-package root, so the `RUNPATH` baked in at link time resolves
-`libjulia` and friends from inside the wheel — no `LD_LIBRARY_PATH`
-and no Julia install required on the user's machine. A developer who
-instead drops a bare `lib<name>.so` next to the package (without
-bundling) still works: the loader falls back to the flat layout.
+The loader searches `bundle/lib/` before the package root, allowing bundled
+installs without Julia or `LD_LIBRARY_PATH`. It falls back to a library beside
+the package.
 
 `pip install ./out/mylib_py` from a clean virtualenv on a machine
 without a system Julia is the right manual check.
 
 `bundle = true` requires the `:juliac` backend and that each
-[`PythonTarget`](@ref) declare a `bundle_subdir`. The bundle itself is
-multi-hundred-MB (mostly `libLLVM` and `libjulia-codegen`), so it is
+[`PythonTarget`](@ref) declare a `bundle_subdir`. The bundle is several
+hundred megabytes (mostly `libLLVM` and `libjulia-codegen`), so it is
 opt-in. Pass `privatize = true` to additionally salt the bundled
 `libjulia` files with a random prefix, avoiding any chance of collision
 with a system `libjulia` loaded by the same process.
 
-Wheel-level packaging (platform tags, `manylinux` audit) is out of
-scope for the current MVP — `pyproject.toml` builds a generic
-sdist/wheel and the developer is responsible for any platform tagging
-the distribution target requires.
+`pyproject.toml` builds a generic sdist/wheel; distributors must supply any
+required platform tags or audits.
 
 ## Multiple wrapped libraries in one process
 
@@ -207,23 +186,22 @@ dependency, and the Julia runtime is not designed to coexist with
 another copy of itself in the same process. With the default bundle
 layout each wheel ships its own `bundle/lib/libjulia.so.1.13`, but the
 dynamic linker satisfies the second library's `DT_NEEDED
-libjulia.so.1.13` with the first library's already-loaded copy — first
-one wins. That silently "works" only when both libraries were built
+libjulia.so.1.13` with the first library's already-loaded copy. This can work
+only when both libraries were built
 against byte-compatible Julia versions and their sysimages don't
 collide on global runtime state; mismatched versions may crash or
 miscompute.
 
 Passing `privatize = true` to [`build_library`](@ref) salts each
 bundle's `libjulia` with a random SONAME prefix so the dynamic linker
-maps both copies independently. That removes the silent-sharing
-footgun at the linker layer, but two Julia runtimes in one process —
+maps both copies independently. That removes the linker-level ambiguity,
+but two Julia runtimes in one process —
 independent GC root sets, two thread pools, two BLAS trampoline
-initializations, two signal handler registrations — is itself
-untested territory. We have no evidence the combination is robust.
+initializations, two signal handler registrations — has not been tested
+and is unsupported.
 
-To make the situation loud rather than silent, every generated
+To warn about this configuration, every generated
 `_lowlevel.py` records its package name on a process-global sentinel
 (`sys._jlw_loaded_packages`) at import time and emits a
 `RuntimeWarning` when a second JLW-wrapped package is imported into
-the same process. Tracked as
-[issue #28](https://github.com/JuliaInterop/JuliaLibWrapping.jl/issues/28).
+the same process.

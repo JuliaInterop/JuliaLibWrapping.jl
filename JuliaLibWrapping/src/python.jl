@@ -320,8 +320,7 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
         end
     end
 
-    # Implements issue #14: surface bare-pointer arguments at codegen time so
-    # the author sees the layout/ownership caveat without grepping the output.
+    # Report bare-pointer arguments during generation.
     let raw_ptr_methods = [m.symbol for m in entrypoints
                            if !isempty(raw_primitive_pointer_args(m, typeinfo))]
         isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods=raw_ptr_methods
@@ -338,10 +337,10 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
         _write_bindings(f, dest, abi_info, typedict, needs_jlwerror, needs_numpy)
     end
 
-    # `_facade.py` is the author-editable idiomatic surface. JuliaLibWrapping
-    # writes a starter façade once and never touches it again — to
-    # regenerate, delete the file and re-run. The stub auto-wraps any
-    # entrypoint whose arguments and return are all recognized vocabulary
+    # `_facade.py` defines the author-editable public API. JuliaLibWrapping
+    # creates it only if it does not exist; delete the file and rerun to
+    # regenerate it. The initial file wraps any entrypoint whose arguments
+    # and return are all recognized ABI
     # types or primitives; anything else is re-exported with a TODO comment.
     facade_path = joinpath(pkgdir, "_facade.py")
     if !isfile(facade_path)
@@ -545,7 +544,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "import sys")
     println(f, "import pathlib")
     if needs_numpy
-        # Implements issue #12: numpy conversion helpers for CArray structs.
+        # CArray helpers require numpy.
         println(f, "import numpy as np")
     end
     println(f)
@@ -593,12 +592,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "_lib = ctypes.CDLL(_resolve_library_path())")
     println(f)
 
-    # Detect a second JLW-wrapped library being loaded into the same process.
-    # The default bundle layout makes the dynamic linker satisfy the second
-    # library's `libjulia` dependency with the first library's already-loaded
-    # copy (first one wins, byte-compatible Julia versions assumed); with
-    # `privatize = True` each library gets its own libjulia but two Julia
-    # runtimes in one process is itself untested. See issue #28.
+    # Warn when another wrapped library is already loaded.
     println(f, "_JLW_LOADED_ATTR = \"_jlw_loaded_packages\"")
     println(f, "_jlw_loaded = getattr(sys, _JLW_LOADED_ATTR, None)")
     println(f, "if _jlw_loaded is None:")
@@ -622,7 +616,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f)
 
     if needs_jlwerror
-        # Implements issue #15: error-propagation convention via JLWStatus.
+        # JLWStatus error propagation.
         print(f, JLWERROR_DEFINITION)
         println(f)
     end
@@ -671,12 +665,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             end
             cainfo = carray_struct_info(type, typeinfo)
             if cainfo !== nothing
-                # Implements issue #12 / N-D extension: emit numpy conversion
-                # helpers when the struct matches the CArray{T,N} shape with a
-                # primitive pointee. Subsumes the former CVector/CMatrix arms.
+                # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo)
             elseif cstring_struct_info(type, typeinfo)
-                # Implements issue #12: str/bytes round-trip for CString.
+                # Emit CString conversion helpers.
                 _write_cstring_helpers(f)
             end
         end
@@ -698,10 +690,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
         raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
         if !isempty(raw_ptr_idx)
-            # Implements issue #14: nudge callers about layout / ownership for
-            # bare `Ptr{<primitive>}` arguments — the wrapper cannot infer
-            # length, shape, or memory order, and silent transpose is the
-            # standard failure mode for Julia/numpy interop.
+            # Document metadata absent from bare primitive pointers.
             println(f, "    \"\"\"Raw pointer arguments — caller owns layout and lifetime.")
             println(f)
             for i in raw_ptr_idx
@@ -719,7 +708,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             println(f, "    \"\"\"")
         end
         if status_path !== nothing
-            # Implements issue #15: raise JLWError when status.code != 0.
+            # Raise JLWError for a failed status.
             println(f, "    _result = _lib.", method.symbol, "(", join(argnames, ", "), ")")
             println(f, "    if _result", status_path, ".code != 0:")
             println(f, "        _msg = bytes(_result", status_path,
@@ -834,8 +823,7 @@ function _facade_plan(method::MethodDesc,
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
                  ret.kind in (:carray_unwrap, :cstring_unwrap, :jlwstatus_discard)
     if !adds_value
-        # All-primitive in/out: the lowlevel signature is already idiomatic
-        # Python, so re-export it directly with no comment noise.
+        # Primitive-only signatures need no conversion; re-export them directly.
         return (category=:passthrough, reason="",
                 args=arg_classes, ret=ret, uses_numpy=false)
     end
@@ -988,7 +976,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
                ", auto-generated by JuliaLibWrapping\"")
     println(f, "requires-python = \">=3.8\"")
     if needs_numpy
-        # Implements issue #12: CArray helpers depend on numpy.
+        # CArray helpers depend on numpy.
         println(f, "dependencies = [\"numpy>=1.20\"]")
     end
     println(f)
@@ -1002,8 +990,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
         # Setuptools' package-data does not recurse, so each level of the
         # `juliac --bundle` tree (lib/, lib/julia/, artifacts/**) must be
         # enumerated. Native-library suffixes are listed redundantly with
-        # `*` so a developer who hand-drops a bare lib next to the package
-        # still gets it picked up.
+        # `*` so a manually added library beside the package is also included.
         sub = dest.bundle_subdir
         globs = [
             "\"*.so\"", "\"*.dylib\"", "\"*.dll\"",
