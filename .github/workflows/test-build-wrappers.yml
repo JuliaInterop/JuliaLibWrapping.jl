@@ -1,0 +1,15 @@
+# Self-test caller for build-wrappers.yml: builds the in-tree `ols` example
+# and smoke-tests the resulting wheel. Run manually (Actions tab -> this
+# workflow -> Run workflow) to validate the reusable workflow end to end.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ols:
+    uses: ./.github/workflows/build-wrappers.yml
+    with:
+      build-dir: JuliaLibWrapping/examples/ols
+      smoke-test: JuliaLibWrapping/examples/ols/test/smoke.py
