@@ -1,0 +1,152 @@
+# Reusable workflow: build a JuliaLibWrapping-generated Python wheel from a
+# downstream repo's build directory and attach it to a release (or, outside
+# a release event, upload it as a workflow artifact).
+#
+# The build directory must contain `build.jl`, `Project.toml`, `src/`, and a
+# `build-env/Project.toml` — see JuliaLibWrapping's `examples/ols/` for the
+# expected shape. This workflow instantiates `build-env`, runs `build.jl`
+# (which must write a Python package under the resolved output directory),
+# packages that output into a wheel, retags the wheel's platform tag, and
+# (optionally) smoke-tests the installed wheel before publishing it.
+#
+# Minimal caller:
+#
+#   on:
+#     release:
+#       types: [published]
+#   permissions:
+#     contents: write   # required so the workflow can attach wheels to the release
+#   jobs:
+#     wrap:
+#       uses: JuliaInterop/JuliaLibWrapping.jl/.github/workflows/build-wrappers.yml@main
+#       with:
+#         build-dir: build
+#
+# Ref pinning: use `@main` until a tagged JuliaLibWrapping release contains
+# this file, then pin `@<release-tag>` instead — an unpinned `@main` can
+# change under you without notice.
+#
+# Wheel platform tag: `platform-tag` is asserted onto the wheel, not audited
+# against the actual build environment. The default,
+# `manylinux_2_35_x86_64`, claims glibc >= 2.35, matching an
+# `ubuntu-22.04` build; it does NOT match older-glibc targets such as
+# RHEL/Rocky 9. To lower the floor, build inside a container with an older
+# glibc and set `platform-tag`/`runs-on` to match that container.
+
+on:
+  workflow_call:
+    inputs:
+      build-dir:
+        description: >-
+          Directory in the caller repo containing build.jl and build-env/.
+        required: true
+        type: string
+      out-dir:
+        description: >-
+          Directory where build.jl writes the Python package. Defaults to
+          "<build-dir>/out" when empty.
+        required: false
+        type: string
+        default: ''
+      julia-version:
+        description: Julia version passed to julia-actions/setup-julia.
+        required: false
+        type: string
+        default: '1.13'
+      python-version:
+        description: Python version passed to actions/setup-python.
+        required: false
+        type: string
+        default: '3.12'
+      cpu-target:
+        description: >-
+          Julia multi-microarchitecture spec, exported as JULIA_CPU_TARGET
+          for the build step only when non-empty.
+        required: false
+        type: string
+        default: ''
+      platform-tag:
+        description: Wheel platform tag applied to the built wheel.
+        required: false
+        type: string
+        default: 'manylinux_2_35_x86_64'
+      smoke-test:
+        description: >-
+          Path in the caller repo to a Python script run against the
+          installed wheel. Skipped when empty.
+        required: false
+        type: string
+        default: ''
+      runs-on:
+        description: Runner label for the build job.
+        required: false
+        type: string
+        default: 'ubuntu-22.04'
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ inputs.julia-version }}
+          include-all-prereleases: true
+
+      - uses: julia-actions/cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Resolve output directory
+        run: |
+          OUT_DIR="${{ inputs.out-dir }}"
+          if [ -z "$OUT_DIR" ]; then
+            OUT_DIR="${{ inputs.build-dir }}/out"
+          fi
+          echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set JULIA_CPU_TARGET
+        # An empty exported JULIA_CPU_TARGET would misconfigure juliac, so
+        # only export it when the caller actually supplied a value.
+        if: inputs.cpu-target != ''
+        run: echo "JULIA_CPU_TARGET=${{ inputs.cpu-target }}" >> "$GITHUB_ENV"
+
+      - name: Instantiate build environment
+        run: |
+          julia --project=${{ inputs.build-dir }}/build-env -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Build library and Python package
+        run: |
+          julia --project=${{ inputs.build-dir }}/build-env ${{ inputs.build-dir }}/build.jl
+
+      - name: Install Python packaging tools
+        run: pip install build wheel
+
+      - name: Build wheel
+        run: python -m build --wheel --outdir dist "$OUT_DIR"
+
+      - name: Retag wheel platform
+        run: python -m wheel tags --platform-tag ${{ inputs.platform-tag }} --remove dist/*.whl
+
+      - name: Smoke test wheel
+        if: inputs.smoke-test != ''
+        run: |
+          python -m venv /tmp/jlw-smoke-venv
+          /tmp/jlw-smoke-venv/bin/pip install dist/*.whl
+          /tmp/jlw-smoke-venv/bin/python "${{ inputs.smoke-test }}"
+
+      - name: Upload wheel to release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.whl --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload wheel artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist/*.whl
