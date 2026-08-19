@@ -327,6 +327,7 @@ end
             pyproject = read(pyproject_path, String)
             @test occursin("[build-system]", pyproject)
             @test occursin("name = \"libsimple\"", pyproject)
+            @test occursin("version = \"0.0.0\"", pyproject)
             # The bindings use numpy via the CArray helpers, so numpy must be
             # declared as a runtime dependency.
             @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
@@ -356,6 +357,27 @@ end
             @test sprint(show, tb) ==
                   "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; bundle_subdir = \"bundle\")"
             @test tb.bundle_subdir == "bundle"
+            tv = PythonTarget("/tmp/foo", "libsimple", "libsimple"; version = "1.2.3")
+            @test sprint(show, tv) ==
+                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; version = \"1.2.3\")"
+        end
+
+        @testset "PythonTarget version" begin
+            abi_info = read_abi_info("bindinginfo_libsimple.json")
+            mktempdir() do path
+                dest = PythonTarget(path, "libsimple", "libsimple"; version = "1.2.3")
+                write_wrapper(dest, abi_info)
+                pyproject = read(joinpath(path, "pyproject.toml"), String)
+                @test occursin("version = \"1.2.3\"", pyproject)
+            end
+            mktempdir() do path
+                dest = PythonTarget(path, "libsimple", "libsimple")
+                write_wrapper(dest, abi_info)
+                pyproject = read(joinpath(path, "pyproject.toml"), String)
+                @test occursin("version = \"0.0.0\"", pyproject)
+            end
+            @test_throws "PythonTarget version must not be empty" PythonTarget(
+                "/tmp/foo", "libsimple", "libsimple"; version = "")
         end
 
         @testset "bundle-aware output (issue #17)" begin
