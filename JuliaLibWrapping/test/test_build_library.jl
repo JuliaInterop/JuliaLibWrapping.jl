@@ -171,8 +171,7 @@ using Test
         python3 = Sys.which("python3")
         python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH")
         # The generated _lowlevel.py imports numpy (CVector helpers).
-        # Surface that gap up-front rather than failing inside the import
-        # with a confusing-looking error.
+        # Report the missing dependency before attempting the import.
         has_numpy = success(run(pipeline(`$python3 -c "import numpy"`;
                                         stderr=devnull, stdout=devnull); wait=true))
         has_numpy || error("JLW_TEST_BUNDLE set but `python3 -c 'import numpy'` failed; install numpy in this python")
@@ -193,7 +192,7 @@ using Test
             bundled_lib = joinpath(pkgdir, "bundle", "lib",
                                    "abi_stress." * Base.Libc.Libdl.dlext)
             @test isfile(bundled_lib)
-            # libjulia must be next to the user lib so the baked-in
+            # libjulia must be next to the user lib so the embedded
             # RUNPATH ($ORIGIN/../lib[/julia]) resolves it.
             @test any(startswith.(readdir(joinpath(pkgdir, "bundle", "lib")), "libjulia"))
 

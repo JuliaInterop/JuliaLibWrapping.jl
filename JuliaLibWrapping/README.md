@@ -12,9 +12,9 @@ JuliaLibWrapping consumes that file and generates wrappers for other languages:
 a C header (`.h`) via `CTarget`, or a Python `ctypes` package via
 `PythonTarget`. The `juliac` ABI-export feature ships in Julia 1.13.
 
-The Python target uses a two-tier layout: a regenerable `_lowlevel.py` holds
-the mechanical bindings, and an author-editable `_facade.py` (written once,
-never overwritten) is the public surface. See the
+The Python target separates generated `ctypes` bindings in `_lowlevel.py`
+from the public API in an author-editable `_facade.py`. The former is
+regenerated on each run; the latter is created only if it does not exist. See the
 [documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/#Two-tier-Python-output)
 for details.
 

@@ -305,7 +305,7 @@ end
             @test occursin("from ._facade import *", init)
             @test occursin("from ._facade import __all__", init)
 
-            # `_facade.py` is the never-overwritten author-editable surface;
+            # `_facade.py` is the author-editable public API and is not overwritten;
             # the starter stub re-exports every public name from `_lowlevel`.
             facade = read(facade_path, String)
             @test occursin("from ._lowlevel import (", facade)
@@ -858,13 +858,13 @@ end
             @test occursin("    JLWError,", facade)
             @test occursin("\"JLWError\"", facade)
 
-            # Façade auto-wrap policy for the three flavors:
+            # Façade generation policy for the three cases:
             #  - direct JLWStatus return → auto-wrap that discards the
             #    status struct (lowlevel already raises);
             #  - embedded JLWStatus in a compound struct → mechanical
             #    TODO (we don't know how to shape the other fields);
             #  - plain primitive-in/primitive-out → passthrough re-export
-            #    with no TODO noise.
+            #    without a TODO comment.
             @test occursin("def do_thing(x):\n    _lowlevel.do_thing(x)", facade)
             @test occursin("from ._lowlevel import compute  # TODO: hand-wrap " *
                            "— returns struct `ResultStruct` with embedded JLWStatus",

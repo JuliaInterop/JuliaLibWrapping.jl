@@ -25,7 +25,7 @@ keep the definitions from drifting across libraries.
 
 ## `JLWStatus` — in-band error reporting
 
-A library that needs to surface errors to its caller (rather than
+A library that needs to report errors to its caller (rather than
 abort the process) returns either a `JLWStatus` directly, or a struct
 that contains a `JLWStatus` field. `code == 0` is success; any
 non-zero value is an error code the library defines. `message` is a
@@ -79,18 +79,17 @@ mirroring Julia's own `Vector{T} = Array{T,1}` / `Matrix{T} = Array{T,2}`.
 You can use either the alias or the underlying `CArray{T,N}` form; they
 are the same type.
 
-The column-major choice has a sharp consequence on the Python side
-for `N ≥ 2`: the generated `from_numpy` helper requires a
+For `N ≥ 2`, the generated Python `from_numpy` helper requires a
 Fortran-contiguous array and **rejects** a default row-major
 `ndarray`. Silently treating a row-major buffer as column-major would
-transpose without warning, which is a footgun no caller asks for.
+reinterpret the array with the wrong layout.
 Python callers wrapping a default numpy array must `.copy(order='F')`
 (or `np.asfortranarray(arr)`) first.
 
 `CArray{T,N} <: AbstractArray{T,N}` with `IndexLinear()` style, so
 the type participates in iteration, broadcasting, `sum`, views, and
-any function that accepts an `AbstractArray{T,N}` — at zero
-allocation. `setindex!` is defined unconditionally; only call it on
+any function that accepts an `AbstractArray{T,N}` without allocating the
+array descriptor. `setindex!` is defined unconditionally; only call it on
 storage you know to be writable.
 
 ```@docs

@@ -4,7 +4,7 @@ CurrentModule = JuliaLibWrapping
 
 # Tutorial: wrap an OLS regression library
 
-This walks through the full pipeline end to end: write a small Julia
+This tutorial covers the complete pipeline: write a small Julia
 library, run [`build_library`](@ref) to compile it and emit wrappers,
 `pip install` the generated package, and call it from Python. The
 worked example lives in `examples/ols/` and stays buildable as the
@@ -26,8 +26,7 @@ types:
 `CMatrix` and `CVector` are specific cases of `CArray`, the multi-dimensional
 array type in JLWInterop.
 
-The core of the algorithm is a single statement, `X \ y`, using Julia's own
-LinearAlgebra for computation.
+The algorithm uses `X \ y` from Julia's `LinearAlgebra` standard library.
 
 ## 1. The Julia source
 
@@ -94,7 +93,7 @@ JLWInterop = "0.1"
 julia = "1.13"
 ```
 
-There are two things to point out:
+Two details matter:
 
 - The requirement for `julia = "1.13"` cannot be changed to an earlier Julia
   release, as the features needed to build language bindings shipped in Julia
@@ -110,7 +109,7 @@ There are two things to point out:
 
 ## 3. Build the library and Python package
 
-Two distinct environments are in play during a build:
+The build uses two environments:
 
 - The **entry project** (`examples/ols/Project.toml`, activated by
   `julia --project=.`) declares the runtime deps just described.
@@ -119,7 +118,7 @@ Two distinct environments are in play during a build:
   and [JuliaC](https://github.com/JuliaLang/JuliaC.jl). `build.jl` pushes
   this directory onto `LOAD_PATH` so that `using JuliaLibWrapping`
   resolves there. Keeping the build tooling out of the entry project's
-  `[deps]` is what lets your library remain reasonably minimal.
+  `[deps]` keeps the library's runtime dependencies minimal.
 
 The build-env's `Project.toml` is just:
 
@@ -134,8 +133,8 @@ JuliaLibWrapping = "0.1"
 julia = "1.13"
 ```
 
-Henceforth it will be assumed that you are in the directory containing both
-environments (e.g., `examples/ols`):
+Run the remaining commands from the directory containing both environments,
+such as `examples/ols`.
 
 Instantiate each environment from your shell:
 
@@ -144,9 +143,7 @@ julia --project=build-env -e 'using Pkg; Pkg.instantiate()'
 julia --project -e 'using Pkg; Pkg.instantiate()'
 ```
 
-To handle the two-environment split, we'll push `build-env` onto `LOAD_PATH`,
-making it reachable, and then pop it again once the build concludes.
-Here is the `build.jl` script:
+The `build.jl` script temporarily adds `build-env` to `LOAD_PATH`:
 
 ```julia
 push!(LOAD_PATH, joinpath(@__DIR__, "build-env"))
@@ -184,7 +181,7 @@ After a successful build, `out/` contains:
     └── ols_py/
         ├── __init__.py
         ├── _lowlevel.py    # mechanical ctypes bindings (regenerated every build)
-        ├── _facade.py      # idiomatic surface (written once; user-editable)
+        ├── _facade.py      # public API (created once; user-editable)
         └── bundle/         # juliac --bundle tree: libjulia, stdlibs, BLAS, …
 
 `bundle = true` is essential for a `pip install` user who has no
@@ -220,10 +217,9 @@ required.
 
 ### Verifying that the basics work
 
-To verify that things work, first we'll try calling `predict`, which is
-auto-wrapped because its arguments and return are all recognized as known types
-to JuliaLibWrapping's emitter. We'll call `predict` twice, once with correct
-inputs and once with incorrect ones to verify that errors work as expected:
+First call `predict`, which is generated automatically because the emitter
+recognizes all of its argument and return types. The second call uses invalid
+input to demonstrate error handling:
 
 ```python
 import numpy as np
@@ -242,14 +238,13 @@ except JLWError as e:
     print(e.code, e.message)   # 1, "coeffs length must match X cols"
 ```
 
-This should be run (or copy/pasted line-by-line) in a python shell running
-in the activated environment. If `out` is `array([2.04, 4.02, 6.  , 7.98, 9.96])`,
-and you see the expected error message, all is working as expected.
+Run this in a Python shell in the activated environment. The expected `out`
+value is `array([2.04, 4.02, 6.  , 7.98, 9.96])`, followed by the error message.
 
 `np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
 row-major view rather than silently transposing. In a moment you'll
-see how to edit the wrapper, so you can choose any interface you wish.
+can edit the wrapper to accept a different interface.
 
 ### Making edits to the wrapper
 
@@ -275,8 +270,8 @@ def fit(X, y):
 ```
 
 Note that `fit` accepts a plain (row-major) `X` and converts it with
-`np.asfortranarray` internally, so callers are spared the manual step
-that `predict` required. Alongside the coefficients we return the raw
+`np.asfortranarray` internally, so callers do not need the conversion required
+by `predict`. Alongside the coefficients, this wrapper returns the raw
 `result` struct, which carries `r_squared` and is what `summary_report`
 (next) consumes. A production wrapper might instead bundle these into a
 small result object exposing `coeffs`, `r_squared`, and a `.summary()`
@@ -322,8 +317,8 @@ print(result.r_squared)         # 1.0 (the points lie exactly on a line)
 print(summary_report(result))   # "OLS fit: 2 coefficients, R^2 = 1.0"
 ```
 
-The `result` returned by `fit` is exactly the `FitResult` struct
-`summary_report` expects, so the two chain without any glue. Try perturbing one
+The `result` returned by `fit` is the `FitResult` struct expected by
+`summary_report`. Try changing one
 entry of `y` and re-running: the coefficients shift slightly and
 `result.r_squared` drops below `1.0`, which the summary string reflects.
 
@@ -364,9 +359,6 @@ then be regenerated as a fresh starter (losing your wrappers).
 place, and because you installed with `pip install -e`, a restarted
 Python session picks them up with no reinstall.
 
-A common pattern is to keep `_facade.py` checked into your own repository
-alongside the build script, treating it as hand-written glue. If you need to
-automatically wrap new functions, currently the best option is to create a
-branch in which you delete it, regenerate it with a fresh build, and then copy
-the new pieces you want to keep into your existing hand-edited `_facade.py` and
-make any additional edits needed for the new code.
+Keep `_facade.py` under version control alongside the build script. To generate
+wrappers for new functions, delete it on a branch, rebuild, and merge the
+relevant generated functions into the existing file.

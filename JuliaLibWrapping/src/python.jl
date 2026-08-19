@@ -320,8 +320,8 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
         end
     end
 
-    # Implements issue #14: surface bare-pointer arguments at codegen time so
-    # the author sees the layout/ownership caveat without grepping the output.
+    # Implements issue #14: report bare-pointer arguments during generation so
+    # the author sees the layout and ownership warning immediately.
     let raw_ptr_methods = [m.symbol for m in entrypoints
                            if !isempty(raw_primitive_pointer_args(m, typeinfo))]
         isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods=raw_ptr_methods
@@ -338,10 +338,10 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
         _write_bindings(f, dest, abi_info, typedict, needs_jlwerror, needs_numpy)
     end
 
-    # `_facade.py` is the author-editable idiomatic surface. JuliaLibWrapping
-    # writes a starter façade once and never touches it again — to
-    # regenerate, delete the file and re-run. The stub auto-wraps any
-    # entrypoint whose arguments and return are all recognized vocabulary
+    # `_facade.py` defines the author-editable public API. JuliaLibWrapping
+    # creates it only if it does not exist; delete the file and rerun to
+    # regenerate it. The initial file wraps any entrypoint whose arguments
+    # and return are all recognized ABI
     # types or primitives; anything else is re-exported with a TODO comment.
     facade_path = joinpath(pkgdir, "_facade.py")
     if !isfile(facade_path)
@@ -698,7 +698,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
         raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
         if !isempty(raw_ptr_idx)
-            # Implements issue #14: nudge callers about layout / ownership for
+            # Implements issue #14: warn callers about layout and ownership for
             # bare `Ptr{<primitive>}` arguments — the wrapper cannot infer
             # length, shape, or memory order, and silent transpose is the
             # standard failure mode for Julia/numpy interop.
@@ -834,8 +834,7 @@ function _facade_plan(method::MethodDesc,
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
                  ret.kind in (:carray_unwrap, :cstring_unwrap, :jlwstatus_discard)
     if !adds_value
-        # All-primitive in/out: the lowlevel signature is already idiomatic
-        # Python, so re-export it directly with no comment noise.
+        # Primitive-only signatures need no conversion; re-export them directly.
         return (category=:passthrough, reason="",
                 args=arg_classes, ret=ret, uses_numpy=false)
     end
@@ -1002,8 +1001,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
         # Setuptools' package-data does not recurse, so each level of the
         # `juliac --bundle` tree (lib/, lib/julia/, artifacts/**) must be
         # enumerated. Native-library suffixes are listed redundantly with
-        # `*` so a developer who hand-drops a bare lib next to the package
-        # still gets it picked up.
+        # `*` so a manually added library beside the package is also included.
         sub = dest.bundle_subdir
         globs = [
             "\"*.so\"", "\"*.dylib\"", "\"*.dll\"",

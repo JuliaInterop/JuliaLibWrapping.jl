@@ -144,16 +144,15 @@ end
 """
     sort_declarations!(typedescs) -> forward_declarations
 
-Sort `typedescs` w.r.t. type-dependencies (e.g. Type A using Type B in a field),
-so that a type-descriptor always appears after any dependencies. Sort is performed
-in-place.
+Sort `typedescs` by type dependency (for example, type A containing type B in a
+field), so that each descriptor appears after its dependencies. The sort modifies
+`typedescs` in place.
 
 Returns indices of all types that could not be sorted (due to recursive types, e.g.
 a linked list in C). In C, these are the definitions that must be forward-declared.
 """
 function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
-    # First we have to identify the parts of the graph where we have type-recursion and
-    # therefore have to use forward-declarations instead of just sorting declarations.
+    # Identify recursive parts of the graph, which require forward declarations.
     recursive_types = BitSet()
 
     full_type_graph = build_type_graph(typedescs; pointer_filter = Returns(true))
@@ -164,22 +163,19 @@ function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
         end
     end
 
-    # Now that we know the recursive types, we can restrict them from treating their pointers
-    # as a type dependency and re-build a type-graph that is acyclic (these deleted dependencies
-    # will later become a forward-declaration)
+    # Remove pointer dependencies within recursive types to produce an acyclic graph.
+    # The removed dependencies become forward declarations.
     type_graph = build_type_graph(typedescs; pointer_filter = (id)->!in(id, recursive_types))
 
-    # We now have an acyclic type-dependency graph, and we have to emit our declarations in a
-    # topological order. This guarantees that if a type A has a dependency on type B, type B
-    # will appear before type A.
+    # Emit declarations in topological order so dependencies precede their users.
     order_to_emit = zeros(length(typedescs))
     for (pos, desc_id) in enumerate(topological_sort(type_graph))
-        # poor man's permute!(typedescs, topological_sort(g))
+        # Build the permutation used to sort `typedescs` below.
         order_to_emit[desc_id] = pos
     end
     sort!(typedescs; by=(id)->order_to_emit[id])
 
-    # Finally, we just need to compute the set of required forward declarations.
+    # Compute the required forward declarations.
     forwarddecls = BitSet()
     for id in recursive_types
         desc = typedescs[id]

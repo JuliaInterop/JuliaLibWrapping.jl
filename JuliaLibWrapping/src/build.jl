@@ -29,8 +29,8 @@ bundle_dir)`. `bundle_dir` is the path to the produced bundle tree when
 `build_library` drives [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)
 (a weak dependency); load it with `using JuliaC` before calling this
 function. `backend = :auto` (the default) and `backend = :juliac` are
-synonyms; the kwarg is retained so additional backends can be added
-without breaking the call surface.
+synonyms; the keyword is retained so additional backends can be added
+without changing the calling interface.
 
 # Example
 
@@ -60,7 +60,7 @@ artifacts — none of which a `pip install`-ing Python user has on their
 machine. Pass `bundle = true` to also produce a self-contained directory
 tree (the `juliac --bundle` layout) and copy it into every
 [`PythonTarget`](@ref)'s package. The Python loader generated for those
-targets searches the bundle first, so the baked-in `RUNPATH` resolves
+targets searches the bundle first, so the embedded `RUNPATH` resolves
 `libjulia` from inside the wheel at import time.
 
 `bundle = true` requires the `:juliac` backend and that each [`PythonTarget`](@ref)
@@ -169,7 +169,7 @@ end
 """
     standard_build(dir = pwd(); libname, kwargs...)
 
-Convenience wrapper around [`build_library`](@ref) for the conventional
+Run [`build_library`](@ref) with defaults for the conventional
 single-library layout:
 
     dir/

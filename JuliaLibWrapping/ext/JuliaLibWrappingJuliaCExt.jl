@@ -6,10 +6,10 @@ module JuliaLibWrappingJuliaCExt
 using JuliaC: ImageRecipe, LinkRecipe, BundleRecipe,
               compile_products, link_products, bundle_products
 
-# `LinkRecipe.rpath` accepts the documented public magic string "@bundle"
+# `LinkRecipe.rpath` accepts the documented public value "@bundle"
 # (JuliaC exposes this in the LinkRecipe docstring); the corresponding
 # `RPATH_BUNDLE` constant is internal, so we use the string form to keep
-# the import surface public.
+# depend only on public API.
 const _RPATH_BUNDLE = "@bundle"
 
 function _build_library_juliac(entry::AbstractString;

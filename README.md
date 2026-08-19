@@ -4,7 +4,7 @@
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/)
 [![Build Status](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaInterop/JuliaLibWrapping.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
-JuliaLibWrapping generates language-bindings for shared libraries compiled from Julia packages.
+JuliaLibWrapping generates language bindings for shared libraries compiled from Julia packages.
 
 This repository is a monorepo holding two packages, in sibling subdirectories:
 
@@ -15,7 +15,7 @@ This repository is a monorepo holding two packages, in sibling subdirectories:
   [documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/).
 
 - **[`JLWInterop/`](JLWInterop/)** — a small, dependency-free package defining
-  the types (`CArray`, `CString`, `JLWStatus`, …) that compiled
-  libraries and the generated Python wrappers both know about. It is a runtime
-  dependency of *compiled* libraries, kept separate so it stays
+  shared ABI types such as `CArray`, `CString`, and `JLWStatus`. Compiled
+  libraries use these types, and the generated Python wrappers recognize their
+  layouts. It is a runtime dependency of *compiled* libraries, kept separate to remain
   `juliac --trim`-friendly.

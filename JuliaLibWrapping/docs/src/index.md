@@ -12,8 +12,8 @@ non-Julia programs call the compiled library as if it were any other
 native dependency.
 
 New to the package? Start with the [tutorial](@ref "Tutorial: wrap an
-OLS regression library") — it walks a small library end to end, from
-Julia source through `pip install` to numpy-flavored Python.
+OLS regression library") — it follows a small library from Julia source
+through `pip install` to a Python API using NumPy arrays.
 
 ## Who it is for
 
@@ -36,20 +36,18 @@ Coupling between the two repos is the JSON format alone.
 
 [`build_library`](@ref) runs both halves in one call when JuliaC.jl is
 loaded; see [Concepts](@ref) for the pipeline architecture and the
-bundling, multi-library, and two-tier output stories.
+bundling, multiple libraries in one process, and generated Python files.
 
 ## Where to go next
 
 - [Tutorial: wrap an OLS regression library](@ref): build a small library with a
   Python wrapper using numpy.
 - [Concepts](@ref): the pipeline, the ABI data model, the extension
-  point for new target languages, and the runtime-closure / bundling
-  story.
+  point for new target languages, and runtime bundling.
 - [JLWInterop](@ref): a small package needed by almost any wrapped Julia module.
   Defines a few interoperability types (`CArray`, `CString`, and `JLWStatus`)
-  that your Julia wrapper-code should use to ensure interopability with the
-  language binding.
+  for defining ABI-compatible Julia entrypoints.
 - [Error handling across the ABI](@ref): the `JLWStatus` convention
-  that lets wrapped libraries surface errors as native exceptions in
+  that lets wrapped libraries report errors as native exceptions in
   the target language.
-- [API reference](@ref): the public API, in full detail.
+- [API reference](@ref): the public API.

@@ -45,7 +45,7 @@ using Test
     end
 
     @testset "CArray aliases" begin
-        # CVector and CMatrix must collapse to CArray specializations, mirroring
+        # CVector and CMatrix must be aliases for CArray specializations, matching
         # `Vector{T} = Array{T,1}` and `Matrix{T} = Array{T,2}` in Base.
         @test CVector{Float64} === CArray{Float64,1}
         @test CMatrix{Float64} === CArray{Float64,2}
@@ -75,7 +75,7 @@ using Test
             @test_throws BoundsError v[0]
             @test_throws BoundsError v[5]
 
-            # AbstractArray machinery just works
+            # Methods inherited from AbstractArray.
             @test sum(v) === 100.0
             @test v .+ 1.0 == buf .+ 1.0  # broadcasting allocates a Vector
 
@@ -179,7 +179,7 @@ using Test
             @test_throws BoundsError m[3, 1]
             @test_throws BoundsError m[1, 4]
 
-            # AbstractArray machinery.
+            # Methods inherited from AbstractArray.
             @test sum(m) === 21.0
             @test collect(m) == reshape(buf, 2, 3)
 
@@ -218,7 +218,7 @@ using Test
             @test_throws BoundsError a[1, 4, 1]
             @test_throws BoundsError a[1, 1, 5]
 
-            # AbstractArray machinery: sum, reshape comparison, mutation.
+            # AbstractArray operations: sum, reshape comparison, and mutation.
             @test sum(a) === sum(1.0:24.0)
             @test collect(a) == reshape(buf, 2, 3, 4)
 

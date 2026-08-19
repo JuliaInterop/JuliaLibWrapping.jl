@@ -2,7 +2,7 @@
 
 A Julia `throw` inside a `--trim`-compiled `@ccallable` does not become a
 Python exception — at best it aborts the host process. JuliaLibWrapping
-defines a small convention for surfacing errors across the C ABI so that
+defines a convention for reporting errors across the C ABI so that
 generated wrappers can translate them into native exceptions.
 
 ## The `JLWStatus` convention
@@ -67,14 +67,14 @@ except JLWError as e:
     print(e.code, e.message)   # 1, "negative input"
 ```
 
-On success the full return struct is handed back unchanged, including the
+On success the wrapper returns the full struct unchanged, including the
 status field (so callers can still inspect it explicitly if they prefer).
 
 ## C backend
 
 The C header generator does not currently auto-emit a status-check macro;
 C callers should check `result.status.code` themselves and read the message
-with e.g. `printf("%.256s\n", result.status.message)`. A `JLW_CHECK`-style
+with, for example, `printf("%.256s\n", result.status.message)`. A `JLW_CHECK`-style
 helper macro is a possible follow-up.
 
 ## Recognition is structural
@@ -83,4 +83,4 @@ The Python emitter matches on struct name (`"JLWStatus"`) plus field shape
 (`code::Int32` followed by a 256-byte tuple `message`). Authors who copy and
 paste a compatible definition — rather than depending on JLWInterop — still
 get the same wrapper behavior. The canonical package merely keeps the
-definition from drifting across libraries.
+definitions consistent across libraries.

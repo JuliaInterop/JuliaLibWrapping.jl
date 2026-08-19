@@ -1,19 +1,19 @@
 """
     JLWInterop
 
-Canonical types for JuliaLibWrapping cross-ABI conventions. Provides
+Types used by JuliaLibWrapping across ABI boundaries. Provides
 [`JLWStatus`](@ref) for in-band error reporting and [`CArray`](@ref) (with
 [`CVector`](@ref) and [`CMatrix`](@ref) aliases) for N-D numeric buffers;
 both are designed to cross a `@ccallable` boundary.
 
 A library author opts in by using these types in any `@ccallable`-returned
 or `@ccallable`-accepted struct; the JuliaLibWrapping Python emitter then
-recognizes them by struct name + shape and emits idiomatic code — raising a
+recognizes them by struct name and shape. It generates code that raises a
 native Python exception on a non-zero `JLWStatus.code`, and exposing
 `from_numpy` / `as_numpy` helpers on each recognized `CArray`.
 
-This package deliberately has no dependencies so it stays
-`juliac --trim`-friendly: it is intended to be a build-time *and* runtime
+This package has no dependencies so it remains compatible with
+`juliac --trim`. It is intended to be a build-time and runtime
 dependency of compiled libraries.
 """
 module JLWInterop
@@ -38,9 +38,8 @@ ABI-stable N-D buffer descriptor for crossing a `@ccallable` boundary:
 `prod(dims)` contiguous elements of type `T` starting at `data`, laid out
 in **column-major** order (the same convention as Julia's `Array{T,N}` and
 Fortran). `T` should be an `isbits` type, in which case `CArray{T,N}` is
-itself `isbits` and allocation-free to construct, keeping the type
-`juliac --trim`-friendly. The `dims` field is `NTuple{N,Int32}`, matching
-the rest of the JLWInterop ABI vocabulary.
+itself `isbits` and allocation-free to construct. The `dims` field is
+`NTuple{N,Int32}`, matching the other JLWInterop ABI types.
 
 The 1-D and 2-D specializations have familiar aliases:
 
@@ -69,10 +68,10 @@ data without warning.
 
 `CArray{T,N} <: AbstractArray{T,N}` and implements `size`, bounds-checked
 `getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`,
-with `IndexLinear()` style over the column-major storage. `CArray`
-participates in iteration, broadcasting, `sum`, views, `LinearAlgebra`
-routines, and any function that accepts an `AbstractArray{T,N}` — at zero
-allocation. `setindex!` is defined unconditionally, so callers must only
+with `IndexLinear()` style over the column-major storage. `CArray` supports
+iteration, broadcasting, `sum`, views, `LinearAlgebra` routines, and functions
+that accept an `AbstractArray{T,N}` without allocating the array descriptor.
+`setindex!` is defined unconditionally, so callers must only
 invoke it on buffers they know to be writable.
 
 # Example
