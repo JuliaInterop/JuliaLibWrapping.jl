@@ -17,7 +17,8 @@ function _build_library_juliac(entry::AbstractString;
                                trim, compile_ccallable, verbose,
                                bundle::Bool = false,
                                bundle_dir::Union{Nothing,AbstractString} = nothing,
-                               privatize::Bool = false)
+                               privatize::Bool = false,
+                               cpu_target::Union{Nothing,AbstractString} = nothing)
     out_lib = joinpath(libdir, libname)
     trim_mode = trim === nothing ? "no" : String(trim)
     img = ImageRecipe(;
@@ -28,6 +29,7 @@ function _build_library_juliac(entry::AbstractString;
         add_ccallables = compile_ccallable,
         export_abi = String(abi_path),
         verbose,
+        cpu_target = cpu_target === nothing ? nothing : String(cpu_target),
     )
     # Bundling requires the bundle-relative rpath at link time; otherwise the
     # produced .so bakes in absolute paths to the host's Julia install and

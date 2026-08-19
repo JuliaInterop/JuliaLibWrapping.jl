@@ -137,7 +137,7 @@ using Test
                     [CTarget(out, "abi_stress"),
                      PythonTarget(out, "abi_stress_py", "abi_stress")];
                     project = proj, libname = "abi_stress",
-                    libdir = out)
+                    libdir = out, cpu_target = "generic")
                 @test isfile(result.library)
                 @test isfile(result.abi_path)
                 @test result.abi_info isa JuliaLibWrapping.ABIInfo
