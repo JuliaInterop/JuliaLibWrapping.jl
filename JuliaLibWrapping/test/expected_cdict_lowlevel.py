@@ -92,7 +92,7 @@ _lib.give_dict.restype = CDict_Float64
 def give_dict():
     return _lib.give_dict()
 
-_lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]
+_lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None
 
 _lib.jlw_free_strings.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.c_int64]

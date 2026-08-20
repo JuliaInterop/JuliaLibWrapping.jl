@@ -9,11 +9,6 @@ makedocs(;
     modules = [JuliaLibWrapping, JLWInterop],
     authors = "Tim Holy <tim.holy@gmail.com> and contributors",
     sitename = "JuliaLibWrapping.jl",
-    # `cdict_struct_info`/`copt_struct_info`'s docstrings (JuliaLibWrapping/src/python.jl)
-    # `@ref` the undocumented `pytypes` binding; that pre-exists this page (unrelated to
-    # the L1 carriers docs) and needs a docstring on `pytypes` itself to fix for real —
-    # out of scope for a docs-only change. Downgrade so it doesn't block the build.
-    warnonly = [:cross_references],
     format = Documenter.HTML(;
         canonical = "https://JuliaInterop.github.io/JuliaLibWrapping.jl",
         edit_link = "main",

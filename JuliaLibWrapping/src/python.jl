@@ -66,6 +66,16 @@ function Base.show(io::IO, t::PythonTarget)
     return print(io, ")")
 end
 
+"""
+    pytypes :: Dict{String, String}
+
+Map from Julia primitive type name (as it appears in a `PrimitiveTypeDesc`'s
+`name` field, e.g. `"Int64"`, `"Float32"`, `"Cvoid"`) to the corresponding
+`ctypes` expression (e.g. `"ctypes.c_int64"`, `"ctypes.c_float"`, `"None"`).
+Used by [`mangle_python!`](@ref) for scalar/primitive arguments and returns,
+and by [`cdict_struct_info`](@ref)/[`copt_struct_info`](@ref) to recognize a
+carrier's value-typed field as a supported scalar.
+"""
 const pytypes = Dict{String, String}(
     "Int8" => "ctypes.c_int8",
     "Int16" => "ctypes.c_int16",
@@ -99,14 +109,66 @@ const pytypes = Dict{String, String}(
 )
 
 """
+    _is_void_struct(desc::StructDesc) -> Bool
+
+Recognize juliac's synthetic zero-field `struct Nothing` — the ABI-JSON
+representation of `Cvoid` (`Cvoid` is a type alias for `Nothing` in Base).
+juliac's `--export-abi` renders `Cvoid` as a real zero-size
+`kind:"struct","name":"Nothing","fields":[]` type node in EVERY position —
+a bare return type, and a pointer's pointee (`Ptr{Cvoid}` prints as
+`Ptr{Nothing}`, pointing at this same node) — never as a `PrimitiveTypeDesc`
+named `"Cvoid"` (see design/spike-notes.md and `pytypes["Cvoid"] => "None"`,
+which only ever fires for the primitive spelling and is unreachable for
+this struct spelling, in either position). Two call sites rely on this:
+`mangle_python!`'s `PointerDesc` branch (`Ptr{Nothing}` → `ctypes.c_void_p`,
+matching the existing `Ptr{Cvoid}`-as-primitive special case) and
+`_write_bindings`'s return-type resolution (bare `Nothing` return →
+Python `None`, since libffi cannot build a call interface for a zero-size
+struct return — `ffi_prep_cif failed`).
+
+**Every position `mangle_python!` can reach for this same struct `type_id`
+was swept, not just these two:**
+- **struct field** (`_write_bindings`'s field-emission loops): a field
+  typed as the BARE `Nothing` struct (not a pointer to it) mangles to the
+  real `Nothing` class name, unchanged by this predicate — correctly so,
+  not a gap: a ctypes `_fields_` entry needs a concrete ctypes type object,
+  and Python's `None` is not a valid one. No known carrier or juliac
+  output produces a bare-`Cvoid`-typed struct field (`Cvoid` has no
+  instances beyond the singleton `nothing`, so there is nothing to lay out
+  inline); a `Ptr{Nothing}` *pointer* field, by contrast, already collapses
+  to `ctypes.c_void_p` via the `PointerDesc` branch fix above — see the
+  `mangle_python! Nothing type_id sweep` testset.
+- **array element** (`mangle_python!`'s `ArrayDesc` branch,
+  `type.element_type`): a fixed-size array whose element type is the bare
+  `Nothing` struct (i.e. an ABI representation of `NTuple{N,Cvoid}`) is
+  **left unhandled** — it renders as `(Nothing * N)`, a ctypes array of a
+  zero-size struct. `NTuple{N,Cvoid}` is not a producible Julia value
+  shape (there is nothing to store `N` of), so no carrier or juliac
+  `--export-abi` output has ever been observed to emit this; pinned as
+  current (unfixed) behavior by the sweep testset rather than silently
+  assumed safe, since it is untested territory.
+
+Gated on BOTH the name AND zero fields — matching the
+[`is_jlwstatus_struct`](@ref)/[`cstrarray_struct_info`](@ref) family's
+name-plus-shape convention — so a genuine user struct that happens to be
+named `Nothing` but carries real fields is never swallowed by this check.
+"""
+function _is_void_struct(desc::StructDesc)
+    return desc.name == "Nothing" && isempty(desc.fields)
+end
+
+"""
     mangle_python!(typedict, type_id, typeinfo) -> String
 
 Return a Python expression naming the ctypes type for `type_id`. Struct names
 go through `sanitize_for_c` (whose output is also a valid Python identifier)
 with a `_<id>` collision suffix matching `mangle_c!`. Pointer types render
-inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`.
-Array types render inline as `(<eltype> * N)`. Results are memoized in
-`typedict`.
+inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`
+— both when the pointee arrives as a `PrimitiveTypeDesc` named `"Cvoid"`
+and when it arrives as juliac's zero-field `Nothing` struct (see
+[`_is_void_struct`](@ref); the latter is what `Ptr{Nothing}` actually looks
+like in a real ABI JSON). Array types render inline as `(<eltype> * N)`.
+Results are memoized in `typedict`.
 """
 function mangle_python!(
         typedict::Dict{Int, String}, type_id::Int,
@@ -125,6 +187,8 @@ function mangle_python!(
     elseif type isa PointerDesc
         pointee = typeinfo[type.pointee_type]
         if pointee isa PrimitiveTypeDesc && pointee.name == "Cvoid"
+            mangled = "ctypes.c_void_p"
+        elseif pointee isa StructDesc && _is_void_struct(pointee)
             mangled = "ctypes.c_void_p"
         else
             inner = mangle_python!(typedict, type.pointee_type, typeinfo)
@@ -767,26 +831,6 @@ function _write_copt_helpers(f::IO, coinfo)
     return println(f, "        return None if self.has_value == 0 else self.value") # noidiom: Python source text, not Julia
 end
 
-"""
-    _is_void_return_struct(desc::StructDesc) -> Bool
-
-Recognize juliac's synthetic zero-field `struct Nothing` — the ABI-JSON
-representation of a `::Cvoid` return. `Cvoid` is a type alias for `Nothing`
-in Base, and juliac's `--export-abi` renders it as a real zero-size
-`kind:"struct","name":"Nothing","fields":[]` type node, NOT as a
-`PrimitiveTypeDesc` named `"Cvoid"` (see design/spike-notes.md and
-`pytypes["Cvoid"] => "None"`, which only ever fires for the primitive
-spelling and is unreachable for this struct spelling).
-
-Gated on BOTH the name AND zero fields — matching the
-[`is_jlwstatus_struct`](@ref)/[`cstrarray_struct_info`](@ref) family's
-name-plus-shape convention — so a genuine user struct that happens to be
-named `Nothing` but carries real fields is never swallowed by this check.
-"""
-function _is_void_return_struct(desc::StructDesc)
-    return desc.name == "Nothing" && isempty(desc.fields)
-end
-
 const JLWERROR_DEFINITION = """
 class JLWError(RuntimeError):
     \"\"\"Raised when a wrapped function returns a non-zero JLWStatus.code.\"\"\"
@@ -964,19 +1008,24 @@ function _write_bindings(
     for method in entrypoints
         argexprs = String[mangle_python!(typedict, a.type, typeinfo) for a in method.args]
         return_desc = typeinfo[method.return_type]
-        # A `::Cvoid` return arrives here as a zero-field `Nothing` StructDesc
-        # (see `_is_void_return_struct`), not a `PrimitiveTypeDesc` — so it
-        # must be intercepted BEFORE `mangle_python!`, which (correctly, for
-        # every OTHER use of this same type_id, e.g. `Ptr{Nothing}`'s pointee
-        # in `ctypes.POINTER(Nothing)`) mangles it to the real `Nothing`
-        # class name. `restype` needs the Python singleton `None` instead —
-        # ctypes cannot build a call interface for a zero-size struct return
-        # (`ffi_prep_cif failed`). Using `typedict` here would either hit the
-        # already-memoized class name (wrong) or, if overwritten, corrupt
-        # every other reference to this type_id (also wrong) — so this
-        # bypasses `mangle_python!`/`typedict` entirely for this one call
-        # site rather than touching the shared memoized mapping.
-        rt = return_desc isa StructDesc && _is_void_return_struct(return_desc) ?
+        # A bare `::Cvoid` return arrives here as a zero-field `Nothing`
+        # StructDesc (see `_is_void_struct`), not a `PrimitiveTypeDesc` — so
+        # it must be intercepted BEFORE `mangle_python!`, which (correctly,
+        # for every OTHER use of this same struct type_id — e.g. its `class
+        # Nothing(ctypes.Structure): _fields_ = []` definition, still
+        # emitted by the pre-mangle pass below for use as a struct-pointer
+        # pointee elsewhere) mangles it to the real `Nothing` class name.
+        # `restype` needs the Python singleton `None` instead — ctypes
+        # cannot build a call interface for a zero-size struct return
+        # (`ffi_prep_cif failed`). Using `typedict` here would either hit
+        # the already-memoized class name (wrong) or, if overwritten,
+        # corrupt every other reference to this type_id (also wrong) — so
+        # this bypasses `mangle_python!`/`typedict` entirely for this one
+        # call site rather than touching the shared memoized mapping. (A
+        # `Ptr{Nothing}` *pointer* return, unlike a bare `Nothing` struct
+        # return, would fall through to `mangle_python!` below and is
+        # handled there — see `_is_void_struct`'s `PointerDesc`-branch use.)
+        rt = return_desc isa StructDesc && _is_void_struct(return_desc) ?
             "None" : mangle_python!(typedict, method.return_type, typeinfo)
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)

@@ -5,8 +5,8 @@ import sys
 import pathlib
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcstrarray"
-_LIBRARY_ENV_VAR = "CSTRARRAY_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcdicti32"
+_LIBRARY_ENV_VAR = "CDICT_INT32_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -56,39 +56,41 @@ _jlw_loaded.add(_jlw_this_pkg)
 class Nothing(ctypes.Structure):
     _fields_ = []
 
-class CStrArray(ctypes.Structure):
+class CDict_Int32(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+        ("keys", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+        ("values", ctypes.POINTER(ctypes.c_int32)),
     ]
 
     @classmethod
-    def from_list(cls, items):
-        if not isinstance(items, (list, tuple)):
-            raise TypeError("expected a list of str")
-        bufs = [s.encode("utf-8") + b"\x00" for s in items]
-        arr = (ctypes.POINTER(ctypes.c_uint8) * len(bufs))(
-            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))))
-        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern
+    def from_dict(cls, d):
+        keys = [k.encode("utf-8") + b"\x00" for k in d.keys()]
+        karr = (ctypes.POINTER(ctypes.c_uint8) * len(keys))(
+            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in keys])
+        varr = (ctypes.c_int32 * len(keys))(*d.values())
+        obj = cls(length=len(keys),
+                  keys=ctypes.cast(karr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
+        obj._buffer = (keys, karr, varr)
         return obj
 
-    def as_list(self):
-        out = []
+    def as_dict(self):
+        out = {}
         for i in range(self.length):
-            p = ctypes.cast(self.data[i], ctypes.c_char_p)
-            out.append(p.value.decode("utf-8"))
+            k = ctypes.cast(self.keys[i], ctypes.c_char_p).value.decode("utf-8")
+            out[k] = self.values[i]
         return out
 
-_lib.take_strs.argtypes = [CStrArray]
-_lib.take_strs.restype = ctypes.c_int64
-def take_strs(a):
-    return _lib.take_strs(a)
+_lib.take_dict_i32.argtypes = [CDict_Int32]
+_lib.take_dict_i32.restype = ctypes.c_int64
+def take_dict_i32(d):
+    return _lib.take_dict_i32(d)
 
-_lib.give_strs.argtypes = []
-_lib.give_strs.restype = CStrArray
-def give_strs():
-    return _lib.give_strs()
+_lib.give_dict_i32.argtypes = []
+_lib.give_dict_i32.restype = CDict_Int32
+def give_dict_i32():
+    return _lib.give_dict_i32()
 
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None

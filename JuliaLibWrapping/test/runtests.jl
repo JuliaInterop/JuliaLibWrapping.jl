@@ -912,13 +912,17 @@ end
         @test coinfo(flipped, ti) !== nothing # noidiom: matches sibling testsets' style
     end
 
-    @testset "_is_void_return_struct" begin
-        # Fix round 1 (Task 10 finding): juliac's ABI JSON represents a
-        # `::Cvoid` return as a zero-field `struct Nothing`, not a
-        # PrimitiveTypeDesc named "Cvoid" — this predicate is the gate that
-        # routes such a return to a Python `None` restype instead of a
-        # real (zero-size, libffi-incompatible) ctypes.Structure class.
-        is_void = JuliaLibWrapping._is_void_return_struct
+    @testset "_is_void_struct" begin
+        # Fix rounds 1 + 2 (Task 10 findings): juliac's ABI JSON represents
+        # `Cvoid` as a zero-field `struct Nothing`, not a PrimitiveTypeDesc
+        # named "Cvoid" — in EVERY position: a bare return (round 1, routed
+        # to a Python `None` restype instead of a real, zero-size,
+        # libffi-incompatible ctypes.Structure class) AND a pointer's
+        # pointee (round 2: `Ptr{Nothing}` routed to `ctypes.c_void_p`
+        # instead of `ctypes.POINTER(Nothing)`, which ctypes refuses to
+        # accept a `c_void_p` argument for). This predicate is the shared
+        # gate both call sites use.
+        is_void = JuliaLibWrapping._is_void_struct
         @test is_void(StructDesc("Nothing", 0, 1, FieldDesc[])) === true
         # Name alone is not enough: a real struct literally named Nothing
         # with fields must not be swallowed.
@@ -933,6 +937,101 @@ end
         )
         nothing_desc = abi.typeinfo[findtype(abi.typeinfo, "Nothing")]
         @test is_void(nothing_desc) === true
+    end
+
+    @testset "mangle_python! Ptr{Nothing} collapse" begin
+        # Fix round 2: a PointerDesc whose pointee is the zero-field
+        # `Nothing` struct (juliac's real representation of `Ptr{Cvoid}`,
+        # per `_is_void_struct`) must collapse to `ctypes.c_void_p`, same
+        # as the pre-existing `Ptr{Cvoid}`-as-primitive special case —
+        # NOT render as `ctypes.POINTER(Nothing)`, which is what broke
+        # `jlw_free`'s argtype (ctypes refuses a `c_void_p` argument where
+        # a distinct named pointer type is declared).
+        typedict = Dict{Int, String}()
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
+            2 => PointerDesc("Ptr{Nothing}", 1),
+        )
+        @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "ctypes.c_void_p"
+        # The struct itself, referenced directly (not through a pointer),
+        # still mangles to its real class name — unaffected, still needed
+        # wherever the class definition itself is emitted.
+        typedict2 = Dict{Int, String}()
+        @test JuliaLibWrapping.mangle_python!(typedict2, 1, typeinfo) == "Nothing"
+        # A pointer to a REAL (non-void) empty-named-Nothing struct with
+        # fields is not swallowed — still a typed pointer.
+        typedict3 = Dict{Int, String}()
+        typeinfo3 = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            2 => StructDesc("Nothing", 8, 8, FieldDesc[FieldDesc("x", 1, 0)]),
+            3 => PointerDesc("Ptr{Nothing}", 2),
+        )
+        @test JuliaLibWrapping.mangle_python!(typedict3, 3, typeinfo3) == "ctypes.POINTER(Nothing)"
+    end
+
+    @testset "mangle_python! Nothing type_id sweep" begin
+        # Advisory-review follow-up to fix round 2: pin behavior at EVERY
+        # position `mangle_python!` can reach the zero-field `Nothing`
+        # struct type_id from, not just the two fixed call sites (bare
+        # return, pointer pointee) — so a gap is a failing assertion, not
+        # a silent assumption. See `_is_void_struct`'s docstring for the
+        # per-position rationale.
+
+        # Struct FIELD typed as a POINTER to Nothing (Ptr{Cvoid} field) —
+        # this goes through the same fixed PointerDesc branch as an
+        # argument/return would, so it correctly collapses too.
+        let typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
+                2 => PointerDesc("Ptr{Nothing}", 1),
+            )
+            field_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
+            @test field_type == "ctypes.c_void_p"
+        end
+
+        # Struct FIELD typed as the BARE Nothing struct (not a pointer) —
+        # left unhandled BY DESIGN: a ctypes `_fields_` entry needs a real
+        # ctypes type object, and `None` is not one, so this must keep
+        # rendering the class name. Pinned so a future change to
+        # `_is_void_struct`'s call sites can't silently start emitting an
+        # invalid `("x", None)` field tuple.
+        let typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
+            )
+            field_type = JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo)
+            @test field_type == "Nothing"
+        end
+
+        # ARRAY ELEMENT typed as the bare Nothing struct (an ABI encoding
+        # of the unrealizable `NTuple{N,Cvoid}`) — KNOWN UNHANDLED, pinned
+        # rather than silently assumed safe. If juliac is ever observed to
+        # emit this shape for a real carrier, this assertion is the trip
+        # wire that forces a look, not a silent `(Nothing * N)` array of
+        # zero-size structs shipped to users.
+        let typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
+                2 => ArrayDesc("NTuple{3, Nothing}", 1, 3, 0, 1),
+            )
+            arr_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
+            @test arr_type == "(Nothing * 3)"
+        end
+
+        # RETURN position via a Ptr{Nothing} (not a bare Nothing struct) —
+        # `_write_bindings`'s round-1 ternary falls through to
+        # `mangle_python!` for any non-StructDesc return, which is exactly
+        # this PointerDesc case; confirms it resolves through the same
+        # fixed branch as an argument would, with no separate handling
+        # needed at the `_write_bindings` call site.
+        let typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
+                2 => PointerDesc("Ptr{Nothing}", 1),
+            )
+            return_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
+            @test return_type == "ctypes.c_void_p"
+        end
     end
 
     @testset "CString vocabulary" begin
@@ -1038,19 +1137,27 @@ end
             @test occursin("_lib.jlw_free_strings.argtypes", bindings)
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
-            # Fix round 1 (Task 10 finding): juliac's ABI JSON represents a
-            # `::Cvoid` return as a zero-field `Nothing` StructDesc, not a
-            # PrimitiveTypeDesc — `.restype` must resolve to Python `None`
+            # Fix rounds 1 + 2 (Task 10 findings): juliac's ABI JSON
+            # represents `Cvoid` as a zero-field `Nothing` StructDesc, not
+            # a PrimitiveTypeDesc, in EVERY position. Round 1: a bare
+            # `::Cvoid` return's `.restype` must resolve to Python `None`
             # (ctypes cannot build a call interface for a zero-size struct
-            # return; `ffi_prep_cif failed` at the first real call), while
-            # the ARGUMENT-side `Ptr{Nothing}` pointee still correctly
-            # renders as the real `Nothing` class (needed for
-            # `ctypes.POINTER(Nothing)`).
+            # return; `ffi_prep_cif failed` at the first real call). Round
+            # 2: `jlw_free`'s `p::Ptr{Cvoid}` argument arrives as
+            # `Ptr{Nothing}` (pointee = the same zero-field struct) and
+            # must collapse to `ctypes.c_void_p`, NOT render as
+            # `ctypes.POINTER(Nothing)` — the CDict/CStrArray façade
+            # helpers already call `jlw_free` with a `ctypes.cast(...,
+            # ctypes.c_void_p)` argument, and ctypes refuses a `c_void_p`
+            # instance where a distinct named pointer type is declared
+            # (`TypeError: expected LP_Nothing instance instead of
+            # c_void_p`).
             @test occursin("_lib.jlw_free.restype = None", bindings)
             @test occursin("_lib.jlw_free_strings.restype = None", bindings)
-            @test occursin("_lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]", bindings)
+            @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
+            @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1141,13 +1248,17 @@ end
             @test occursin("_lib.jlw_free.argtypes", bindings)
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
-            # Fix round 1 (Task 10 finding): see the identical comment in
-            # the "CStrArray vocabulary" testset above.
+            # Fix rounds 1 + 2 (Task 10 findings): see the identical comment
+            # in the "CStrArray vocabulary" testset above. CDict's owning
+            # return frees `values` via `jlw_free(ctypes.cast(...,
+            # ctypes.c_void_p))`, so this argtype collapse is exactly what
+            # `give_dict`'s façade wrapper needs.
             @test occursin("_lib.jlw_free.restype = None", bindings)
             @test occursin("_lib.jlw_free_strings.restype = None", bindings)
-            @test occursin("_lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]", bindings)
+            @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
+            @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
@@ -1185,6 +1296,71 @@ end
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cdict_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CDict{Int32} vocabulary" begin
+        # Advisory-review follow-up to fix round 2: proves `value_ctype`/
+        # `value_dtype_name` parameterization (and the generated
+        # from_dict/as_dict codegen that substitutes them) varies
+        # correctly for a value type OTHER than the Float64 exercised by
+        # the main "CDict vocabulary" testset. Field offsets are identical
+        # to the Float64 fixture — `values` is a pointer field, so its own
+        # size never depends on the pointee's size. Also re-exercises the
+        # jlw_free `ctypes.c_void_p` argtype fix (round 2) on a second,
+        # independent fixture.
+        abi = read_abi_info("bindinginfo_cdict_int32.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cdict_int32_demo", "libcdicti32")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cdict_int32_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            @test occursin("class CDict_Int32(ctypes.Structure):", bindings)
+            @test occursin("(\"length\", ctypes.c_int64)", bindings)
+            @test occursin(
+                "(\"keys\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
+            )
+            @test occursin("(\"values\", ctypes.POINTER(ctypes.c_int32))", bindings)
+            # <value_ctype> substitution varies: Int32 here, not Float64.
+            @test occursin("varr = (ctypes.c_int32 * len(keys))(*d.values())", bindings)
+            @test occursin(
+                "values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32))", bindings
+            )
+            @test !occursin("ctypes.c_double", bindings)
+
+            @test occursin("_lib.take_dict_i32.argtypes = [CDict_Int32]", bindings)
+            @test occursin("_lib.give_dict_i32.restype = CDict_Int32", bindings)
+            # Round-2 fix re-exercised on an independent fixture.
+            @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
+            @test occursin("_lib.jlw_free.restype = None", bindings)
+            @test !occursin("ctypes.POINTER(Nothing)", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cdict_int32_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "cdict_int32_demo", "_facade.py"), String)
+            @test occursin(
+                "def give_dict_i32():\n    _result = _lowlevel.give_dict_i32()\n" *
+                    "    _out = _result.as_dict()\n" *
+                    "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
+                    "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
+                    "    return _out", facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing # noidiom: matches sibling testsets' style
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cdict_int32_demo", "_facade.py")
                 cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
                 @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
