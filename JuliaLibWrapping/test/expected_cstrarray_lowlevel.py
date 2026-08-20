@@ -91,8 +91,8 @@ def give_strs():
     return _lib.give_strs()
 
 _lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]
-_lib.jlw_free.restype = Nothing
+_lib.jlw_free.restype = None
 
 _lib.jlw_free_strings.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.c_int64]
-_lib.jlw_free_strings.restype = Nothing
+_lib.jlw_free_strings.restype = None
 

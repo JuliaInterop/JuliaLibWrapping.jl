@@ -912,6 +912,29 @@ end
         @test coinfo(flipped, ti) !== nothing # noidiom: matches sibling testsets' style
     end
 
+    @testset "_is_void_return_struct" begin
+        # Fix round 1 (Task 10 finding): juliac's ABI JSON represents a
+        # `::Cvoid` return as a zero-field `struct Nothing`, not a
+        # PrimitiveTypeDesc named "Cvoid" — this predicate is the gate that
+        # routes such a return to a Python `None` restype instead of a
+        # real (zero-size, libffi-incompatible) ctypes.Structure class.
+        is_void = JuliaLibWrapping._is_void_return_struct
+        @test is_void(StructDesc("Nothing", 0, 1, FieldDesc[])) === true
+        # Name alone is not enough: a real struct literally named Nothing
+        # with fields must not be swallowed.
+        @test is_void(StructDesc("Nothing", 8, 8, FieldDesc[FieldDesc("x", 1, 0)])) === false
+        # Fields alone is not enough either: an unrelated empty struct.
+        @test is_void(StructDesc("Empty", 0, 1, FieldDesc[])) === false
+        # Sanity: the real synthetic node from the CStrArray fixture.
+        abi = read_abi_info("bindinginfo_cstrarray.json")
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        nothing_desc = abi.typeinfo[findtype(abi.typeinfo, "Nothing")]
+        @test is_void(nothing_desc) === true
+    end
+
     @testset "CString vocabulary" begin
         # CString conversion does not require numpy.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -1015,6 +1038,19 @@ end
             @test occursin("_lib.jlw_free_strings.argtypes", bindings)
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
+            # Fix round 1 (Task 10 finding): juliac's ABI JSON represents a
+            # `::Cvoid` return as a zero-field `Nothing` StructDesc, not a
+            # PrimitiveTypeDesc — `.restype` must resolve to Python `None`
+            # (ctypes cannot build a call interface for a zero-size struct
+            # return; `ffi_prep_cif failed` at the first real call), while
+            # the ARGUMENT-side `Ptr{Nothing}` pointee still correctly
+            # renders as the real `Nothing` class (needed for
+            # `ctypes.POINTER(Nothing)`).
+            @test occursin("_lib.jlw_free.restype = None", bindings)
+            @test occursin("_lib.jlw_free_strings.restype = None", bindings)
+            @test occursin("_lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]", bindings)
+            @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
+            @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1105,6 +1141,13 @@ end
             @test occursin("_lib.jlw_free.argtypes", bindings)
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
+            # Fix round 1 (Task 10 finding): see the identical comment in
+            # the "CStrArray vocabulary" testset above.
+            @test occursin("_lib.jlw_free.restype = None", bindings)
+            @test occursin("_lib.jlw_free_strings.restype = None", bindings)
+            @test occursin("_lib.jlw_free.argtypes = [ctypes.POINTER(Nothing)]", bindings)
+            @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
+            @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
