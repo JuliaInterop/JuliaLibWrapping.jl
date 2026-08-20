@@ -1,0 +1,50 @@
+{
+  "_comment": "Hand-authored fixture for the COpt vocabulary type. Mirrors the layout juliac would emit for `struct COpt{T}; has_value::Int32; value::T; end` (JLWInterop, commit df908fa) instantiated at T=Float64, with one @ccallable function borrowing a COpt{Float64} argument and one returning one. COpt is a by-value carrier (no heap allocation), so no jlw_free* entrypoints appear in this fixture and no free call is expected in the façade wrapper. Field offsets (has_value@0, value@8, size 16) match design/spike-notes.md's `COpt{Float64}` probe JSON verbatim: `has_value` is Int32 (4 bytes, ends at offset 4) but `value` starts at offset 8 — 4 bytes of trailing padding to satisfy Float64's 8-byte alignment. The Python emitter must recognize the COpt shape (name + 2-field shape: `has_value` an Int32 primitive, `value` a primitive in `pytypes`) and emit from_optional/as_optional helpers plus a by-value-unwrap façade wrapper with no free call.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 1,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 2,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "COpt{Float64}",
+      "id": 3,
+      "size": 16,
+      "fields": [
+        { "name": "has_value", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "value", "type_id": 1, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 1 },
+      "name": "take_opt(o::COpt{Float64})",
+      "arguments": [
+        { "name": "o", "type_id": 3 }
+      ],
+      "symbol": "take_opt"
+    },
+    {
+      "returns": { "type_id": 3 },
+      "name": "give_opt()",
+      "arguments": [],
+      "symbol": "give_opt"
+    }
+  ]
+}

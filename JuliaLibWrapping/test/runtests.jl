@@ -735,6 +735,183 @@ end
         @test csainfo(flipped, ti) === true
     end
 
+    @testset "cdict_struct_info" begin
+        # Structural recognition of the CDict{V} shape: a struct named CDict
+        # with `length` (primitive integer), `keys` (Ptr{Ptr{UInt8}} — same
+        # chain as CStrArray's `data`), and `values` (Ptr{<primitive in
+        # pytypes>}) fields. The name is only the first gate; the full
+        # 3-field shape and both pointer chains must also match.
+        cdinfo = JuliaLibWrapping.cdict_struct_info
+        abi = read_abi_info("bindinginfo_cdict.json")
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        cd = abi.typeinfo[findtype(abi.typeinfo, "CDict{Float64}")]
+        info = cdinfo(cd, abi.typeinfo)
+        @test info !== nothing # noidiom: matches sibling testsets' style
+        @test info.value_ctype == "ctypes.c_double"
+        @test info.value_dtype_name == "Float64"
+
+        # Hand-built rejections.
+        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primi64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
+        primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        primu16 = PrimitiveTypeDesc("UInt16", false, 16, 2, 2)
+        primf64 = PrimitiveTypeDesc("Float64", true, 64, 8, 8)
+        primnotreal = PrimitiveTypeDesc("NotARealType", false, 32, 4, 4)
+        ptr_to_u8 = PointerDesc("Ptr{UInt8}", 3)
+        ptr_to_u16 = PointerDesc("Ptr{UInt16}", 4)
+        ptr_to_ptr_u8 = PointerDesc("Ptr{Ptr{UInt8}}", 6)
+        ptr_to_ptr_u16 = PointerDesc("Ptr{Ptr{UInt16}}", 7)
+        ptr_to_f64 = PointerDesc("Ptr{Float64}", 5)
+        ptr_to_notreal = PointerDesc("Ptr{NotARealType}", 9)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primint, 2 => primi64,
+            3 => primu8, 4 => primu16, 5 => primf64,
+            6 => ptr_to_u8, 7 => ptr_to_u16,
+            8 => ptr_to_ptr_u8, 9 => ptr_to_ptr_u16,
+            10 => ptr_to_f64,
+            11 => StructDesc(
+                "CDict{Float64}", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 8, 8),
+                    FieldDesc("values", 10, 16),
+                ]
+            ),
+            12 => StructDesc(
+                "NotACDict", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 8, 8),
+                    FieldDesc("values", 10, 16),
+                ]
+            ),
+            13 => StructDesc(
+                "CDictSinglePtrKeys", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 6, 8),  # Ptr{UInt8} — only one indirection
+                    FieldDesc("values", 10, 16),
+                ]
+            ),
+            14 => StructDesc(
+                "CDictBadNames", 24, 8, FieldDesc[
+                    FieldDesc("len", 2, 0),
+                    FieldDesc("keys", 8, 8),
+                    FieldDesc("values", 10, 16),
+                ]
+            ),
+            15 => StructDesc(
+                "CDictTwoFields", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 8, 8),
+                ]
+            ),
+            16 => primnotreal,
+            17 => ptr_to_notreal,
+            18 => StructDesc(
+                "CDictUnsupportedValue", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 8, 8),
+                    FieldDesc("values", 17, 16),  # Ptr{NotARealType} — not in pytypes
+                ]
+            ),
+        )
+        @test cdinfo(ti[11], ti) !== nothing # noidiom: matches sibling testsets' style
+        @test cdinfo(ti[12], ti) === nothing # noidiom: matches sibling testsets' style — wrong name prefix
+        @test cdinfo(ti[13], ti) === nothing # noidiom: matches sibling testsets' style — keys is single-indirection pointer
+        @test cdinfo(ti[14], ti) === nothing # noidiom: matches sibling testsets' style — wrong field names
+        @test cdinfo(ti[15], ti) === nothing # noidiom: matches sibling testsets' style — missing `values` field
+        @test cdinfo(ti[18], ti) === nothing # noidiom: matches sibling testsets' style — values pointee not in pytypes
+
+        # Field order may be any permutation.
+        permuted = StructDesc(
+            "CDict{Float64}", 24, 8, FieldDesc[
+                FieldDesc("values", 10, 16),
+                FieldDesc("length", 2, 0),
+                FieldDesc("keys", 8, 8),
+            ]
+        )
+        @test cdinfo(permuted, ti) !== nothing # noidiom: matches sibling testsets' style
+    end
+
+    @testset "copt_struct_info" begin
+        # Structural recognition of the COpt{T} shape: a struct named COpt
+        # with `has_value` (Int32 primitive) and `value` (any primitive in
+        # `pytypes`) fields.
+        coinfo = JuliaLibWrapping.copt_struct_info
+        abi = read_abi_info("bindinginfo_copt.json")
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        co = abi.typeinfo[findtype(abi.typeinfo, "COpt{Float64}")]
+        info = coinfo(co, abi.typeinfo)
+        @test info !== nothing # noidiom: matches sibling testsets' style
+        @test info.value_ctype == "ctypes.c_double"
+        @test info.value_dtype_name == "Float64"
+
+        # Hand-built rejections.
+        primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primi64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
+        primf64 = PrimitiveTypeDesc("Float64", true, 64, 8, 8)
+        primnotreal = PrimitiveTypeDesc("NotARealType", false, 32, 4, 4)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primi32, 2 => primi64, 3 => primf64, 4 => primnotreal,
+            5 => StructDesc(
+                "COpt{Float64}", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 1, 0),
+                    FieldDesc("value", 3, 8),
+                ]
+            ),
+            6 => StructDesc(
+                "NotACOpt", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 1, 0),
+                    FieldDesc("value", 3, 8),
+                ]
+            ),
+            7 => StructDesc(
+                "COptInt64HasValue", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 2, 0),  # Int64 — not Int32
+                    FieldDesc("value", 3, 8),
+                ]
+            ),
+            8 => StructDesc(
+                "COptBadNames", 16, 8, FieldDesc[
+                    FieldDesc("present", 1, 0),
+                    FieldDesc("value", 3, 8),
+                ]
+            ),
+            9 => StructDesc(
+                "COptUnsupportedValue", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 1, 0),
+                    FieldDesc("value", 4, 8),  # NotARealType — not in pytypes
+                ]
+            ),
+            10 => StructDesc(
+                "COptThreeFields", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 1, 0),
+                    FieldDesc("value", 3, 8),
+                    FieldDesc("extra", 3, 8),
+                ]
+            ),
+        )
+        @test coinfo(ti[5], ti) !== nothing # noidiom: matches sibling testsets' style
+        @test coinfo(ti[6], ti) === nothing # noidiom: matches sibling testsets' style — wrong name prefix
+        @test coinfo(ti[7], ti) === nothing # noidiom: matches sibling testsets' style — has_value is Int64, not Int32
+        @test coinfo(ti[8], ti) === nothing # noidiom: matches sibling testsets' style — wrong field names
+        @test coinfo(ti[9], ti) === nothing # noidiom: matches sibling testsets' style — value pointee not in pytypes
+        @test coinfo(ti[10], ti) === nothing # noidiom: matches sibling testsets' style — too many fields
+
+        # Field order may be either way.
+        flipped = StructDesc(
+            "COpt{Float64}", 16, 8, FieldDesc[
+                FieldDesc("value", 3, 8),
+                FieldDesc("has_value", 1, 0),
+            ]
+        )
+        @test coinfo(flipped, ti) !== nothing # noidiom: matches sibling testsets' style
+    end
+
     @testset "CString vocabulary" begin
         # CString conversion does not require numpy.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -867,6 +1044,155 @@ end
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CDict vocabulary" begin
+        # CDict conversion does not require numpy — pure ctypes, like
+        # CStrArray. Exercises a borrow-in argument (take_dict), an owning
+        # return that must be converted then freed via BOTH release
+        # entrypoints (give_dict: jlw_free_strings for `keys`, jlw_free for
+        # `values`), and the macro-emitted jlw_free/jlw_free_strings
+        # release entrypoints themselves (left as mechanical TODO
+        # re-exports in this milestone — Task 9 hides them from the
+        # façade, not this one).
+        abi = read_abi_info("bindinginfo_cdict.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cdict_demo", "libcdict")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cdict_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            # No numpy: CDict helpers use only `ctypes`.
+            @test !occursin("import numpy", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test !occursin("numpy", pyproject)
+
+            # Struct + helpers.
+            @test occursin("class CDict_Float64(ctypes.Structure):", bindings)
+            @test occursin("(\"length\", ctypes.c_int64)", bindings)
+            @test occursin(
+                "(\"keys\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
+            )
+            @test occursin("(\"values\", ctypes.POINTER(ctypes.c_double))", bindings)
+            @test occursin("def from_dict(cls, d):", bindings)
+            @test occursin("def as_dict(self):", bindings)
+            @test occursin("k.encode(\"utf-8\") + b\"\\x00\"", bindings)
+            @test occursin(".decode(\"utf-8\")", bindings)
+
+            # Round-trip-direction entrypoints are emitted as bare bindings.
+            @test occursin("_lib.take_dict.argtypes = [CDict_Float64]", bindings)
+            @test occursin("_lib.give_dict.restype = CDict_Float64", bindings)
+            # The macro-emitted release entrypoints are bound like any
+            # other function.
+            @test occursin("_lib.jlw_free_strings.argtypes", bindings)
+            @test occursin("_lib.jlw_free.argtypes", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Façade auto-wrap: CDict arg becomes dict in; owning CDict
+            # return is converted to dict then freed TWICE (keys, values).
+            facade = read(joinpath(path, "cdict_demo", "_facade.py"), String)
+            @test occursin(
+                "def take_dict(d):\n    _d = CDict_Float64.from_dict(d)\n" *
+                    "    return _lowlevel.take_dict(_d)", facade
+            )
+            @test occursin(
+                "def give_dict():\n    _result = _lowlevel.give_dict()\n" *
+                    "    _out = _result.as_dict()\n" *
+                    "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
+                    "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
+                    "    return _out", facade
+            )
+            # jlw_free/jlw_free_strings take raw pointers, so they are not
+            # auto-wrappable and stay mechanical TODO re-exports — this
+            # task does not hide them from the façade.
+            @test occursin(
+                "from ._lowlevel import jlw_free  # TODO: hand-wrap — " *
+                    "`p`: argument has raw pointer type `Ptr{Nothing}`", facade
+            )
+            @test occursin(
+                "from ._lowlevel import jlw_free_strings  # TODO: hand-wrap — " *
+                    "`p`: argument has raw pointer type `Ptr{Ptr{UInt8}}`", facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing # noidiom: matches sibling testsets' style
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cdict_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "COpt vocabulary" begin
+        # COpt conversion does not require numpy or jlw_free* — it is a
+        # by-value carrier (no heap allocation), so the owning-return
+        # façade wrapper unwraps with no free call.
+        abi = read_abi_info("bindinginfo_copt.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "copt_demo", "libcopt")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "copt_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            @test !occursin("import numpy", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test !occursin("numpy", pyproject)
+
+            # Struct + helpers.
+            @test occursin("class COpt_Float64(ctypes.Structure):", bindings)
+            @test occursin("(\"has_value\", ctypes.c_int32)", bindings)
+            @test occursin("(\"value\", ctypes.c_double)", bindings)
+            @test occursin("def from_optional(cls, x):", bindings)
+            @test occursin("def as_optional(self):", bindings)
+            @test occursin("cls(has_value=0, value=0)", bindings)
+            @test occursin("cls(has_value=1, value=x)", bindings)
+
+            # Round-trip-direction entrypoints are emitted as bare bindings.
+            @test occursin("_lib.take_opt.argtypes = [COpt_Float64]", bindings)
+            @test occursin("_lib.take_opt.restype = ctypes.c_double", bindings)
+            @test occursin("_lib.give_opt.restype = COpt_Float64", bindings)
+            # No jlw_free* entrypoints in this by-value-only fixture.
+            @test !occursin("jlw_free", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_copt_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Façade auto-wrap: COpt arg becomes Optional[float] in; COpt
+            # return unwraps to Optional[float] with NO free call.
+            facade = read(joinpath(path, "copt_demo", "_facade.py"), String)
+            @test occursin(
+                "def take_opt(o):\n    _o = COpt_Float64.from_optional(o)\n" *
+                    "    return _lowlevel.take_opt(_o)", facade
+            )
+            @test occursin(
+                "def give_opt():\n    _result = _lowlevel.give_opt()\n" *
+                    "    return _result.as_optional()", facade
+            )
+            @test !occursin("jlw_free", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_copt_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing # noidiom: matches sibling testsets' style
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "copt_demo", "_facade.py")
                 cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
                 @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")

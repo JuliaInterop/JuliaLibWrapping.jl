@@ -292,6 +292,95 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
 end
 
 """
+    cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize the JLWInterop `CDict{V}` shape: a struct whose name starts with
+`"CDict"`, with exactly three fields named `length` (a primitive integer),
+`keys` (a pointer-to-pointer to `UInt8`, i.e. `Ptr{Ptr{UInt8}}` — the same
+chain as [`cstrarray_struct_info`](@ref)'s `data`), and `values` (a pointer
+to a primitive type recognized by [`pytypes`](@ref)). Field order may be
+any permutation of the three. Returns `(; value_ctype, value_dtype_name)`
+on a match (the `ctypes` expression and Julia primitive name for `V`),
+otherwise `nothing`. Recognition is by name + full shape (see
+[`is_jlwstatus_struct`](@ref) for the rationale).
+"""
+function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CDict") || return nothing
+    length(desc.fields) == 3 || return nothing
+    length_field = nothing
+    keys_field = nothing
+    values_field = nothing
+    for field in desc.fields
+        if field.name == "length"
+            length_field = field
+        elseif field.name == "keys"
+            keys_field = field
+        elseif field.name == "values"
+            values_field = field
+        end
+    end
+    (isnothing(length_field) || isnothing(keys_field) || isnothing(values_field)) && return nothing
+    length_type = typeinfo[length_field.type]
+    length_type isa PrimitiveTypeDesc || return nothing
+    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
+    keys_outer = typeinfo[keys_field.type]
+    keys_outer isa PointerDesc || return nothing
+    keys_inner = typeinfo[keys_outer.pointee_type]
+    keys_inner isa PointerDesc || return nothing
+    keys_leaf = typeinfo[keys_inner.pointee_type]
+    keys_leaf isa PrimitiveTypeDesc || return nothing
+    keys_leaf.name == "UInt8" || return nothing
+    values_type = typeinfo[values_field.type]
+    values_type isa PointerDesc || return nothing
+    values_pointee = typeinfo[values_type.pointee_type]
+    values_pointee isa PrimitiveTypeDesc || return nothing
+    values_pointee.name in keys(pytypes) || return nothing
+    return (;
+        value_ctype = pytypes[values_pointee.name],
+        value_dtype_name = values_pointee.name,
+    )
+end
+
+"""
+    copt_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize the JLWInterop `COpt{T}` shape: a struct whose name starts with
+`"COpt"`, with exactly two fields named `has_value` (an `Int32` primitive
+— the 0/1 discriminant) and `value` (a primitive type recognized by
+[`pytypes`](@ref)). Field order may be either. Returns `(; value_ctype,
+value_dtype_name)` on a match (the `ctypes` expression and Julia primitive
+name for `T`), otherwise `nothing`. Unlike [`cstrarray_struct_info`](@ref)
+and [`cdict_struct_info`](@ref), `COpt` is a by-value carrier (no pointer
+fields, no heap allocation), so no release entrypoint is ever needed for
+it. Recognition is by name + shape (see [`is_jlwstatus_struct`](@ref) for
+the rationale).
+"""
+function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "COpt") || return nothing
+    length(desc.fields) == 2 || return nothing
+    has_value_field = nothing
+    value_field = nothing
+    for field in desc.fields
+        if field.name == "has_value"
+            has_value_field = field
+        elseif field.name == "value"
+            value_field = field
+        end
+    end
+    (isnothing(has_value_field) || isnothing(value_field)) && return nothing
+    hv_type = typeinfo[has_value_field.type]
+    hv_type isa PrimitiveTypeDesc || return nothing
+    hv_type.name == "Int32" || return nothing
+    value_type = typeinfo[value_field.type]
+    value_type isa PrimitiveTypeDesc || return nothing
+    value_type.name in keys(pytypes) || return nothing
+    return (;
+        value_ctype = pytypes[value_type.name],
+        value_dtype_name = value_type.name,
+    )
+end
+
+"""
     raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
 
 Return positional indices into `method.args` for arguments whose static type is
@@ -630,6 +719,54 @@ function _write_cstrarray_helpers(f::IO)
     return println(f, "        return out")
 end
 
+function _write_cdict_helpers(f::IO, cdinfo)
+    # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`, and
+    # `values` field names are guaranteed by the recognizer; `keys` is
+    # always Ptr{Ptr{UInt8}} (like CStrArray's `data`), `values` is
+    # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
+    # `values` is `d.values()` boxed into a fresh ctypes array on the way
+    # in, and read back element-by-element on the way out.
+    ctype = cdinfo.value_ctype
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_dict(cls, d):")
+    println(f, "        keys = [k.encode(\"utf-8\") + b\"\\x00\" for k in d.keys()]")
+    println(f, "        karr = (ctypes.POINTER(ctypes.c_uint8) * len(keys))(")
+    println(
+        f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ",
+        "ctypes.POINTER(ctypes.c_uint8)) for b in keys])"
+    )
+    println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
+    println(f, "        obj = cls(length=len(keys),")
+    println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),")
+    println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")))")
+    println(f, "        obj._buffer = (keys, karr, varr)")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_dict(self):")
+    println(f, "        out = {}")
+    println(f, "        for i in range(self.length):")
+    println(f, "            k = ctypes.cast(self.keys[i], ctypes.c_char_p).value.decode(\"utf-8\")")
+    println(f, "            out[k] = self.values[i]")
+    return println(f, "        return out")
+end
+
+function _write_copt_helpers(f::IO, coinfo)
+    # COpt{T} shape — see `copt_struct_info`. The `has_value`/`value` field
+    # names are guaranteed by the recognizer. COpt is by-value (no pointer
+    # fields), so unlike the other vocabulary helpers there is no
+    # `_buffer` keepalive and no free-on-release concern.
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_optional(cls, x):")
+    println(f, "        if x is None:")
+    println(f, "            return cls(has_value=0, value=0)")
+    println(f, "        return cls(has_value=1, value=x)")
+    println(f, "")
+    println(f, "    def as_optional(self):")
+    return println(f, "        return None if self.has_value == 0 else self.value") # noidiom: Python source text, not Julia
+end
+
 const JLWERROR_DEFINITION = """
 class JLWError(RuntimeError):
     \"\"\"Raised when a wrapped function returns a non-zero JLWStatus.code.\"\"\"
@@ -792,6 +929,12 @@ function _write_bindings(
             elseif cstrarray_struct_info(type, typeinfo)
                 # Emit CStrArray conversion helpers.
                 _write_cstrarray_helpers(f)
+            elseif (cdinfo = cdict_struct_info(type, typeinfo)) !== nothing # noidiom: existing code style
+                # Emit CDict conversion helpers.
+                _write_cdict_helpers(f, cdinfo)
+            elseif (coinfo = copt_struct_info(type, typeinfo)) !== nothing # noidiom: existing code style
+                # Emit COpt conversion helpers.
+                _write_copt_helpers(f, coinfo)
             end
         end
         println(f)
@@ -859,6 +1002,8 @@ Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:carray, classname=…)` — wrap with `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
 - `(kind=:cstrarray, classname=…)` — wrap with `<class>.from_list(name)`
+- `(kind=:cdict, classname=…)` — wrap with `<class>.from_dict(name)`
+- `(kind=:copt, classname=…)` — wrap with `<class>.from_optional(name)`
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
 function _facade_classify_arg(
@@ -876,6 +1021,10 @@ function _facade_classify_arg(
             return (kind = :cstring, classname = typedict[arg.type])
         elseif cstrarray_struct_info(t, typeinfo)
             return (kind = :cstrarray, classname = typedict[arg.type])
+        elseif cdict_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :cdict, classname = typedict[arg.type])
+        elseif copt_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :copt, classname = typedict[arg.type])
         else
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
@@ -895,6 +1044,11 @@ Classify a method's return for façade auto-wrapping. The return is one of:
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
 - `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
   free the owned `data` buffer via `jlw_free_strings`
+- `(kind=:cdict_unwrap, classname=…)` — return `_result.as_dict()`, then
+  free the owned `keys` buffer via `jlw_free_strings` AND the owned
+  `values` buffer via `jlw_free` (two separate allocations)
+- `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
+  is by-value, so no free is involved
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out.
 """
@@ -915,6 +1069,10 @@ function _facade_classify_return(
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
         elseif cstrarray_struct_info(rt, typeinfo)
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
+        elseif cdict_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :cdict_unwrap, classname = typedict[method.return_type])
+        elseif copt_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :copt_unwrap, classname = typedict[method.return_type])
         elseif jlwstatus_access_path(method, typeinfo) !== nothing # noidiom: existing code style
             return (
                 kind = :opaque,
@@ -967,7 +1125,10 @@ function _facade_plan(
     uses_numpy = any(c -> c.kind === :carray, arg_classes) ||
         ret.kind === :carray_unwrap
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
-        ret.kind in (:carray_unwrap, :cstring_unwrap, :cstrarray_unwrap, :jlwstatus_discard)
+        ret.kind in (
+        :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap,
+        :cdict_unwrap, :copt_unwrap, :jlwstatus_discard,
+    )
     if !adds_value
         # Primitive-only signatures need no conversion; re-export them directly.
         return (
@@ -1002,6 +1163,14 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
             local_ = "_" * name
             println(f, "    ", local_, " = ", cls.classname, ".from_list(", name, ")")
             push!(call_args, local_)
+        elseif cls.kind === :cdict
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_dict(", name, ")")
+            push!(call_args, local_)
+        elseif cls.kind === :copt
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_optional(", name, ")")
+            push!(call_args, local_)
         end
     end
     call = "_lowlevel." * method.symbol * "(" * join(call_args, ", ") * ")"
@@ -1026,6 +1195,20 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         println(f, "    _out = _result.as_list()")
         println(f, "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
         println(f, "    return _out")
+    elseif ret.kind === :cdict_unwrap
+        # `keys` and `values` are two SEPARATE Julia-allocated buffers
+        # (own-out convention): convert to `dict` first, then release
+        # both via their respective release entrypoints — the string-array
+        # allocator for `keys`, the generic allocator for `values`.
+        println(f, "    _result = ", call)
+        println(f, "    _out = _result.as_dict()")
+        println(f, "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)")
+        println(f, "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))")
+        println(f, "    return _out")
+    elseif ret.kind === :copt_unwrap
+        # COpt is by-value (no heap allocation) — unwrap only, no free.
+        println(f, "    _result = ", call)
+        println(f, "    return _result.as_optional()")
     end
     return println(f)
 end
@@ -1045,6 +1228,10 @@ function _write_facade_stub(
 
     plans = [_facade_plan(m, typeinfo, typedict) for m in entrypoints]
     needs_np = any(p -> p.uses_numpy, plans)
+    # `:cdict_unwrap`'s release call casts `_result.values` via
+    # `ctypes.cast(...)` directly in facade.py (see
+    # `_emit_facade_autowrapper`), so `ctypes` must be imported there too.
+    needs_ctypes = any(p -> p.ret.kind === :cdict_unwrap, plans)
     has_struct_exports = !isempty(struct_names) || needs_jlwerror
 
     println(f, "\"\"\"", dest.package_name, " idiomatic façade.")
@@ -1072,6 +1259,9 @@ function _write_facade_stub(
     end
 
     println(f, "from . import _lowlevel  # noqa: F401")
+    if needs_ctypes
+        println(f, "import ctypes")
+    end
     if needs_np
         println(f, "import numpy as np  # noqa: F401")
     end
