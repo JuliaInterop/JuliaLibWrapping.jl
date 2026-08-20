@@ -7,6 +7,7 @@ module JLWInterop
 
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
+export CStrArray
 
 """
     JLW_MESSAGE_BYTES
@@ -89,8 +90,8 @@ points to at least `prod(a.dims)` valid `T` slots, in column-major order,
 for the duration of the call, and that the slots are writable when
 `setindex!` is used.
 """
-struct CArray{T,N} <: AbstractArray{T,N}
-    dims::NTuple{N,Int32}
+struct CArray{T, N} <: AbstractArray{T, N}
+    dims::NTuple{N, Int32}
     data::Ptr{T}
 end
 
@@ -99,24 +100,24 @@ end
 
 Alias for `CArray{T,1}`. See [`CArray`](@ref).
 """
-const CVector{T} = CArray{T,1}
+const CVector{T} = CArray{T, 1}
 
 """
     CMatrix{T}
 
 Alias for `CArray{T,2}`, laid out in column-major order. See [`CArray`](@ref).
 """
-const CMatrix{T} = CArray{T,2}
+const CMatrix{T} = CArray{T, 2}
 
 # Infer `N` from the dimensions.
-CArray{T}(dims::Tuple{Vararg{Integer,N}}, data::Ptr{T}) where {T,N} =
-    CArray{T,N}(dims, data)
+CArray{T}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
+    CArray{T, N}(dims, data)
 
 # Scalar constructors for the 1-D and 2-D aliases.
-CArray{T,1}(n::Integer, data::Ptr{T}) where {T} =
-    CArray{T,1}((n,), data)
-CArray{T,2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
-    CArray{T,2}((rows, cols), data)
+CArray{T, 1}(n::Integer, data::Ptr{T}) where {T} =
+    CArray{T, 1}((n,), data)
+CArray{T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
+    CArray{T, 2}((rows, cols), data)
 
 Base.size(a::CArray) = Int.(a.dims)
 Base.IndexStyle(::Type{<:CArray}) = IndexLinear()
@@ -192,11 +193,11 @@ function Base.isvalid(s::CString, i::Integer)
 end
 
 # Match `String` iteration, including malformed sequences.
-@inline function Base.iterate(s::CString, i::Int=1)
+@inline function Base.iterate(s::CString, i::Int = 1)
     (i % UInt) - 1 < (s.length % UInt) || return nothing
     b = unsafe_load(s.data, i)
     u = UInt32(b) << 24
-    (0x80 <= b <= 0xf7) || return reinterpret(Char, u), i+1
+    (0x80 <= b <= 0xf7) || return reinterpret(Char, u), i + 1
     return _cstring_iterate_continued(s, i, u)
 end
 
@@ -263,6 +264,79 @@ function jlw_error(code::Integer, msg::AbstractString)
         i <= n ? bytes[i] : 0x00
     end
     return JLWStatus(Int32(code), buf)
+end
+
+"""
+    CStrArray
+
+Owning-or-borrowed C-ABI descriptor for an array of NUL-terminated UTF-8
+strings: `length` elements at `data`, each a `Ptr{UInt8}` to one
+NUL-terminated string.
+
+# Ownership contract
+
+- `Base.Vector{String}(a::CStrArray)` **borrows**: it copies the strings out
+  into a fresh Julia `Vector{String}` and never frees `a.data` or any of the
+  per-string buffers. The caller retains ownership.
+- `CStrArray(v::Vector{String})` **owns out**: it `Libc.malloc`s the pointer
+  array and each per-string buffer. The consumer is responsible for
+  releasing them exactly once, via [`JLWInterop._free_strings`](@ref) (or,
+  at a `@ccallable` boundary, `jlw_free_strings` from
+  [`@export_release_entrypoints`](@ref)).
+
+# Example
+
+```julia
+using JLWInterop
+
+a = CStrArray(["hello", "world"])
+Vector{String}(a) == ["hello", "world"]
+JLWInterop._free_strings(a.data, a.length)
+```
+"""
+struct CStrArray
+    length::Int64
+    data::Ptr{Ptr{UInt8}}     # each element NUL-terminated UTF-8
+end
+
+# Borrow-in: copy out, never free (the caller owns the buffers).
+function Base.Vector{String}(a::CStrArray)
+    v = Vector{String}(undef, a.length)
+    for i in 1:a.length
+        v[i] = unsafe_string(unsafe_load(a.data, i))
+    end
+    return v
+end
+
+# Own-out: malloc'd copy; consumer releases via jlw_free_strings.
+function CStrArray(v::Vector{String})
+    n = length(v)
+    data = Ptr{Ptr{UInt8}}(Libc.malloc(max(n, 1) * sizeof(Ptr{UInt8})))
+    for i in 1:n
+        s = v[i]
+        nb = sizeof(s)
+        p = Ptr{UInt8}(Libc.malloc(nb + 1))
+        GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
+        unsafe_store!(p, 0x00, nb + 1)
+        unsafe_store!(data, p, i)
+    end
+    return CStrArray(Int64(n), data)
+end
+
+"""
+    JLWInterop._free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)
+
+Free `n` NUL-terminated string buffers pointed to by `p`, then free `p`
+itself. Matches the allocation made by [`CStrArray(::Vector{String})`](@ref).
+Internal; exposed at a `@ccallable` boundary as `jlw_free_strings` by
+[`@export_release_entrypoints`](@ref).
+"""
+function _free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)
+    for i in 1:n
+        Libc.free(unsafe_load(p, i))
+    end
+    Libc.free(p)
+    return nothing
 end
 
 end # module

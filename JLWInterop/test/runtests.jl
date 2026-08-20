@@ -47,10 +47,10 @@ using Test
     @testset "CArray aliases" begin
         # CVector and CMatrix must be aliases for CArray specializations, matching
         # `Vector{T} = Array{T,1}` and `Matrix{T} = Array{T,2}` in Base.
-        @test CVector{Float64} === CArray{Float64,1}
-        @test CMatrix{Float64} === CArray{Float64,2}
-        @test CVector === CArray{T,1} where {T}
-        @test CMatrix === CArray{T,2} where {T}
+        @test CVector{Float64} === CArray{Float64, 1}
+        @test CMatrix{Float64} === CArray{Float64, 2}
+        @test CVector === CArray{T, 1} where {T}
+        @test CMatrix === CArray{T, 2} where {T}
     end
 
     @testset "CVector AbstractVector interface" begin
@@ -194,9 +194,9 @@ using Test
         # 2 × 3 × 4 = 24 elements in column-major layout.
         buf = collect(1.0:24.0)
         GC.@preserve buf begin
-            a = CArray{Float64,3}((2, 3, 4), pointer(buf))
+            a = CArray{Float64, 3}((2, 3, 4), pointer(buf))
 
-            @test a isa AbstractArray{Float64,3}
+            @test a isa AbstractArray{Float64, 3}
             @test IndexStyle(typeof(a)) === IndexLinear()
             @test size(a) === (2, 3, 4)
             @test ndims(a) === 3
@@ -248,11 +248,11 @@ using Test
         # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
         @test fieldoffset(CMatrix{Float64}, 2) == 8
 
-        @test fieldtype(CArray{Float64,3}, :dims) === NTuple{3, Int32}
-        @test isbitstype(CArray{Float64,3})
-        @test fieldoffset(CArray{Float64,3}, 1) == 0
+        @test fieldtype(CArray{Float64, 3}, :dims) === NTuple{3, Int32}
+        @test isbitstype(CArray{Float64, 3})
+        @test fieldoffset(CArray{Float64, 3}, 1) == 0
         # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
-        @test fieldoffset(CArray{Float64,3}, 2) == 16
+        @test fieldoffset(CArray{Float64, 3}, 2) == 16
     end
 
     @testset "CArray constructors" begin
@@ -262,7 +262,7 @@ using Test
         @test a isa CMatrix{Float64}
         @test a.dims === (Int32(2), Int32(3))
 
-        a2 = CArray{Float64,2}((2, 3), Ptr{Float64}(0))
+        a2 = CArray{Float64, 2}((2, 3), Ptr{Float64}(0))
         @test a2.dims === (Int32(2), Int32(3))
 
         # Scalar-form shortcuts for 1-D and 2-D.
@@ -272,5 +272,14 @@ using Test
 
         m = CMatrix{Float64}(2, 3, Ptr{Float64}(0))
         @test m.dims === (Int32(2), Int32(3))
+    end
+
+    @testset "CStrArray round-trip" begin
+        v = ["hello", "wörld", ""]          # incl. UTF-8 and empty
+        a = CStrArray(v)
+        @test a.length == 3
+        @test Vector{String}(a) == v
+        JLWInterop._free_strings(a.data, a.length)   # tests own the free
+        @test Vector{String}(CStrArray(String[])) == String[]
     end
 end
