@@ -12,7 +12,7 @@ const _TRIM_MODES = (:no, :safe, :unsafe, Symbol("unsafe-warn"))
                   trim=:safe, compile_ccallable=true,
                   backend=:auto, verbose=false,
                   bundle=false, bundle_dir=joinpath(libdir, libname*"-bundle"),
-                  privatize=false, cpu_target=nothing)
+                  privatize=bundle, cpu_target=nothing)
 
 Run the full `juliac` → ABI JSON → wrapper pipeline in one call.
 
@@ -71,9 +71,14 @@ declare a `bundle_subdir` (e.g.
 Targets that are not Python (e.g. [`CTarget`](@ref)) are unaffected — C
 consumers manage their own linkage.
 
-`privatize = true` salts the bundled libjulia files with a random prefix so
-they cannot collide with a system libjulia. Off by default; opt in if the
-wrapper might be loaded into a process that also has a different libjulia.
+`privatize` salts the bundled `libjulia` and `libjulia-internal` with a
+distinct SONAME prefix, so the loader cannot satisfy this library's runtime
+dependency from another loaded copy. It defaults to `bundle`. See the manual
+section on multiple wrapped libraries in one process.
+
+Privatization applies to the bundle, so `privatize = true` with
+`bundle = false` is an error rather than a silent no-op. Pass
+`privatize = false` alongside `bundle = true` to opt out.
 
 # CPU target
 
@@ -96,7 +101,7 @@ function build_library(entry::AbstractString,
                        verbose::Bool = false,
                        bundle::Bool = false,
                        bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
-                       privatize::Bool = false,
+                       privatize::Bool = bundle,
                        cpu_target::Union{Nothing,AbstractString} = nothing)
     isfile(entry) || isdir(entry) ||
         throw(ArgumentError("entry not found: $entry"))
@@ -107,6 +112,11 @@ function build_library(entry::AbstractString,
     end
     backend ∈ (:auto, :juliac) ||
         throw(ArgumentError("backend must be :auto or :juliac; got :$backend"))
+    if privatize && !bundle
+        throw(ArgumentError(
+            "privatize = true requires bundle = true: privatization salts the " *
+            "bundled libjulia, and a build without a bundle has none to salt."))
+    end
     if bundle
         for t in targets
             t isa PythonTarget || continue
@@ -146,12 +156,26 @@ function build_library(entry::AbstractString,
 
     target_outputs = Vector{NamedTuple}(undef, length(targets))
     for (i, t) in pairs(targets)
-        write_wrapper(t, abi_info)
+        write_wrapper(_apply_privatization(t, privatize), abi_info)
         target_outputs[i] = (target = typeof(t), dir = t.dir)
     end
 
     return (; library = library_path, abi_path, abi_info, target_outputs,
             backend = :juliac, bundle_dir = bundle ? bundle_dir : nothing)
+end
+
+# Record whether the bundle was privatized so the generated Python can warn
+# when another non-privatized package is already loaded.
+_apply_privatization(t::AbstractTarget, ::Bool) = t
+function _apply_privatization(t::PythonTarget, privatize::Bool)
+    t.privatized == privatize && return t
+    t.privatized && throw(ArgumentError(
+        "PythonTarget for package \"$(t.package_name)\" was constructed with " *
+        "`privatized = true`, but `build_library` was called with `privatize = false`. " *
+        "The generated package would claim a private libjulia it does not have."))
+    return PythonTarget(t.dir, t.package_name, t.library_basename;
+                        bundle_subdir = t.bundle_subdir, version = t.version,
+                        privatized = true)
 end
 
 # Copy the bundle before emitting Python sources.

@@ -41,12 +41,13 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     import warnings
     warnings.warn(
         f"Loading JuliaLibWrapping-generated package {_jlw_this_pkg!r} into a "
-        f"process that already loaded {sorted(_jlw_loaded)!r}. Multiple "
-        "JLW-wrapped libraries in one process is not a supported "
-        "configuration: the dynamic linker silently shares a single "
-        "libjulia across them, which assumes byte-compatible Julia "
-        "versions and shares one Julia runtime. See the JuliaLibWrapping "
-        "docs section on multiple wrapped libraries in one process.",
+        f"process that already loaded {sorted(_jlw_loaded)!r}. "
+        "This package was built without a private libjulia, so both "
+        "packages resolve a single Julia runtime and the first call into "
+        "whichever did not initialize it aborts the process. Rebuild with "
+        "`privatize = true`, or compile both APIs into a single juliac "
+        "library. See the JuliaLibWrapping docs section on multiple "
+        "wrapped libraries in one process.",
         RuntimeWarning,
         stacklevel=2,
     )

@@ -193,8 +193,13 @@ using Test
                                    "abi_stress." * Base.Libc.Libdl.dlext)
             @test isfile(bundled_lib)
             # libjulia must be next to the user lib so the embedded
-            # RUNPATH ($ORIGIN/../lib[/julia]) resolves it.
-            @test any(startswith.(readdir(joinpath(pkgdir, "bundle", "lib")), "libjulia"))
+            # RUNPATH ($ORIGIN/../lib[/julia]) resolves it. Privatization is on
+            # by default for bundles, so every copy carries a salt prefix and
+            # none is named plain `libjulia*`.
+            libnames = readdir(joinpath(pkgdir, "bundle", "lib"))
+            salted = filter(f -> contains(f, "libjulia"), libnames)
+            @test !isempty(salted)
+            @test !any(startswith.(salted, "libjulia"))
 
             # The real test: can Python import the package and call a
             # function? `out` is added to PYTHONPATH so `abi_stress_py`
