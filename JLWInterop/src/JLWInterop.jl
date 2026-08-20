@@ -8,6 +8,7 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
+export CDict, COpt, unwrap
 
 """
     JLW_MESSAGE_BYTES
@@ -338,5 +339,123 @@ function _free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)
     Libc.free(p)
     return nothing
 end
+
+"""
+    CDICT_VALUE_TYPES
+
+The `V` types [`CDict{V}`](@ref) supports. Per-`V` methods are generated only
+for these types (a closed, trim-safe allowlist), so `CDict(::Dict{String,V})`
+for any other `V` throws `MethodError` rather than silently miscompiling or
+requiring dynamic dispatch.
+"""
+const CDICT_VALUE_TYPES = (
+    Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
+    Float32, Float64, Bool,
+)
+
+"""
+    CDict{V}
+
+Owning-or-borrowed C-ABI descriptor for a `Dict{String,V}`: `length`
+key/value pairs, keys as NUL-terminated UTF-8 strings at `keys`, values as
+a parallel array of `V` at `values`. `V` is restricted to
+[`CDICT_VALUE_TYPES`](@ref); the allowlist is enforced structurally — the
+per-`V` conversion methods below are the only ones generated, so a
+disallowed `V` fails as a `MethodError` at the call site.
+
+# Ownership contract
+
+- `Base.Dict{String,V}(d::CDict{V})` **borrows**: it copies keys and values
+  out into a fresh Julia `Dict` and never frees `d.keys`, the per-key
+  buffers, or `d.values`. The caller retains ownership.
+- `CDict(d::Dict{String,V})` **owns out**: it `Libc.malloc`s the key
+  pointer array, each per-key buffer, and the value array. The consumer
+  must release them exactly once: the keys via
+  [`JLWInterop._free_strings`](@ref) (or `jlw_free_strings` from
+  [`@export_release_entrypoints`](@ref)) and `values` via `Libc.free` (or
+  `jlw_free`).
+
+# Example
+
+```julia
+using JLWInterop
+
+c = CDict(Dict("a" => 1.5, "b" => -2.0))
+Dict{String,Float64}(c) == Dict("a" => 1.5, "b" => -2.0)
+JLWInterop._free_strings(c.keys, c.length)
+Libc.free(c.values)
+```
+"""
+struct CDict{V}
+    length::Int64
+    keys::Ptr{Ptr{UInt8}}
+    values::Ptr{V}
+end
+
+# The loop IS the allowlist: per-V concrete methods keep trim-safety and reject
+# unsupported V with a MethodError at the call site (PT's proven pattern).
+for V in CDICT_VALUE_TYPES
+    @eval begin
+        function Base.Dict{String, $V}(d::CDict{$V})
+            out = Dict{String, $V}()
+            sizehint!(out, d.length)
+            for i in 1:d.length
+                out[unsafe_string(unsafe_load(d.keys, i))] = unsafe_load(d.values, i)
+            end
+            return out
+        end
+        function CDict(dict::Dict{String, $V})
+            n = length(dict)
+            kp = Ptr{Ptr{UInt8}}(Libc.malloc(max(n, 1) * sizeof(Ptr{UInt8})))
+            vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
+            i = 0
+            for (k, v) in dict
+                i += 1
+                nb = sizeof(k)
+                p = Ptr{UInt8}(Libc.malloc(nb + 1))
+                GC.@preserve k unsafe_copyto!(p, pointer(k), nb)
+                unsafe_store!(p, 0x00, nb + 1)
+                unsafe_store!(kp, p, i)
+                unsafe_store!(vp, v, i)
+            end
+            return CDict{$V}(Int64(n), kp, vp)
+        end
+    end
+end
+
+"""
+    COpt{T}
+
+C-ABI descriptor for `Union{T,Nothing}`: a discriminant `has_value` (present
+= 1, absent = 0) alongside an inline `value::T`, always present (but
+meaningless / zero-filled in the absent branch) so the struct stays
+`isbits` and needs no allocation or ownership handling in either direction.
+
+Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled
+per PT's convention); read back with [`unwrap`](@ref).
+
+# Example
+
+```julia
+using JLWInterop
+
+unwrap(COpt(3.5)) === 3.5
+isnothing(unwrap(COpt{Float64}(nothing)))
+```
+"""
+struct COpt{T}
+    has_value::Int32
+    value::T
+end
+COpt(x::T) where {T} = COpt{T}(Int32(1), x)
+COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill (PT pattern)
+
+"""
+    unwrap(o::COpt{T}) -> Union{T,Nothing}
+
+Read a [`COpt{T}`](@ref) back into a native `Union{T,Nothing}`: `nothing`
+in the absent branch, otherwise `o.value`.
+"""
+unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
 
 end # module

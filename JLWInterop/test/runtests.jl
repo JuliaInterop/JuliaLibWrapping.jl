@@ -282,4 +282,21 @@ using Test
         JLWInterop._free_strings(a.data, a.length)   # tests own the free
         @test Vector{String}(CStrArray(String[])) == String[]
     end
+
+    @testset "CDict round-trip and allowlist" begin
+        d = Dict("a" => 1.5, "b" => -2.0)
+        c = CDict(d)
+        @test c.length == 2
+        @test Dict{String, Float64}(c) == d
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
+        @test_throws MethodError CDict(Dict("x" => 1.0im))   # ComplexF64 not allowlisted
+    end
+
+    @testset "COpt" begin
+        @test unwrap(COpt(3.5)) === 3.5
+        o = COpt{Float64}(nothing)
+        @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
+        @test unwrap(o) === nothing   # exact-value assertion (Test.jl convention), not control flow # noidiom
+    end
 end
