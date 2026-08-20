@@ -1,0 +1,32 @@
+flowchart LR
+    subgraph CStrArray["CStrArray — 16 bytes"]
+        direction TB
+        CSA0["offset 0  ·  length : Int64"]
+        CSA8["offset 8  ·  data : Ptr{Ptr{UInt8}}"]
+        CSA0 --> CSA8
+    end
+
+    subgraph CDict["CDict{V} — 24 bytes"]
+        direction TB
+        CD0["offset 0   ·  length : Int64"]
+        CD8["offset 8   ·  keys : Ptr{Ptr{UInt8}}"]
+        CD16["offset 16  ·  values : Ptr{V}"]
+        CD0 --> CD8 --> CD16
+    end
+
+    subgraph COpt["COpt{T} — 16 bytes (T = Float64)"]
+        direction TB
+        CO0["offset 0    ·  has_value : Int32"]
+        COp["offset 4-7  ·  padding (align T)"]
+        CO8["offset 8    ·  value : T"]
+        CO0 --> COp --> CO8
+    end
+
+    style CSA0 fill:#e3f2fd,stroke:#1565c0,color:#0d2440
+    style CSA8 fill:#e3f2fd,stroke:#1565c0,color:#0d2440
+    style CD0 fill:#fff3e0,stroke:#e65100,color:#0d2440
+    style CD8 fill:#fff3e0,stroke:#e65100,color:#0d2440
+    style CD16 fill:#fff3e0,stroke:#e65100,color:#0d2440
+    style CO0 fill:#f3e5f5,stroke:#6a1b9a,color:#0d2440
+    style COp fill:#eeeeee,stroke:#757575,color:#424242
+    style CO8 fill:#f3e5f5,stroke:#6a1b9a,color:#0d2440
