@@ -751,7 +751,6 @@ end
         info = cdinfo(cd, abi.typeinfo)
         @test info !== nothing # noidiom: matches sibling testsets' style
         @test info.value_ctype == "ctypes.c_double"
-        @test info.value_dtype_name == "Float64"
 
         # Hand-built rejections.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -848,7 +847,6 @@ end
         info = coinfo(co, abi.typeinfo)
         @test info !== nothing # noidiom: matches sibling testsets' style
         @test info.value_ctype == "ctypes.c_double"
-        @test info.value_dtype_name == "Float64"
 
         # Hand-built rejections.
         primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -1114,47 +1112,18 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test !occursin("numpy", pyproject)
 
-            # Struct + helpers.
-            @test occursin("class CStrArray(ctypes.Structure):", bindings)
-            @test occursin("(\"length\", ctypes.c_int64)", bindings)
-            @test occursin(
-                "(\"data\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
-            )
-            @test occursin("def from_list(cls, items):", bindings)
-            @test occursin("def as_list(self):", bindings)
-            @test occursin("expected a list of str", bindings)
-            @test occursin("s.encode(\"utf-8\") + b\"\\x00\"", bindings)
-            @test occursin(".decode(\"utf-8\")", bindings)
-
-            # Round-trip-direction entrypoints are emitted as bare bindings.
-            @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
-            @test occursin("_lib.give_strs.restype = CStrArray", bindings)
-            # The macro-emitted release entrypoints are bound (argtypes/
-            # restype) like any other function, so the owning-return
-            # façade wrapper's direct `_lowlevel._lib.jlw_free_strings(...)`
-            # call works — but they get no module-level `def` wrapper.
-            @test occursin("_lib.jlw_free.argtypes", bindings)
-            @test occursin("_lib.jlw_free_strings.argtypes", bindings)
+            # The macro-emitted release entrypoints get no module-level
+            # `def` wrapper (bound on `_lib` only — see the golden compare
+            # below for the argtypes/restype shape).
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
             # Fix rounds 1 + 2 (Task 10 findings): juliac's ABI JSON
             # represents `Cvoid` as a zero-field `Nothing` StructDesc, not
-            # a PrimitiveTypeDesc, in EVERY position. Round 1: a bare
-            # `::Cvoid` return's `.restype` must resolve to Python `None`
-            # (ctypes cannot build a call interface for a zero-size struct
-            # return; `ffi_prep_cif failed` at the first real call). Round
-            # 2: `jlw_free`'s `p::Ptr{Cvoid}` argument arrives as
-            # `Ptr{Nothing}` (pointee = the same zero-field struct) and
-            # must collapse to `ctypes.c_void_p`, NOT render as
-            # `ctypes.POINTER(Nothing)` — the CDict/CStrArray façade
-            # helpers already call `jlw_free` with a `ctypes.cast(...,
-            # ctypes.c_void_p)` argument, and ctypes refuses a `c_void_p`
-            # instance where a distinct named pointer type is declared
-            # (`TypeError: expected LP_Nothing instance instead of
-            # c_void_p`).
-            @test occursin("_lib.jlw_free.restype = None", bindings)
-            @test occursin("_lib.jlw_free_strings.restype = None", bindings)
-            @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
+            # a PrimitiveTypeDesc, in EVERY position — round 1 fixed the
+            # bare-return case, round 2 the `Ptr{Nothing}`-argument case.
+            # Both regressions would silently reintroduce
+            # `ffi_prep_cif failed` / `TypeError: expected LP_Nothing
+            # instance instead of c_void_p` at the first real call.
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
@@ -1162,30 +1131,17 @@ end
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
 
-            # Façade auto-wrap: CStrArray arg becomes list[str] in; owning
-            # CStrArray return is converted to list[str] then freed.
-            facade = read(joinpath(path, "cstrarray_demo", "_facade.py"), String)
-            @test occursin(
-                "def take_strs(a):\n    _a = CStrArray.from_list(a)\n" *
-                    "    return _lowlevel.take_strs(_a)", facade
-            )
-            @test occursin(
-                "def give_strs():\n    _result = _lowlevel.give_strs()\n" *
-                    "    _out = _result.as_list()\n" *
-                    "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)\n" *
-                    "    return _out", facade
-            )
             # jlw_free/jlw_free_strings are release-entrypoint internals —
             # never re-exported from the façade (no TODO line, no bare
             # re-export) and never listed in `__all__`, regardless of what
             # their own (raw-pointer) argument shape would otherwise
             # classify to. The internal call inside give_strs's own
             # auto-wrapper body (`_lowlevel._lib.jlw_free_strings(...)`)
-            # is legitimate and stays.
+            # is legitimate and stays (see the golden compare below).
+            facade = read(joinpath(path, "cstrarray_demo", "_facade.py"), String)
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            @test occursin("_lowlevel._lib.jlw_free_strings(_result.data, _result.length)", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
@@ -1225,37 +1181,17 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test !occursin("numpy", pyproject)
 
-            # Struct + helpers.
-            @test occursin("class CDict_Float64(ctypes.Structure):", bindings)
-            @test occursin("(\"length\", ctypes.c_int64)", bindings)
-            @test occursin(
-                "(\"keys\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
-            )
-            @test occursin("(\"values\", ctypes.POINTER(ctypes.c_double))", bindings)
-            @test occursin("def from_dict(cls, d):", bindings)
-            @test occursin("def as_dict(self):", bindings)
-            @test occursin("k.encode(\"utf-8\") + b\"\\x00\"", bindings)
-            @test occursin(".decode(\"utf-8\")", bindings)
-
-            # Round-trip-direction entrypoints are emitted as bare bindings.
-            @test occursin("_lib.take_dict.argtypes = [CDict_Float64]", bindings)
-            @test occursin("_lib.give_dict.restype = CDict_Float64", bindings)
-            # The macro-emitted release entrypoints are bound (argtypes/
-            # restype) like any other function, so give_dict's direct
-            # `_lowlevel._lib.jlw_free*(...)` calls work — but they get no
-            # module-level `def` wrapper.
-            @test occursin("_lib.jlw_free_strings.argtypes", bindings)
-            @test occursin("_lib.jlw_free.argtypes", bindings)
+            # The macro-emitted release entrypoints get no module-level
+            # `def` wrapper (bound on `_lib` only — see the golden compare
+            # below for the argtypes/restype shape).
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
             # Fix rounds 1 + 2 (Task 10 findings): see the identical comment
             # in the "CStrArray vocabulary" testset above. CDict's owning
             # return frees `values` via `jlw_free(ctypes.cast(...,
-            # ctypes.c_void_p))`, so this argtype collapse is exactly what
-            # `give_dict`'s façade wrapper needs.
-            @test occursin("_lib.jlw_free.restype = None", bindings)
-            @test occursin("_lib.jlw_free_strings.restype = None", bindings)
-            @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
+            # ctypes.c_void_p))`, so a regression here would silently
+            # reintroduce `TypeError: expected LP_Nothing instance instead
+            # of c_void_p` at the first real call.
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
@@ -1263,31 +1199,14 @@ end
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
 
-            # Façade auto-wrap: CDict arg becomes dict in; owning CDict
-            # return is converted to dict then freed TWICE (keys, values).
-            facade = read(joinpath(path, "cdict_demo", "_facade.py"), String)
-            @test occursin(
-                "def take_dict(d):\n    _d = CDict_Float64.from_dict(d)\n" *
-                    "    return _lowlevel.take_dict(_d)", facade
-            )
-            @test occursin(
-                "def give_dict():\n    _result = _lowlevel.give_dict()\n" *
-                    "    _out = _result.as_dict()\n" *
-                    "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
-                    "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
-                    "    return _out", facade
-            )
             # jlw_free/jlw_free_strings are release-entrypoint internals —
             # never re-exported and never listed in `__all__`. The
             # internal calls inside give_dict's own auto-wrapper body
-            # are legitimate and stay.
+            # are legitimate and stay (see the golden compare below).
+            facade = read(joinpath(path, "cdict_demo", "_facade.py"), String)
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            @test occursin("_lowlevel._lib.jlw_free_strings(_result.keys, _result.length)", facade)
-            @test occursin(
-                "_lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))", facade
-            )
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
 
@@ -1385,36 +1304,14 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test !occursin("numpy", pyproject)
 
-            # Struct + helpers.
-            @test occursin("class COpt_Float64(ctypes.Structure):", bindings)
-            @test occursin("(\"has_value\", ctypes.c_int32)", bindings)
-            @test occursin("(\"value\", ctypes.c_double)", bindings)
-            @test occursin("def from_optional(cls, x):", bindings)
-            @test occursin("def as_optional(self):", bindings)
-            @test occursin("cls(has_value=0, value=0)", bindings)
-            @test occursin("cls(has_value=1, value=x)", bindings)
-
-            # Round-trip-direction entrypoints are emitted as bare bindings.
-            @test occursin("_lib.take_opt.argtypes = [COpt_Float64]", bindings)
-            @test occursin("_lib.take_opt.restype = ctypes.c_double", bindings)
-            @test occursin("_lib.give_opt.restype = COpt_Float64", bindings)
             # No jlw_free* entrypoints in this by-value-only fixture.
             @test !occursin("jlw_free", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_copt_lowlevel.py"), String)
             @test bindings == golden
 
-            # Façade auto-wrap: COpt arg becomes Optional[float] in; COpt
-            # return unwraps to Optional[float] with NO free call.
+            # COpt's owning return unwraps with NO free call (by-value).
             facade = read(joinpath(path, "copt_demo", "_facade.py"), String)
-            @test occursin(
-                "def take_opt(o):\n    _o = COpt_Float64.from_optional(o)\n" *
-                    "    return _lowlevel.take_opt(_o)", facade
-            )
-            @test occursin(
-                "def give_opt():\n    _result = _lowlevel.give_opt()\n" *
-                    "    return _result.as_optional()", facade
-            )
             @test !occursin("jlw_free", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_copt_facade.py"), String)
             @test facade == golden_facade

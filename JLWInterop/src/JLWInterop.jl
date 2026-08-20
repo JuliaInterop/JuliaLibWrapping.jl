@@ -476,10 +476,7 @@ macro export_release_entrypoints()
                 return nothing
             end
             Base.@ccallable function jlw_free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)::Cvoid
-                for i in 1:n
-                    Libc.free(unsafe_load(p, i))
-                end
-                Libc.free(p)
+                JLWInterop._free_strings(p, n)
                 return nothing
             end
         end

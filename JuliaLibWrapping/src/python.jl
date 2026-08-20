@@ -318,6 +318,36 @@ function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
 end
 
 """
+    _match_fields(desc::StructDesc, names::NTuple{N,String}) where {N} -> Union{Nothing,NamedTuple}
+
+Shared "scan fields, match by name" step behind [`cstrarray_struct_info`](@ref),
+[`cdict_struct_info`](@ref), and [`copt_struct_info`](@ref): each recognizer's
+name-prefix gate and type-specific per-field checks stay in the recognizer
+itself, but the mechanical part — walking `desc.fields`, matching each one
+against `names` by name, and rejecting on a field-count or missing-name
+mismatch — is identical across all three and lives here once.
+
+`desc` matches only if it has *exactly* `length(names)` fields and every
+name in `names` appears among them (in any order — this is exactly the
+"field order may be any permutation" behavior the three recognizers
+document); otherwise returns `nothing`. On a match, returns a `NamedTuple`
+keyed by `names` (as `Symbol`s) mapping each name to its `FieldDesc`, so the
+caller can then read `.type` off each field for its own checks. Matches the
+original hand-rolled loops' semantics exactly, including on a (never
+actually seen) struct with a duplicate field name: the LAST field with a
+given name wins, since the scan does not stop early.
+"""
+function _match_fields(desc::StructDesc, names::NTuple{N, String}) where {N}
+    length(desc.fields) == N || return nothing
+    slots = Dict{String, FieldDesc}()
+    for field in desc.fields
+        field.name in names && (slots[field.name] = field)
+    end
+    length(slots) == N || return nothing
+    return NamedTuple{Tuple(Symbol.(names))}(ntuple(i -> slots[names[i]], N))
+end
+
+"""
     cstrarray_struct_info(desc::StructDesc, typeinfo) -> Bool
 
 Recognize the JLWInterop `CStrArray` shape: a struct whose name starts with
@@ -332,20 +362,11 @@ the name is only the first gate — the pointer-of-pointer chain down to its
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CStrArray") || return false
-    length(desc.fields) == 2 || return false
-    length_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "length"
-            length_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (isnothing(length_field) || isnothing(data_field)) && return false
-    length_type = typeinfo[length_field.type]
+    m = _match_fields(desc, ("length", "data"))
+    isnothing(m) && return false
+    length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc && length_type.signed || return false
-    outer_type = typeinfo[data_field.type]
+    outer_type = typeinfo[m.data.type]
     outer_type isa PointerDesc || return false
     inner_type = typeinfo[outer_type.pointee_type]
     inner_type isa PointerDesc || return false
@@ -363,46 +384,30 @@ Recognize the JLWInterop `CDict{V}` shape: a struct whose name starts with
 `keys` (a pointer-to-pointer to `UInt8`, i.e. `Ptr{Ptr{UInt8}}` — the same
 chain as [`cstrarray_struct_info`](@ref)'s `data`), and `values` (a pointer
 to a primitive type recognized by [`pytypes`](@ref)). Field order may be
-any permutation of the three. Returns `(; value_ctype, value_dtype_name)`
-on a match (the `ctypes` expression and Julia primitive name for `V`),
-otherwise `nothing`. Recognition is by name + full shape (see
-[`is_jlwstatus_struct`](@ref) for the rationale).
+any permutation of the three. Returns `(; value_ctype)` on a match (the
+`ctypes` expression for `V`), otherwise `nothing`. Recognition is by name +
+full shape (see [`is_jlwstatus_struct`](@ref) for the rationale).
 """
 function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CDict") || return nothing
-    length(desc.fields) == 3 || return nothing
-    length_field = nothing
-    keys_field = nothing
-    values_field = nothing
-    for field in desc.fields
-        if field.name == "length"
-            length_field = field
-        elseif field.name == "keys"
-            keys_field = field
-        elseif field.name == "values"
-            values_field = field
-        end
-    end
-    (isnothing(length_field) || isnothing(keys_field) || isnothing(values_field)) && return nothing
-    length_type = typeinfo[length_field.type]
+    m = _match_fields(desc, ("length", "keys", "values"))
+    isnothing(m) && return nothing
+    length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc || return nothing
     (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
-    keys_outer = typeinfo[keys_field.type]
+    keys_outer = typeinfo[m.keys.type]
     keys_outer isa PointerDesc || return nothing
     keys_inner = typeinfo[keys_outer.pointee_type]
     keys_inner isa PointerDesc || return nothing
     keys_leaf = typeinfo[keys_inner.pointee_type]
     keys_leaf isa PrimitiveTypeDesc || return nothing
     keys_leaf.name == "UInt8" || return nothing
-    values_type = typeinfo[values_field.type]
+    values_type = typeinfo[m.values.type]
     values_type isa PointerDesc || return nothing
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
     values_pointee.name in keys(pytypes) || return nothing
-    return (;
-        value_ctype = pytypes[values_pointee.name],
-        value_dtype_name = values_pointee.name,
-    )
+    return (; value_ctype = pytypes[values_pointee.name])
 end
 
 """
@@ -411,37 +416,24 @@ end
 Recognize the JLWInterop `COpt{T}` shape: a struct whose name starts with
 `"COpt"`, with exactly two fields named `has_value` (an `Int32` primitive
 — the 0/1 discriminant) and `value` (a primitive type recognized by
-[`pytypes`](@ref)). Field order may be either. Returns `(; value_ctype,
-value_dtype_name)` on a match (the `ctypes` expression and Julia primitive
-name for `T`), otherwise `nothing`. Unlike [`cstrarray_struct_info`](@ref)
-and [`cdict_struct_info`](@ref), `COpt` is a by-value carrier (no pointer
-fields, no heap allocation), so no release entrypoint is ever needed for
-it. Recognition is by name + shape (see [`is_jlwstatus_struct`](@ref) for
-the rationale).
+[`pytypes`](@ref)). Field order may be either. Returns `(; value_ctype)` on
+a match (the `ctypes` expression for `T`), otherwise `nothing`. Unlike
+[`cstrarray_struct_info`](@ref) and [`cdict_struct_info`](@ref), `COpt` is
+a by-value carrier (no pointer fields, no heap allocation), so no release
+entrypoint is ever needed for it. Recognition is by name + shape (see
+[`is_jlwstatus_struct`](@ref) for the rationale).
 """
 function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "COpt") || return nothing
-    length(desc.fields) == 2 || return nothing
-    has_value_field = nothing
-    value_field = nothing
-    for field in desc.fields
-        if field.name == "has_value"
-            has_value_field = field
-        elseif field.name == "value"
-            value_field = field
-        end
-    end
-    (isnothing(has_value_field) || isnothing(value_field)) && return nothing
-    hv_type = typeinfo[has_value_field.type]
+    m = _match_fields(desc, ("has_value", "value"))
+    isnothing(m) && return nothing
+    hv_type = typeinfo[m.has_value.type]
     hv_type isa PrimitiveTypeDesc || return nothing
     hv_type.name == "Int32" || return nothing
-    value_type = typeinfo[value_field.type]
+    value_type = typeinfo[m.value.type]
     value_type isa PrimitiveTypeDesc || return nothing
     value_type.name in keys(pytypes) || return nothing
-    return (;
-        value_ctype = pytypes[value_type.name],
-        value_dtype_name = value_type.name,
-    )
+    return (; value_ctype = pytypes[value_type.name])
 end
 
 """
@@ -755,6 +747,37 @@ function _write_cstring_helpers(f::IO)
     return println(f, "        return self.as_bytes().decode(\"utf-8\")")
 end
 
+"""
+    _emit_encoded_str_ptrarray(f, list_var, arr_var, source_expr, item_var)
+
+Emit the "encode each string into a UTF-8+NUL-terminated buffer, then build
+a `ctypes` array of `POINTER(c_uint8)` pointing at each buffer" template
+shared, byte-for-byte, by [`_write_cstrarray_helpers`](@ref)'s `from_list`
+(`list_var="bufs"`, `arr_var="arr"`, `source_expr="items"`, `item_var="s"`)
+and [`_write_cdict_helpers`](@ref)'s `from_dict` (`list_var="keys"`,
+`arr_var="karr"`, `source_expr="d.keys()"`, `item_var="k"`) — both build a
+`ctypes` argument out of an iterable of Python `str`s, differing only in
+what the iterable/result Python variables are named. `source_expr` is the
+Python expression iterated to produce raw strings; `item_var` names the
+loop variable used in the outer comprehension only — the inner
+per-buffer comprehension's loop variable is always `b`, matching both
+call sites' original hand-written text exactly.
+"""
+function _emit_encoded_str_ptrarray(
+        f::IO, list_var::AbstractString, arr_var::AbstractString,
+        source_expr::AbstractString, item_var::AbstractString
+    )
+    println(
+        f, "        ", list_var, " = [", item_var, ".encode(\"utf-8\") + b\"\\x00\" for ",
+        item_var, " in ", source_expr, "]"
+    )
+    println(f, "        ", arr_var, " = (ctypes.POINTER(ctypes.c_uint8) * len(", list_var, "))(")
+    return println(
+        f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ",
+        "ctypes.POINTER(ctypes.c_uint8)) for b in ", list_var, "])"
+    )
+end
+
 function _write_cstrarray_helpers(f::IO)
     # CStrArray shape — see `cstrarray_struct_info`. The `length` and `data`
     # field names are guaranteed by the recognizer, and `data` is always
@@ -768,9 +791,7 @@ function _write_cstrarray_helpers(f::IO)
     println(f, "    def from_list(cls, items):")
     println(f, "        if not isinstance(items, (list, tuple)):")
     println(f, "            raise TypeError(\"expected a list of str\")")
-    println(f, "        bufs = [s.encode(\"utf-8\") + b\"\\x00\" for s in items]")
-    println(f, "        arr = (ctypes.POINTER(ctypes.c_uint8) * len(bufs))(")
-    println(f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in bufs])")
+    _emit_encoded_str_ptrarray(f, "bufs", "arr", "items", "s")
     println(f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))))")
     println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
     println(f, "        return obj")
@@ -794,12 +815,7 @@ function _write_cdict_helpers(f::IO, cdinfo)
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_dict(cls, d):")
-    println(f, "        keys = [k.encode(\"utf-8\") + b\"\\x00\" for k in d.keys()]")
-    println(f, "        karr = (ctypes.POINTER(ctypes.c_uint8) * len(keys))(")
-    println(
-        f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ",
-        "ctypes.POINTER(ctypes.c_uint8)) for b in keys])"
-    )
+    _emit_encoded_str_ptrarray(f, "keys", "karr", "d.keys()", "k")
     println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
     println(f, "        obj = cls(length=len(keys),")
     println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),")
