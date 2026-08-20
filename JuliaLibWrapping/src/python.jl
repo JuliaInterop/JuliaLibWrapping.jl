@@ -38,23 +38,32 @@ struct PythonTarget <: AbstractTarget
     privatized::Bool
 end
 
-PythonTarget(dir::AbstractString, package_name::AbstractString,
-             library_basename::AbstractString; bundle_subdir = nothing,
-             version::AbstractString = _DEFAULT_PACKAGE_VERSION,
-             privatized::Bool = false) =
-    PythonTarget(String(dir), String(package_name), String(library_basename),
-                 bundle_subdir === nothing ? nothing : String(bundle_subdir),
-                 isempty(version) ? throw(ArgumentError(
-                     "PythonTarget version must not be empty")) : String(version),
-                 privatized)
+PythonTarget(
+    dir::AbstractString, package_name::AbstractString,
+    library_basename::AbstractString; bundle_subdir = nothing,
+    version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+    privatized::Bool = false
+) =
+    PythonTarget(
+    String(dir), String(package_name), String(library_basename),
+    bundle_subdir === nothing ? nothing : String(bundle_subdir),
+    isempty(version) ? throw(
+            ArgumentError(
+                "PythonTarget version must not be empty"
+            )
+        ) : String(version),
+    privatized
+)
 
 function Base.show(io::IO, t::PythonTarget)
-    print(io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
-              ", ", repr(t.library_basename))
+    print(
+        io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
+        ", ", repr(t.library_basename)
+    )
     t.bundle_subdir === nothing || print(io, "; bundle_subdir = ", repr(t.bundle_subdir))
     t.version == _DEFAULT_PACKAGE_VERSION || print(io, "; version = ", repr(t.version))
     t.privatized && print(io, "; privatized = true")
-    print(io, ")")
+    return print(io, ")")
 end
 
 const pytypes = Dict{String, String}(
@@ -99,8 +108,10 @@ inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`.
 Array types render inline as `(<eltype> * N)`. Results are memoized in
 `typedict`.
 """
-function mangle_python!(typedict::Dict{Int, String}, type_id::Int,
-                        typeinfo::OrderedDict{Int, TypeDesc})
+function mangle_python!(
+        typedict::Dict{Int, String}, type_id::Int,
+        typeinfo::OrderedDict{Int, TypeDesc}
+    )
     if type_id in keys(typedict)
         return typedict[type_id]
     end
@@ -173,8 +184,10 @@ Like [`is_jlwstatus_struct`](@ref), recognition is by name + shape so
 authors who copy-paste a compatible definition still get the behavior.
 """
 function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    (startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
-     startswith(desc.name, "CMatrix")) || return nothing
+    (
+        startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
+            startswith(desc.name, "CMatrix")
+    ) || return nothing
     length(desc.fields) == 2 || return nothing
     dims_field = nothing
     data_field = nothing
@@ -197,10 +210,12 @@ function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDes
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
     pointee.name in keys(numpy_dtypes) || return nothing
-    return (; pointee_name = pointee.name,
-              pointee_ctype = pytypes[pointee.name],
-              dtype = numpy_dtypes[pointee.name],
-              ndim = dims_type.count)
+    return (;
+        pointee_name = pointee.name,
+        pointee_ctype = pytypes[pointee.name],
+        dtype = numpy_dtypes[pointee.name],
+        ndim = dims_type.count,
+    )
 end
 
 """
@@ -239,6 +254,44 @@ function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
 end
 
 """
+    cstrarray_struct_info(desc::StructDesc, typeinfo) -> Bool
+
+Recognize the JLWInterop `CStrArray` shape: a struct whose name starts with
+`"CStrArray"`, with exactly two fields named `length` (a signed primitive
+integer) and `data` (a pointer-to-pointer to `UInt8`, i.e. `Ptr{Ptr{UInt8}}`
+— one level of indirection deeper than [`cstring_struct_info`](@ref)'s
+single `Ptr{UInt8}`). Returns `true` on a match, `false` otherwise. Field
+order may be either `length, data` or `data, length`. Recognition is by
+name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale);
+the name is only the first gate — the pointer-of-pointer chain down to its
+`UInt8` leaf is walked and checked as well.
+"""
+function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CStrArray") || return false
+    length(desc.fields) == 2 || return false
+    length_field = nothing
+    data_field = nothing
+    for field in desc.fields
+        if field.name == "length"
+            length_field = field
+        elseif field.name == "data"
+            data_field = field
+        end
+    end
+    (isnothing(length_field) || isnothing(data_field)) && return false
+    length_type = typeinfo[length_field.type]
+    length_type isa PrimitiveTypeDesc && length_type.signed || return false
+    outer_type = typeinfo[data_field.type]
+    outer_type isa PointerDesc || return false
+    inner_type = typeinfo[outer_type.pointee_type]
+    inner_type isa PointerDesc || return false
+    elem_type = typeinfo[inner_type.pointee_type]
+    elem_type isa PrimitiveTypeDesc || return false
+    elem_type.name == "UInt8" || return false
+    return true
+end
+
+"""
     raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
 
 Return positional indices into `method.args` for arguments whose static type is
@@ -252,8 +305,10 @@ address with no length, ownership, or layout metadata. The Python emitter uses
 this to attach a docstring on the wrapper noting the column-major contract and
 recommending the [`JLWInterop.CArray`](@ref) vocabulary instead.
 """
-function raw_primitive_pointer_args(method::MethodDesc,
-                                    typeinfo::OrderedDict{Int, TypeDesc})
+function raw_primitive_pointer_args(
+        method::MethodDesc,
+        typeinfo::OrderedDict{Int, TypeDesc}
+    )
     out = Int[]
     for (i, arg) in pairs(method.args)
         t = typeinfo[arg.type]
@@ -266,12 +321,14 @@ function raw_primitive_pointer_args(method::MethodDesc,
     return out
 end
 
-const PYTHON_KEYWORDS = Set{String}([
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-    "class", "continue", "def", "del", "elif", "else", "except", "finally",
-    "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
-])
+const PYTHON_KEYWORDS = Set{String}(
+    [
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break",
+        "class", "continue", "def", "del", "elif", "else", "except", "finally",
+        "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+        "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    ]
+)
 
 """
     sanitize_python_argname(name) -> String
@@ -291,7 +348,7 @@ is fresh, skipping any value that itself already collides — so the result is
 safe even when sanitized input happens to look like another argument plus a
 numeric tail. The chosen name is inserted into `seen` before returning.
 """
-function sanitize_python_argname(name::AbstractString, seen=nothing)
+function sanitize_python_argname(name::AbstractString, seen = nothing)
     sanitized = sanitize_for_c(name)
     isempty(sanitized) && (sanitized = "_")
     isdigit(first(sanitized)) && (sanitized = "_" * sanitized)
@@ -331,16 +388,22 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     end
 
     # Report bare-pointer arguments during generation.
-    let raw_ptr_methods = [m.symbol for m in entrypoints
-                           if !isempty(raw_primitive_pointer_args(m, typeinfo))]
-        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods=raw_ptr_methods
+    let raw_ptr_methods = [
+            m.symbol for m in entrypoints
+                if !isempty(raw_primitive_pointer_args(m, typeinfo))
+        ]
+        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
 
-    needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
-                        for m in entrypoints)
-    needs_numpy = any(type isa StructDesc &&
-                      carray_struct_info(type, typeinfo) !== nothing
-                      for type in values(typeinfo))
+    needs_jlwerror = any(
+        jlwstatus_access_path(m, typeinfo) !== nothing
+            for m in entrypoints
+    )
+    needs_numpy = any(
+        type isa StructDesc &&
+            carray_struct_info(type, typeinfo) !== nothing
+            for type in values(typeinfo)
+    )
 
     lowlevel_path = joinpath(pkgdir, "_lowlevel.py")
     open(lowlevel_path, "w") do f
@@ -360,12 +423,16 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     end
 
     has_any_export = needs_jlwerror || !isempty(entrypoints) ||
-                     any(type isa StructDesc
-                         for type in values(typeinfo))
+        any(
+        type isa StructDesc
+            for type in values(typeinfo)
+    )
     init_path = joinpath(pkgdir, "__init__.py")
     open(init_path, "w") do f
-        println(f, "\"\"\"", dest.package_name,
-                   " Python bindings (auto-generated by JuliaLibWrapping).\"\"\"")
+        println(
+            f, "\"\"\"", dest.package_name,
+            " Python bindings (auto-generated by JuliaLibWrapping).\"\"\""
+        )
         if !has_any_export
             println(f, "from . import _lowlevel  # noqa: F401")
             println(f, "from . import _facade  # noqa: F401")
@@ -447,8 +514,10 @@ function _write_carray_helpers(f::IO, cainfo)
         "if not arr.flags.f_contiguous:"
     contig_msg = ndim == 1 ?
         "\"array must be contiguous\"" :
-        ("\"array must be Fortran-contiguous (column-major); \"\n" *
-         "                             \"use np.asfortranarray(arr) to convert\"")
+        (
+            "\"array must be Fortran-contiguous (column-major); \"\n" *
+            "                             \"use np.asfortranarray(arr) to convert\""
+        )
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_numpy(cls, arr):")
@@ -480,7 +549,7 @@ function _write_carray_helpers(f::IO, cainfo)
     println(f, "        return obj")
     println(f, "")
     println(f, "    def as_numpy(self):")
-    if ndim == 1
+    return if ndim == 1
         println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))")
     else
@@ -530,7 +599,35 @@ function _write_cstring_helpers(f::IO)
     println(f, "")
     println(f, "    def as_str(self):")
     println(f, "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"")
-    println(f, "        return self.as_bytes().decode(\"utf-8\")")
+    return println(f, "        return self.as_bytes().decode(\"utf-8\")")
+end
+
+function _write_cstrarray_helpers(f::IO)
+    # CStrArray shape — see `cstrarray_struct_info`. The `length` and `data`
+    # field names are guaranteed by the recognizer, and `data` is always
+    # Ptr{Ptr{UInt8}} / ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)).
+    # Like CString this emits no numpy dependency; helpers use only
+    # `ctypes`. `data` is Julia-allocated memory (own-out convention), so
+    # unlike CString's helpers there is no `as_bytes`/from-buffer split —
+    # the caller-facing vocabulary is `list[str]` in and out.
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_list(cls, items):")
+    println(f, "        if not isinstance(items, (list, tuple)):")
+    println(f, "            raise TypeError(\"expected a list of str\")")
+    println(f, "        bufs = [s.encode(\"utf-8\") + b\"\\x00\" for s in items]")
+    println(f, "        arr = (ctypes.POINTER(ctypes.c_uint8) * len(bufs))(")
+    println(f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in bufs])")
+    println(f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))))")
+    println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_list(self):")
+    println(f, "        out = []")
+    println(f, "        for i in range(self.length):")
+    println(f, "            p = ctypes.cast(self.data[i], ctypes.c_char_p)")
+    println(f, "            out.append(p.value.decode(\"utf-8\"))")
+    return println(f, "        return out")
 end
 
 const JLWERROR_DEFINITION = """
@@ -542,9 +639,11 @@ class JLWError(RuntimeError):
         self.message = message
 """
 
-function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
-                         typedict::Dict{Int, String}, needs_jlwerror::Bool=false,
-                         needs_numpy::Bool=false)
+function _write_bindings(
+        f::IO, dest::PythonTarget, abi_info::ABIInfo,
+        typedict::Dict{Int, String}, needs_jlwerror::Bool = false,
+        needs_numpy::Bool = false
+    )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
 
@@ -579,8 +678,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         # `@loader_path/../lib*` on macOS) resolves libjulia and friends from
         # inside the bundle. Fall back to the flat layout so the same loader
         # still works for a developer who drops a bare .so beside the package.
-        println(f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
-                   " / \"lib\", _HERE)")
+        println(
+            f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
+            " / \"lib\", _HERE)"
+        )
         println(f, "    for directory in search_dirs:")
         println(f, "        for suffix in suffixes:")
         println(f, "            candidate = directory / (_LIBRARY_BASENAME + suffix)")
@@ -688,6 +789,9 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             elseif cstring_struct_info(type, typeinfo)
                 # Emit CString conversion helpers.
                 _write_cstring_helpers(f)
+            elseif cstrarray_struct_info(type, typeinfo)
+                # Emit CStrArray conversion helpers.
+                _write_cstrarray_helpers(f)
             end
         end
         println(f)
@@ -713,8 +817,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             println(f)
             for i in raw_ptr_idx
                 pointee_name = typeinfo[typeinfo[method.args[i].type].pointee_type].name
-                println(f, "    `", argnames[i], "` is a raw pointer to ", pointee_name,
-                           ". The wrapper does not check length, shape, or memory order.")
+                println(
+                    f, "    `", argnames[i], "` is a raw pointer to ", pointee_name,
+                    ". The wrapper does not check length, shape, or memory order."
+                )
             end
             println(f)
             println(f, "    Julia indexes multidimensional buffers column-major (Fortran order).")
@@ -729,8 +835,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             # Raise JLWError for a failed status.
             println(f, "    _result = _lib.", method.symbol, "(", join(argnames, ", "), ")")
             println(f, "    if _result", status_path, ".code != 0:")
-            println(f, "        _msg = bytes(_result", status_path,
-                       ".message).rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\")")
+            println(
+                f, "        _msg = bytes(_result", status_path,
+                ".message).rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\")"
+            )
             println(f, "        raise JLWError(_result", status_path, ".code, _msg)")
             println(f, "    return _result")
         elseif rt == "None"
@@ -740,6 +848,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         end
         println(f)
     end
+    return
 end
 
 """
@@ -749,26 +858,31 @@ Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:primitive,)` — pass-through
 - `(kind=:carray, classname=…)` — wrap with `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
+- `(kind=:cstrarray, classname=…)` — wrap with `<class>.from_list(name)`
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
-function _facade_classify_arg(arg::ArgDesc,
-                              typeinfo::OrderedDict{Int, TypeDesc},
-                              typedict::Dict{Int, String})
+function _facade_classify_arg(
+        arg::ArgDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String}
+    )
     t = typeinfo[arg.type]
     if t isa PrimitiveTypeDesc
-        return (kind=:primitive,)
+        return (kind = :primitive,)
     elseif t isa StructDesc
-        if carray_struct_info(t, typeinfo) !== nothing
-            return (kind=:carray, classname=typedict[arg.type])
+        if carray_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
-            return (kind=:cstring, classname=typedict[arg.type])
+            return (kind = :cstring, classname = typedict[arg.type])
+        elseif cstrarray_struct_info(t, typeinfo)
+            return (kind = :cstrarray, classname = typedict[arg.type])
         else
-            return (kind=:opaque, reason="argument has unrecognized type `" * t.name * "`")
+            return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
     elseif t isa ArrayDesc
-        return (kind=:opaque, reason="argument has array type `" * t.name * "`")
+        return (kind = :opaque, reason = "argument has array type `" * t.name * "`")
     else  # PointerDesc
-        return (kind=:opaque, reason="argument has raw pointer type `" * t.name * "`")
+        return (kind = :opaque, reason = "argument has raw pointer type `" * t.name * "`")
     end
 end
 
@@ -779,33 +893,41 @@ Classify a method's return for façade auto-wrapping. The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
 - `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
+- `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
+  free the owned `data` buffer via `jlw_free_strings`
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out.
 """
-function _facade_classify_return(method::MethodDesc,
-                                 typeinfo::OrderedDict{Int, TypeDesc},
-                                 typedict::Dict{Int, String})
+function _facade_classify_return(
+        method::MethodDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String}
+    )
     rt = typeinfo[method.return_type]
     if rt isa PrimitiveTypeDesc
-        return (kind=:passthrough,)
+        return (kind = :passthrough,)
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
-            return (kind=:jlwstatus_discard,)
-        elseif carray_struct_info(rt, typeinfo) !== nothing
-            return (kind=:carray_unwrap, classname=typedict[method.return_type])
+            return (kind = :jlwstatus_discard,)
+        elseif carray_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+            return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
-            return (kind=:cstring_unwrap, classname=typedict[method.return_type])
-        elseif jlwstatus_access_path(method, typeinfo) !== nothing
-            return (kind=:opaque,
-                    reason="returns struct `" * rt.name *
-                           "` with embedded JLWStatus; idiomatic shaping depends on the other fields")
+            return (kind = :cstring_unwrap, classname = typedict[method.return_type])
+        elseif cstrarray_struct_info(rt, typeinfo)
+            return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
+        elseif jlwstatus_access_path(method, typeinfo) !== nothing # noidiom: existing code style
+            return (
+                kind = :opaque,
+                reason = "returns struct `" * rt.name *
+                    "` with embedded JLWStatus; idiomatic shaping depends on the other fields",
+            )
         else
-            return (kind=:opaque, reason="returns unrecognized struct `" * rt.name * "`")
+            return (kind = :opaque, reason = "returns unrecognized struct `" * rt.name * "`")
         end
     elseif rt isa ArrayDesc
-        return (kind=:opaque, reason="returns array type `" * rt.name * "`")
+        return (kind = :opaque, reason = "returns array type `" * rt.name * "`")
     else  # PointerDesc
-        return (kind=:opaque, reason="returns raw pointer type `" * rt.name * "`")
+        return (kind = :opaque, reason = "returns raw pointer type `" * rt.name * "`")
     end
 end
 
@@ -820,38 +942,48 @@ as a recognized form *and* the wrapping actually adds value (converts a
 vocabulary type or strips a discardable `JLWStatus`). Plain
 primitive-in/primitive-out functions are left as straight re-exports.
 """
-function _facade_plan(method::MethodDesc,
-                      typeinfo::OrderedDict{Int, TypeDesc},
-                      typedict::Dict{Int, String})
+function _facade_plan(
+        method::MethodDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String}
+    )
     arg_classes = [_facade_classify_arg(a, typeinfo, typedict) for a in method.args]
     for (i, c) in enumerate(arg_classes)
         if c.kind === :opaque
-            return (category=:mechanical,
-                    reason="`" * method.args[i].name * "`: " * c.reason,
-                    args=arg_classes, ret=(kind=:opaque,), uses_numpy=false)
+            return (
+                category = :mechanical,
+                reason = "`" * method.args[i].name * "`: " * c.reason,
+                args = arg_classes, ret = (kind = :opaque,), uses_numpy = false,
+            )
         end
     end
     ret = _facade_classify_return(method, typeinfo, typedict)
     if ret.kind === :opaque
-        return (category=:mechanical, reason=ret.reason,
-                args=arg_classes, ret=ret, uses_numpy=false)
+        return (
+            category = :mechanical, reason = ret.reason,
+            args = arg_classes, ret = ret, uses_numpy = false,
+        )
     end
     uses_numpy = any(c -> c.kind === :carray, arg_classes) ||
-                 ret.kind === :carray_unwrap
+        ret.kind === :carray_unwrap
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
-                 ret.kind in (:carray_unwrap, :cstring_unwrap, :jlwstatus_discard)
+        ret.kind in (:carray_unwrap, :cstring_unwrap, :cstrarray_unwrap, :jlwstatus_discard)
     if !adds_value
         # Primitive-only signatures need no conversion; re-export them directly.
-        return (category=:passthrough, reason="",
-                args=arg_classes, ret=ret, uses_numpy=false)
+        return (
+            category = :passthrough, reason = "",
+            args = arg_classes, ret = ret, uses_numpy = false,
+        )
     end
-    return (category=:auto, reason="", args=arg_classes, ret=ret, uses_numpy=uses_numpy)
+    return (category = :auto, reason = "", args = arg_classes, ret = ret, uses_numpy = uses_numpy)
 end
 
 function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     arg_names_seen = Set{String}()
-    argnames = String[sanitize_python_argname(a.name, arg_names_seen)
-                      for a in method.args]
+    argnames = String[
+        sanitize_python_argname(a.name, arg_names_seen)
+            for a in method.args
+    ]
     println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
     # Convert vocabulary-typed arguments to their lowlevel struct counterparts.
     call_args = String[]
@@ -865,6 +997,10 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         elseif cls.kind === :cstring
             local_ = "_" * name
             println(f, "    ", local_, " = ", cls.classname, ".from_str(", name, ")")
+            push!(call_args, local_)
+        elseif cls.kind === :cstrarray
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_list(", name, ")")
             push!(call_args, local_)
         end
     end
@@ -882,12 +1018,22 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     elseif ret.kind === :cstring_unwrap
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
+    elseif ret.kind === :cstrarray_unwrap
+        # `data` is Julia-allocated (own-out convention): convert to the
+        # idiomatic `list[str]` first, then release the buffer via the
+        # macro-emitted `jlw_free_strings` release entrypoint.
+        println(f, "    _result = ", call)
+        println(f, "    _out = _result.as_list()")
+        println(f, "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
+        println(f, "    return _out")
     end
-    println(f)
+    return println(f)
 end
 
-function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
-                            typedict::Dict{Int, String}, needs_jlwerror::Bool)
+function _write_facade_stub(
+        f::IO, dest::PythonTarget, abi_info::ABIInfo,
+        typedict::Dict{Int, String}, needs_jlwerror::Bool
+    )
     (; entrypoints, typeinfo) = abi_info
 
     struct_names = String[]
@@ -946,8 +1092,10 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     any_reexport = false
     for (method, plan) in zip(entrypoints, plans)
         if plan.category === :mechanical
-            println(f, "from ._lowlevel import ", method.symbol,
-                       "  # TODO: hand-wrap — ", plan.reason)
+            println(
+                f, "from ._lowlevel import ", method.symbol,
+                "  # TODO: hand-wrap — ", plan.reason
+            )
             any_reexport = true
         elseif plan.category === :passthrough
             println(f, "from ._lowlevel import ", method.symbol)
@@ -978,10 +1126,10 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         print(f, "\"", method.symbol, "\"")
         isfirst = false
     end
-    println(f, "]")
+    return println(f, "]")
 end
 
-function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
+function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool = false)
     println(f, "# Auto-generated by JuliaLibWrapping. Edit only if you know what you are doing.")
     println(f, "[build-system]")
     println(f, "requires = [\"setuptools>=64\"]")
@@ -990,8 +1138,10 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "[project]")
     println(f, "name = ", repr(dest.package_name))
     println(f, "version = ", repr(dest.version))
-    println(f, "description = \"Python bindings for ", dest.library_basename,
-               ", auto-generated by JuliaLibWrapping\"")
+    println(
+        f, "description = \"Python bindings for ", dest.library_basename,
+        ", auto-generated by JuliaLibWrapping\""
+    )
     println(f, "requires-python = \">=3.8\"")
     if needs_numpy
         # CArray helpers depend on numpy.
@@ -1002,7 +1152,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "packages = [", repr(dest.package_name), "]")
     println(f)
     println(f, "[tool.setuptools.package-data]")
-    if dest.bundle_subdir === nothing
+    return if dest.bundle_subdir === nothing
         println(f, dest.package_name, " = [\"*.so\", \"*.dylib\", \"*.dll\"]")
     else
         # Setuptools' package-data does not recurse, so each level of the

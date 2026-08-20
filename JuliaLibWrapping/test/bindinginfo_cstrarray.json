@@ -1,0 +1,93 @@
+{
+  "_comment": "Hand-authored fixture for the CStrArray vocabulary type. Mirrors the layout juliac would emit for `struct CStrArray; length::Int64; data::Ptr{Ptr{UInt8}}; end` (JLWInterop, commit 5b0c9ad), with one @ccallable function borrowing a CStrArray argument and one returning an owned one, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints (JLWInterop, commit 3d84973) so the owning return is `:auto`, not `:mechanical`. The `Ptr{Ptr{UInt8}}` chain and the `Ptr{Nothing}`/synthetic zero-size `Nothing` struct for `jlw_free`'s void return mirror the verbatim renderings recorded in design/spike-notes.md (Task 3 probe). The Python emitter must recognize the CStrArray shape (name + full pointer-chain shape, not just the name) and emit from_list/as_list helpers plus an owning-return convert-then-free façade wrapper.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 1,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 2,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Ptr{UInt8}}",
+      "id": 4,
+      "pointee_type_id": 3
+    },
+    {
+      "kind": "struct",
+      "name": "CStrArray",
+      "id": 5,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "Nothing",
+      "id": 6,
+      "size": 0,
+      "fields": [],
+      "alignment": 1
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 7,
+      "pointee_type_id": 6
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 2 },
+      "name": "take_strs(a::CStrArray)",
+      "arguments": [
+        { "name": "a", "type_id": 5 }
+      ],
+      "symbol": "take_strs"
+    },
+    {
+      "returns": { "type_id": 5 },
+      "name": "give_strs()",
+      "arguments": [],
+      "symbol": "give_strs"
+    },
+    {
+      "returns": { "type_id": 6 },
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 7 }
+      ],
+      "symbol": "jlw_free"
+    },
+    {
+      "returns": { "type_id": 6 },
+      "name": "jlw_free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 4 },
+        { "name": "n", "type_id": 2 }
+      ],
+      "symbol": "jlw_free_strings"
+    }
+  ]
+}

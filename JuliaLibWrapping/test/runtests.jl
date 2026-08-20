@@ -41,7 +41,7 @@ end
         @test argdesc2.isva == false
 
         @test length(typeinfo) >= 3
-        findtype(descs, name) = (k = collect(keys(descs)); k[findfirst((id)->descs[id].name === name, k)])
+        findtype(descs, name) = (k = collect(keys(descs)); k[findfirst((id) -> descs[id].name === name, k)])
 
         tdesc = typeinfo[findtype(typeinfo, "CVectorPair{Float32}")]
         @test tdesc.name == "CVectorPair{Float32}"
@@ -130,7 +130,7 @@ end
         @test isempty(fwd_decls)
         # There is only one order that these types could be defined such that
         # dependencies are defined before they are used.
-        @test collect(keys(sorted)) == Int[3,2,1]
+        @test collect(keys(sorted)) == Int[3, 2, 1]
 
         unsorted = OrderedDict{Int, TypeDesc}(
             1 => StructDesc(
@@ -163,7 +163,7 @@ end
         @test isempty(fwd_decls)
 
         # Once again, there is only one order that we can emit these definitions
-        @test collect(keys(sorted)) == Int[5,3,2,1,4]
+        @test collect(keys(sorted)) == Int[5, 3, 2, 1, 4]
 
         # Modify the type definitions so that test_struct1 and test_struct2 are
         # mutually recursive.
@@ -176,10 +176,10 @@ end
         @test !isempty(fwd_decls)
         if fwd_decls == BitSet([1])
             # If 1 was forward-declared then 3 (and pointer to 1) is defined first
-            @test collect(keys(sorted)) == Int[5,4,3,2,1]
+            @test collect(keys(sorted)) == Int[5, 4, 3, 2, 1]
         elseif fwd_decls == BitSet([3])
             # If 3 was forward-declared then 1 (and pointer to 3) is defined first
-            @test collect(keys(sorted)) == Int[5,2,1,4,3]
+            @test collect(keys(sorted)) == Int[5, 2, 1, 4, 3]
         else
             @test false # unexpected forward declarations
         end
@@ -286,8 +286,10 @@ end
             @test occursin("CTree_Float64._fields_ = [", bindings)
             @test occursin("_lib.copyto_and_sum.argtypes = [CVectorPair_Float32]", bindings)
             @test occursin("_lib.copyto_and_sum.restype = ctypes.c_float", bindings)
-            @test occursin("_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
-                           bindings)
+            @test occursin(
+                "_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]",
+                bindings
+            )
 
             # Only primitive-element CArrays gain numpy helpers.
             @test occursin("import numpy as np", bindings)
@@ -341,8 +343,10 @@ end
             # A privatized package uses its own runtime, so it does not warn,
             # but it still records itself for other packages to detect.
             priv_dir = mktempdir()
-            write_wrapper(PythonTarget(priv_dir, "libsimple", "libsimple"; privatized = true),
-                          abi_info)
+            write_wrapper(
+                PythonTarget(priv_dir, "libsimple", "libsimple"; privatized = true),
+                abi_info
+            )
             priv = read(joinpath(priv_dir, "libsimple", "_lowlevel.py"), String)
             @test !occursin("RuntimeWarning", priv)
             @test occursin("_jlw_loaded.add(_jlw_this_pkg)", priv)
@@ -354,24 +358,26 @@ end
                 haskey(ENV, "CI") && error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             else
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             end
         end
 
         @testset "PythonTarget show" begin
             t = PythonTarget("/tmp/foo", "libsimple", "libsimple")
             @test sprint(show, t) ==
-                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\")"
-            tb = PythonTarget("/tmp/foo", "libsimple", "libsimple";
-                              bundle_subdir = "bundle")
+                "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\")"
+            tb = PythonTarget(
+                "/tmp/foo", "libsimple", "libsimple";
+                bundle_subdir = "bundle"
+            )
             @test sprint(show, tb) ==
-                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; bundle_subdir = \"bundle\")"
+                "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; bundle_subdir = \"bundle\")"
             @test tb.bundle_subdir == "bundle"
             tv = PythonTarget("/tmp/foo", "libsimple", "libsimple"; version = "1.2.3")
             @test sprint(show, tv) ==
-                  "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; version = \"1.2.3\")"
+                "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; version = \"1.2.3\")"
         end
 
         @testset "PythonTarget version" begin
@@ -389,14 +395,17 @@ end
                 @test occursin("version = \"0.0.0\"", pyproject)
             end
             @test_throws "PythonTarget version must not be empty" PythonTarget(
-                "/tmp/foo", "libsimple", "libsimple"; version = "")
+                "/tmp/foo", "libsimple", "libsimple"; version = ""
+            )
         end
 
         @testset "bundle-aware output" begin
             abi_info = read_abi_info("bindinginfo_libsimple.json")
             mktempdir() do path
-                dest = PythonTarget(path, "libsimple", "libsimple";
-                                    bundle_subdir = "bundle")
+                dest = PythonTarget(
+                    path, "libsimple", "libsimple";
+                    bundle_subdir = "bundle"
+                )
                 write_wrapper(dest, abi_info)
 
                 bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
@@ -416,7 +425,7 @@ end
                 if python3 !== nothing
                     bp = joinpath(path, "libsimple", "_lowlevel.py")
                     cmd = `$python3 -c "import ast; ast.parse(open('$bp').read())"`
-                    @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 end
             end
         end
@@ -481,8 +490,10 @@ end
         # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
         # and CVector{CTree{Float64}} (struct pointee, no match).
         abi = read_abi_info("bindinginfo_libsimple.json")
-        findtype(descs, name) = (k = collect(keys(descs));
-                                 k[findfirst((id)->descs[id].name === name, k)])
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
         cv_f32 = abi.typeinfo[findtype(abi.typeinfo, "CVector{Float32}")]
         cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{CTree{Float64}}")]
         info = cainfo(cv_f32, abi.typeinfo)
@@ -522,33 +533,45 @@ end
         ti = OrderedDict{Int, TypeDesc}(
             1 => primint, 2 => primflt, 3 => ptr_to_flt,
             4 => arr_int32_1, 5 => arr_flt_1,
-            6 => StructDesc("CVector{Float32}", 16, 8, FieldDesc[
-                FieldDesc("dims", 4, 0),
-                FieldDesc("data", 3, 8),
-            ]),
+            6 => StructDesc(
+                "CVector{Float32}", 16, 8, FieldDesc[
+                    FieldDesc("dims", 4, 0),
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
             7 => primbool,
             8 => arr_bool_1,
-            9 => StructDesc("NotACArray", 16, 8, FieldDesc[
-                FieldDesc("dims", 4, 0),
-                FieldDesc("data", 3, 8),
-            ]),
+            9 => StructDesc(
+                "NotACArray", 16, 8, FieldDesc[
+                    FieldDesc("dims", 4, 0),
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
             10 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
-            11 => StructDesc("CVectorBadNames", 16, 8, FieldDesc[
-                FieldDesc("len", 4, 0),
-                FieldDesc("data", 3, 8),
-            ]),
-            12 => StructDesc("CVectorFloatDims", 16, 8, FieldDesc[
-                FieldDesc("dims", 5, 0),  # NTuple{1,Float32} — not Int*
-                FieldDesc("data", 3, 8),
-            ]),
-            13 => StructDesc("CVectorPrimDims", 16, 8, FieldDesc[
-                FieldDesc("dims", 1, 0),  # primitive Int32, not ArrayDesc
-                FieldDesc("data", 3, 8),
-            ]),
-            14 => StructDesc("CVectorBoolDims", 16, 8, FieldDesc[
-                FieldDesc("dims", 8, 0),  # Bool element — in numpy_dtypes but not Int/UInt
-                FieldDesc("data", 3, 8),
-            ]),
+            11 => StructDesc(
+                "CVectorBadNames", 16, 8, FieldDesc[
+                    FieldDesc("len", 4, 0),
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
+            12 => StructDesc(
+                "CVectorFloatDims", 16, 8, FieldDesc[
+                    FieldDesc("dims", 5, 0),  # NTuple{1,Float32} — not Int*
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
+            13 => StructDesc(
+                "CVectorPrimDims", 16, 8, FieldDesc[
+                    FieldDesc("dims", 1, 0),  # primitive Int32, not ArrayDesc
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
+            14 => StructDesc(
+                "CVectorBoolDims", 16, 8, FieldDesc[
+                    FieldDesc("dims", 8, 0),  # Bool element — in numpy_dtypes but not Int/UInt
+                    FieldDesc("data", 3, 8),
+                ]
+            ),
         )
         @test cainfo(ti[6], ti) !== nothing
         @test cainfo(ti[9], ti) === nothing   # wrong name prefix
@@ -559,10 +582,12 @@ end
         @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected
 
         # Field order may be either way.
-        flipped = StructDesc("CVector{Float32}", 16, 8, FieldDesc[
-            FieldDesc("data", 3, 0),
-            FieldDesc("dims", 4, 8),
-        ])
+        flipped = StructDesc(
+            "CVector{Float32}", 16, 8, FieldDesc[
+                FieldDesc("data", 3, 0),
+                FieldDesc("dims", 4, 8),
+            ]
+        )
         @test cainfo(flipped, ti) !== nothing
     end
 
@@ -570,8 +595,10 @@ end
         # Recognize the CString layout structurally.
         csinfo = JuliaLibWrapping.cstring_struct_info
         abi = read_abi_info("bindinginfo_cstring.json")
-        findtype(descs, name) = (k = collect(keys(descs));
-                                 k[findfirst((id)->descs[id].name === name, k)])
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
         cs = abi.typeinfo[findtype(abi.typeinfo, "CString")]
         @test csinfo(cs, abi.typeinfo) === true
 
@@ -584,22 +611,30 @@ end
         ti = OrderedDict{Int, TypeDesc}(
             1 => primint, 2 => primu8, 3 => primu16,
             4 => ptr_to_u8, 5 => ptr_to_u16,
-            6 => StructDesc("CString", 16, 8, FieldDesc[
-                FieldDesc("length", 1, 0),
-                FieldDesc("data", 4, 8),
-            ]),
-            7 => StructDesc("NotACString", 16, 8, FieldDesc[
-                FieldDesc("length", 1, 0),
-                FieldDesc("data", 4, 8),
-            ]),
-            8 => StructDesc("CStringU16", 16, 8, FieldDesc[
-                FieldDesc("length", 1, 0),
-                FieldDesc("data", 5, 8),  # Ptr{UInt16} — not UInt8
-            ]),
-            9 => StructDesc("CStringBadNames", 16, 8, FieldDesc[
-                FieldDesc("size", 1, 0),
-                FieldDesc("data", 4, 8),
-            ]),
+            6 => StructDesc(
+                "CString", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
+            7 => StructDesc(
+                "NotACString", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
+            8 => StructDesc(
+                "CStringU16", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 5, 8),  # Ptr{UInt16} — not UInt8
+                ]
+            ),
+            9 => StructDesc(
+                "CStringBadNames", 16, 8, FieldDesc[
+                    FieldDesc("size", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
         )
         @test csinfo(ti[6], ti) === true
         @test csinfo(ti[7], ti) === false  # wrong name prefix
@@ -607,11 +642,97 @@ end
         @test csinfo(ti[9], ti) === false  # wrong field names
 
         # Field order may be either way.
-        flipped = StructDesc("CString", 16, 8, FieldDesc[
-            FieldDesc("data", 4, 0),
-            FieldDesc("length", 1, 8),
-        ])
+        flipped = StructDesc(
+            "CString", 16, 8, FieldDesc[
+                FieldDesc("data", 4, 0),
+                FieldDesc("length", 1, 8),
+            ]
+        )
         @test csinfo(flipped, ti) === true
+    end
+
+    @testset "cstrarray_struct_info" begin
+        # Structural recognition of the CStrArray shape: a struct named
+        # CStrArray with `length` (signed primitive integer) and `data`
+        # (Ptr{Ptr{UInt8}} — one indirection deeper than CString's
+        # Ptr{UInt8}) fields. The name is only the first gate; the full
+        # pointer chain down to the UInt8 leaf must also match.
+        csainfo = JuliaLibWrapping.cstrarray_struct_info
+        abi = read_abi_info("bindinginfo_cstrarray.json")
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        csa = abi.typeinfo[findtype(abi.typeinfo, "CStrArray")]
+        @test csainfo(csa, abi.typeinfo) === true
+
+        # Hand-built rejections.
+        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primi64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
+        primu64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8)
+        primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        primu16 = PrimitiveTypeDesc("UInt16", false, 16, 2, 2)
+        ptr_to_u8 = PointerDesc("Ptr{UInt8}", 4)
+        ptr_to_u16 = PointerDesc("Ptr{UInt16}", 5)
+        ptr_to_ptr_u8 = PointerDesc("Ptr{Ptr{UInt8}}", 6)
+        ptr_to_ptr_u16 = PointerDesc("Ptr{Ptr{UInt16}}", 7)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primint, 2 => primi64, 3 => primu64,
+            4 => primu8, 5 => primu16,
+            6 => ptr_to_u8, 7 => ptr_to_u16,
+            8 => ptr_to_ptr_u8, 9 => ptr_to_ptr_u16,
+            10 => StructDesc(
+                "CStrArray", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 8, 8),
+                ]
+            ),
+            11 => StructDesc(
+                "NotACStrArray", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 8, 8),
+                ]
+            ),
+            12 => StructDesc(
+                "CStrArrayU16", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 9, 8),  # Ptr{Ptr{UInt16}} — not ...UInt8
+                ]
+            ),
+            13 => StructDesc(
+                "CStrArrayBadNames", 16, 8, FieldDesc[
+                    FieldDesc("size", 2, 0),
+                    FieldDesc("data", 8, 8),
+                ]
+            ),
+            14 => StructDesc(
+                "CStrArrayUnsignedLen", 16, 8, FieldDesc[
+                    FieldDesc("length", 3, 0),  # UInt64 — not signed
+                    FieldDesc("data", 8, 8),
+                ]
+            ),
+            15 => StructDesc(
+                "CStrArraySinglePtr", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 6, 8),  # Ptr{UInt8} — only one indirection
+                ]
+            ),
+        )
+        @test csainfo(ti[10], ti) === true
+        @test csainfo(ti[11], ti) === false  # wrong name prefix
+        @test csainfo(ti[12], ti) === false  # inner pointee is UInt16, not UInt8
+        @test csainfo(ti[13], ti) === false  # wrong field names
+        @test csainfo(ti[14], ti) === false  # unsigned length
+        @test csainfo(ti[15], ti) === false  # only one level of pointer indirection
+
+        # Field order may be either way.
+        flipped = StructDesc(
+            "CStrArray", 16, 8, FieldDesc[
+                FieldDesc("data", 8, 0),
+                FieldDesc("length", 2, 8),
+            ]
+        )
+        @test csainfo(flipped, ti) === true
     end
 
     @testset "CString vocabulary" begin
@@ -650,17 +771,104 @@ end
 
             # Façade auto-wrap: CString args/returns become str in/out.
             facade = read(joinpath(path, "cstring_demo", "_facade.py"), String)
-            @test occursin("def greeting_length(s):\n    _s = CString.from_str(s)\n" *
-                           "    return _lowlevel.greeting_length(_s)", facade)
-            @test occursin("def greeting():\n    _result = _lowlevel.greeting()\n" *
-                           "    return _result.as_str()", facade)
+            @test occursin(
+                "def greeting_length(s):\n    _s = CString.from_str(s)\n" *
+                    "    return _lowlevel.greeting_length(_s)", facade
+            )
+            @test occursin(
+                "def greeting():\n    _result = _lowlevel.greeting()\n" *
+                    "    return _result.as_str()", facade
+            )
             golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CStrArray vocabulary" begin
+        # CStrArray conversion does not require numpy — pure ctypes, like
+        # CString. Exercises a borrow-in argument (take_strs), an owning
+        # return that must be converted then freed via jlw_free_strings
+        # (give_strs), and the macro-emitted jlw_free/jlw_free_strings
+        # release entrypoints themselves (left as mechanical TODO
+        # re-exports in this milestone — Task 9 hides them from the
+        # façade, not this one).
+        abi = read_abi_info("bindinginfo_cstrarray.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cstrarray_demo", "libcstrarray")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cstrarray_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            # No numpy: CStrArray helpers use only `ctypes`.
+            @test !occursin("import numpy", bindings)
+            pyproject = read(joinpath(path, "pyproject.toml"), String)
+            @test !occursin("numpy", pyproject)
+
+            # Struct + helpers.
+            @test occursin("class CStrArray(ctypes.Structure):", bindings)
+            @test occursin("(\"length\", ctypes.c_int64)", bindings)
+            @test occursin(
+                "(\"data\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
+            )
+            @test occursin("def from_list(cls, items):", bindings)
+            @test occursin("def as_list(self):", bindings)
+            @test occursin("expected a list of str", bindings)
+            @test occursin("s.encode(\"utf-8\") + b\"\\x00\"", bindings)
+            @test occursin(".decode(\"utf-8\")", bindings)
+
+            # Round-trip-direction entrypoints are emitted as bare bindings.
+            @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
+            @test occursin("_lib.give_strs.restype = CStrArray", bindings)
+            # The macro-emitted release entrypoints are bound like any
+            # other function.
+            @test occursin("_lib.jlw_free_strings.argtypes", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Façade auto-wrap: CStrArray arg becomes list[str] in; owning
+            # CStrArray return is converted to list[str] then freed.
+            facade = read(joinpath(path, "cstrarray_demo", "_facade.py"), String)
+            @test occursin(
+                "def take_strs(a):\n    _a = CStrArray.from_list(a)\n" *
+                    "    return _lowlevel.take_strs(_a)", facade
+            )
+            @test occursin(
+                "def give_strs():\n    _result = _lowlevel.give_strs()\n" *
+                    "    _out = _result.as_list()\n" *
+                    "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)\n" *
+                    "    return _out", facade
+            )
+            # jlw_free/jlw_free_strings take raw pointers, so they are not
+            # auto-wrappable and stay mechanical TODO re-exports — this
+            # task does not hide them from the façade.
+            @test occursin(
+                "from ._lowlevel import jlw_free  # TODO: hand-wrap — " *
+                    "`p`: argument has raw pointer type `Ptr{Nothing}`", facade
+            )
+            @test occursin(
+                "from ._lowlevel import jlw_free_strings  # TODO: hand-wrap — " *
+                    "`p`: argument has raw pointer type `Ptr{Ptr{UInt8}}`", facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing # noidiom: matches sibling testsets' style
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -699,8 +907,10 @@ end
 
             # as_numpy returns a view with column-major strides.
             @test occursin("def as_numpy(self):", bindings)
-            @test occursin("np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
-                           bindings)
+            @test occursin(
+                "np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
+                bindings
+            )
 
             # Golden-file comparison.
             golden = read(joinpath(@__DIR__, "expected_cmatrix_lowlevel.py"), String)
@@ -709,15 +919,17 @@ end
             # Façade auto-wrap: CMatrix arg becomes numpy in.
             facade = read(joinpath(path, "cmatrix_demo", "_facade.py"), String)
             @test occursin("import numpy as np", facade)
-            @test occursin("def trace_cmatrix(m):\n    _m = CMatrix_Float64.from_numpy(m)\n" *
-                           "    return _lowlevel.trace_cmatrix(_m)", facade)
+            @test occursin(
+                "def trace_cmatrix(m):\n    _m = CMatrix_Float64.from_numpy(m)\n" *
+                    "    return _lowlevel.trace_cmatrix(_m)", facade
+            )
             golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -741,22 +953,26 @@ end
             @test occursin("if arr.ndim != 3:", bindings)
             @test occursin("if not arr.flags.f_contiguous:", bindings)
             @test occursin("dims=(ctypes.c_int32 * 3)(*arr.shape)", bindings)
-            @test occursin("np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
-                           bindings)
+            @test occursin(
+                "np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
+                bindings
+            )
 
             golden = read(joinpath(@__DIR__, "expected_carray3_lowlevel.py"), String)
             @test bindings == golden
 
             facade = read(joinpath(path, "carray3_demo", "_facade.py"), String)
-            @test occursin("def sum3d(a):\n    _a = CArray_Float64_3.from_numpy(a)\n" *
-                           "    return _lowlevel.sum3d(_a)", facade)
+            @test occursin(
+                "def sum3d(a):\n    _a = CArray_Float64_3.from_numpy(a)\n" *
+                    "    return _lowlevel.sum3d(_a)", facade
+            )
             golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -773,7 +989,7 @@ end
 
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
-            bindings = @test_logs (:info,) match_mode=:any begin
+            bindings = @test_logs (:info,) match_mode = :any begin
                 write_wrapper(dest, abi)
                 read(joinpath(path, "rawptr_demo", "_lowlevel.py"), String)
             end
@@ -786,8 +1002,10 @@ end
             # Docstring lands on the wrapper, names the offending arg, and
             # documents the column-major contract.
             @test occursin("def sum_doubles(data, n):", bindings)
-            @test occursin("Raw pointer arguments — caller owns layout and lifetime.",
-                           bindings)
+            @test occursin(
+                "Raw pointer arguments — caller owns layout and lifetime.",
+                bindings
+            )
             @test occursin("`data` is a raw pointer to Float64", bindings)
             @test occursin("column-major (Fortran order)", bindings)
             @test occursin("`CArray{T,N}`", bindings)
@@ -799,9 +1017,11 @@ end
             # falls back to a mechanical re-export tagged with a TODO that
             # names the offending arg and its type.
             facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
-            @test occursin("from ._lowlevel import sum_doubles  # TODO: hand-wrap — " *
-                           "`data`: argument has raw pointer type `Ptr{Float64}`",
-                           facade)
+            @test occursin(
+                "from ._lowlevel import sum_doubles  # TODO: hand-wrap — " *
+                    "`data`: argument has raw pointer type `Ptr{Float64}`",
+                facade
+            )
             @test !occursin("def sum_doubles(", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_rawptr_facade.py"), String)
             @test facade == golden_facade
@@ -810,7 +1030,7 @@ end
             if python3 !== nothing
                 bindings_path = joinpath(path, "rawptr_demo", "_lowlevel.py")
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -836,8 +1056,10 @@ end
 
             # The JLWError exception class is defined once.
             @test occursin("class JLWError(RuntimeError):", bindings)
-            @test count(==("class JLWError(RuntimeError):"),
-                        split(bindings, '\n')) == 1
+            @test count(
+                ==("class JLWError(RuntimeError):"),
+                split(bindings, '\n')
+            ) == 1
 
             # JLWStatus.message is emitted as a ctypes byte array, not as a
             # 256-field Structure (this also implicitly tests the new
@@ -848,16 +1070,19 @@ end
             # Direct JLWStatus return: check uses `_result.code`.
             @test occursin(
                 "def do_thing(x):\n    _result = _lib.do_thing(x)\n    if _result.code != 0:",
-                bindings)
+                bindings
+            )
             # Embedded JLWStatus field: check uses `_result.status.code`.
             @test occursin(
                 "def compute(x):\n    _result = _lib.compute(x)\n    if _result.status.code != 0:",
-                bindings)
+                bindings
+            )
             @test occursin("raise JLWError(_result.status.code, _msg)", bindings)
             # Non-JLWStatus entrypoint stays a bare mechanical binding.
             @test occursin(
                 "def plain_add(a, b):\n    return _lib.plain_add(a, b)",
-                bindings)
+                bindings
+            )
 
             # JLWError is re-exported from the package via the façade.
             @test occursin("from ._facade import *", init)
@@ -872,9 +1097,11 @@ end
             #  - plain primitive-in/primitive-out → passthrough re-export
             #    without a TODO comment.
             @test occursin("def do_thing(x):\n    _lowlevel.do_thing(x)", facade)
-            @test occursin("from ._lowlevel import compute  # TODO: hand-wrap " *
-                           "— returns struct `ResultStruct` with embedded JLWStatus",
-                           facade)
+            @test occursin(
+                "from ._lowlevel import compute  # TODO: hand-wrap " *
+                    "— returns struct `ResultStruct` with embedded JLWStatus",
+                facade
+            )
             @test occursin("from ._lowlevel import plain_add\n", facade)
             @test !occursin("plain_add  # TODO", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_jlwstatus_facade.py"), String)
@@ -884,7 +1111,7 @@ end
             if python3 !== nothing
                 bindings_path = joinpath(path, "demo", "_lowlevel.py")
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -902,7 +1129,7 @@ end
         # but JSON.jl pre-dates the `public` keyword and never marked them
         # public. Disable the bundled all-qualified-accesses-are-public check
         # and re-run it with those names ignored.
-        test_explicit_imports(JuliaLibWrapping; all_qualified_accesses_are_public=false)
-        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore=(:parsefile, :parse))
+        test_explicit_imports(JuliaLibWrapping; all_qualified_accesses_are_public = false)
+        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore = (:parsefile, :parse))
     end
 end
