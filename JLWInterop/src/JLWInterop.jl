@@ -9,6 +9,7 @@ export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
 export CDict, COpt, unwrap
+export @export_release_entrypoints
 
 """
     JLW_MESSAGE_BYTES
@@ -457,5 +458,32 @@ Read a [`COpt{T}`](@ref) back into a native `Union{T,Nothing}`: `nothing`
 in the absent branch, otherwise `o.value`.
 """
 unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
+
+"""
+    @export_release_entrypoints
+
+Emit the two C-callable release functions a wrapped library must export when it
+returns owning carriers (`CStrArray`, `CDict`): `jlw_free` frees one malloc'd
+block; `jlw_free_strings` frees `n` strings and their pointer array. Generated
+wrappers call them exactly once per returned value, via the library's own handle.
+Place at top level of the entry module.
+"""
+macro export_release_entrypoints()
+    return esc(
+        quote
+            Base.@ccallable function jlw_free(p::Ptr{Cvoid})::Cvoid
+                Libc.free(p)
+                return nothing
+            end
+            Base.@ccallable function jlw_free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)::Cvoid
+                for i in 1:n
+                    Libc.free(unsafe_load(p, i))
+                end
+                Libc.free(p)
+                return nothing
+            end
+        end
+    )
+end
 
 end # module

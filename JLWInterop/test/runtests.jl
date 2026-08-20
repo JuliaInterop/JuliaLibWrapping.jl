@@ -299,4 +299,16 @@ using Test
         @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
         @test unwrap(o) === nothing   # exact-value assertion (Test.jl convention), not control flow # noidiom
     end
+
+    @testset "release entrypoints" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
+        # Functions exist and run on malloc'd data without crashing:
+        a = CStrArray(["x", "y"])
+        Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
+        p = Libc.malloc(16)
+        Core.eval(m, :(jlw_free($p)))
+        @test true
+    end
 end
