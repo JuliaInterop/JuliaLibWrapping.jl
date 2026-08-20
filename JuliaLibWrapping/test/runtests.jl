@@ -334,6 +334,19 @@ end
             golden = read(joinpath(@__DIR__, "expected_libsimple_lowlevel.py"), String)
             @test bindings == golden
 
+            # Without a private libjulia, a second wrapped package in the
+            # process is a fatal configuration and the package says so.
+            @test occursin("aborts the process", bindings)
+            @test occursin("Rebuild with", bindings)
+            # A privatized package uses its own runtime, so it does not warn,
+            # but it still records itself for other packages to detect.
+            priv_dir = mktempdir()
+            write_wrapper(PythonTarget(priv_dir, "libsimple", "libsimple"; privatized = true),
+                          abi_info)
+            priv = read(joinpath(priv_dir, "libsimple", "_lowlevel.py"), String)
+            @test !occursin("RuntimeWarning", priv)
+            @test occursin("_jlw_loaded.add(_jlw_this_pkg)", priv)
+
             python3 = Sys.which("python3")
             if python3 === nothing
                 # CI must exercise the Python wrapper; locally we allow skipping

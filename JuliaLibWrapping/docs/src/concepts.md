@@ -168,40 +168,46 @@ without a system Julia is the right manual check.
 `bundle = true` requires the `:juliac` backend and that each
 [`PythonTarget`](@ref) declare a `bundle_subdir`. The bundle is several
 hundred megabytes (mostly `libLLVM` and `libjulia-codegen`), so it is
-opt-in. Pass `privatize = true` to additionally salt the bundled
-`libjulia` files with a random prefix, avoiding any chance of collision
-with a system `libjulia` loaded by the same process.
+opt-in. Bundling also salts the bundled `libjulia` files so they cannot
+be satisfied by another `libjulia` already loaded in the process; pass
+`privatize = false` to turn that off — see [Multiple wrapped libraries in
+one process](@ref).
 
 `pyproject.toml` builds a generic sdist/wheel; distributors must supply any
 required platform tags or audits.
 
 ## Multiple wrapped libraries in one process
 
-One JLW-wrapped library per Python process is the supported
-configuration. If your users need to combine two Julia libraries,
-compile them as a single `juliac` library that exports both APIs.
+To use multiple wrapped APIs in one process, either compile them into one
+`juliac` library or build each bundled library with `privatize`, the default
+for bundled builds.
 
-The reason is that `juliac` libraries embed `libjulia` as a runtime
-dependency, and the Julia runtime is not designed to coexist with
-another copy of itself in the same process. With the default bundle
-layout each wheel ships its own `bundle/lib/libjulia.so.1.13`, but the
-dynamic linker satisfies the second library's `DT_NEEDED
-libjulia.so.1.13` with the first library's already-loaded copy. This can work
-only when both libraries were built
-against byte-compatible Julia versions and their sysimages don't
-collide on global runtime state; mismatched versions may crash or
-miscompute.
+`juliac` libraries embed `libjulia` as a runtime dependency. With the
+default bundle layout each wheel ships its own
+`bundle/lib/libjulia.so.1.13`, but the dynamic linker satisfies the second
+library's `DT_NEEDED libjulia.so.1.13` from the first loaded copy. Both
+libraries then address one runtime, but each expects to initialize it. Imports
+succeed because initialization is deferred until the first entrypoint call;
+the first library called works, and the first call into the other aborts the
+process.
 
-Passing `privatize = true` to [`build_library`](@ref) salts each
-bundle's `libjulia` with a random SONAME prefix so the dynamic linker
-maps both copies independently. That removes the linker-level ambiguity,
-but two Julia runtimes in one process —
-independent GC root sets, two thread pools, two BLAS trampoline
-initializations, two signal handler registrations — has not been tested
-and is unsupported.
+`privatize` gives each bundle's `libjulia` and `libjulia-internal` a distinct
+SONAME prefix. The loader then maps each pair independently, and each library
+initializes its own runtime. The runtimes have separate GC state and resolve
+runtime symbols to separate addresses.
 
-To warn about this configuration, every generated
-`_lowlevel.py` records its package name on a process-global sentinel
-(`sys._jlw_loaded_packages`) at import time and emits a
-`RuntimeWarning` when a second JLW-wrapped package is imported into
-the same process.
+Two limits apply to that arrangement:
+
+- **Only the Julia runtime is privatized.** `libopenblas`,
+  `libblastrampoline`, `libgfortran`, and `libunwind` keep their usual names
+  and may be shared. Bundles built by the same Julia contain identical copies;
+  bundles built by different Julia versions have not been tested together.
+- **Each runtime uses its own resources.** Two sysimages, two GC heaps, and
+  two thread pools are resident at once.
+
+This behavior was measured on Linux. macOS and Windows use different library
+resolution rules and have not been tested.
+
+At import time, generated `_lowlevel.py` files record their package names in
+`sys._jlw_loaded_packages`. A non-privatized package emits a `RuntimeWarning`
+if another wrapped package is already present. Privatized packages do not warn.

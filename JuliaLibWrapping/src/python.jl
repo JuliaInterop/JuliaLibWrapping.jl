@@ -1,6 +1,7 @@
 """
     PythonTarget(dir, package_name, library_basename;
-                 bundle_subdir = nothing, version = $(repr(_DEFAULT_PACKAGE_VERSION)))
+                 bundle_subdir = nothing, version = $(repr(_DEFAULT_PACKAGE_VERSION)),
+                 privatized = false)
 
 Output configuration for a Python ctypes-based wrapper package. `dir` is the
 directory into which the package will be written; a sub-directory named
@@ -22,6 +23,11 @@ layout and is the right choice for callers placing the library by hand.
 
 `version` sets the `version` field in the generated `pyproject.toml`. It must
 be PEP 440-compatible; a Julia `Major.Minor.Patch` version string is valid.
+
+`privatized` records whether the bundle carries a salted `libjulia`. A package
+without one warns if another wrapped package is already loaded. [`build_library`](@ref)
+sets this option; pass it directly only when using [`write_wrapper`](@ref) for
+a bundle built elsewhere.
 """
 struct PythonTarget <: AbstractTarget
     dir::String
@@ -29,21 +35,25 @@ struct PythonTarget <: AbstractTarget
     library_basename::String
     bundle_subdir::Union{Nothing, String}
     version::String
+    privatized::Bool
 end
 
 PythonTarget(dir::AbstractString, package_name::AbstractString,
              library_basename::AbstractString; bundle_subdir = nothing,
-             version::AbstractString = _DEFAULT_PACKAGE_VERSION) =
+             version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+             privatized::Bool = false) =
     PythonTarget(String(dir), String(package_name), String(library_basename),
                  bundle_subdir === nothing ? nothing : String(bundle_subdir),
                  isempty(version) ? throw(ArgumentError(
-                     "PythonTarget version must not be empty")) : String(version))
+                     "PythonTarget version must not be empty")) : String(version),
+                 privatized)
 
 function Base.show(io::IO, t::PythonTarget)
     print(io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
               ", ", repr(t.library_basename))
     t.bundle_subdir === nothing || print(io, "; bundle_subdir = ", repr(t.bundle_subdir))
     t.version == _DEFAULT_PACKAGE_VERSION || print(io, "; version = ", repr(t.version))
+    t.privatized && print(io, "; privatized = true")
     print(io, ")")
 end
 
@@ -592,26 +602,34 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "_lib = ctypes.CDLL(_resolve_library_path())")
     println(f)
 
-    # Warn when another wrapped library is already loaded.
+    # Record this package on a process-global sentinel so that a later
+    # non-privatized package can tell something is already loaded.
     println(f, "_JLW_LOADED_ATTR = \"_jlw_loaded_packages\"")
     println(f, "_jlw_loaded = getattr(sys, _JLW_LOADED_ATTR, None)")
     println(f, "if _jlw_loaded is None:")
     println(f, "    _jlw_loaded = set()")
     println(f, "    setattr(sys, _JLW_LOADED_ATTR, _jlw_loaded)")
     println(f, "_jlw_this_pkg = __package__ or __name__")
-    println(f, "if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:")
-    println(f, "    import warnings")
-    println(f, "    warnings.warn(")
-    println(f, "        f\"Loading JuliaLibWrapping-generated package {_jlw_this_pkg!r} into a \"")
-    println(f, "        f\"process that already loaded {sorted(_jlw_loaded)!r}. Multiple \"")
-    println(f, "        \"JLW-wrapped libraries in one process is not a supported \"")
-    println(f, "        \"configuration: the dynamic linker silently shares a single \"")
-    println(f, "        \"libjulia across them, which assumes byte-compatible Julia \"")
-    println(f, "        \"versions and shares one Julia runtime. See the JuliaLibWrapping \"")
-    println(f, "        \"docs section on multiple wrapped libraries in one process.\",")
-    println(f, "        RuntimeWarning,")
-    println(f, "        stacklevel=2,")
-    println(f, "    )")
+    if !dest.privatized
+        # Without a private libjulia this package shares whatever runtime is
+        # already initialized, and the first call into whichever library did
+        # not initialize it aborts the process. A privatized package uses its
+        # own runtime and does not need to warn.
+        println(f, "if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:")
+        println(f, "    import warnings")
+        println(f, "    warnings.warn(")
+        println(f, "        f\"Loading JuliaLibWrapping-generated package {_jlw_this_pkg!r} into a \"")
+        println(f, "        f\"process that already loaded {sorted(_jlw_loaded)!r}. \"")
+        println(f, "        \"This package was built without a private libjulia, so both \"")
+        println(f, "        \"packages resolve a single Julia runtime and the first call into \"")
+        println(f, "        \"whichever did not initialize it aborts the process. Rebuild with \"")
+        println(f, "        \"`privatize = true`, or compile both APIs into a single juliac \"")
+        println(f, "        \"library. See the JuliaLibWrapping docs section on multiple \"")
+        println(f, "        \"wrapped libraries in one process.\",")
+        println(f, "        RuntimeWarning,")
+        println(f, "        stacklevel=2,")
+        println(f, "    )")
+    end
     println(f, "_jlw_loaded.add(_jlw_this_pkg)")
     println(f)
 
