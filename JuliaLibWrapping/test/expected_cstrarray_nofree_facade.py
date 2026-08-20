@@ -1,4 +1,4 @@
-"""cstrarray_demo idiomatic façade.
+"""cstrarray_nofree_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -20,14 +20,10 @@ from ._lowlevel import (
     CStrArray,
 )
 
+from ._lowlevel import give_strs  # TODO: hand-wrap — owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
+
 def take_strs(a):
     _a = CStrArray.from_list(a)
     return _lowlevel.take_strs(_a)
-
-def give_strs():
-    _result = _lowlevel.give_strs()
-    _out = _result.as_list()
-    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)
-    return _out
 
 __all__ = ["Nothing", "CStrArray", "take_strs", "give_strs"]

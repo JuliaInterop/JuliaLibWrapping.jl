@@ -973,10 +973,12 @@ end
         # CStrArray conversion does not require numpy — pure ctypes, like
         # CString. Exercises a borrow-in argument (take_strs), an owning
         # return that must be converted then freed via jlw_free_strings
-        # (give_strs), and the macro-emitted jlw_free/jlw_free_strings
-        # release entrypoints themselves (left as mechanical TODO
-        # re-exports in this milestone — Task 9 hides them from the
-        # façade, not this one).
+        # (give_strs, auto-wrapped because both release symbols are
+        # present in this fixture — see `_release_symbols_present`), and
+        # the macro-emitted jlw_free/jlw_free_strings release entrypoints
+        # themselves: bound on `_lib` (argtypes/restype) but excluded from
+        # `_lowlevel.py`'s module-level `def`s and from the façade/`__all__`
+        # entirely — they are internal plumbing, not part of the public API.
         abi = read_abi_info("bindinginfo_cstrarray.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstrarray_demo", "libcstrarray")
@@ -1005,9 +1007,14 @@ end
             # Round-trip-direction entrypoints are emitted as bare bindings.
             @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
             @test occursin("_lib.give_strs.restype = CStrArray", bindings)
-            # The macro-emitted release entrypoints are bound like any
-            # other function.
+            # The macro-emitted release entrypoints are bound (argtypes/
+            # restype) like any other function, so the owning-return
+            # façade wrapper's direct `_lowlevel._lib.jlw_free_strings(...)`
+            # call works — but they get no module-level `def` wrapper.
+            @test occursin("_lib.jlw_free.argtypes", bindings)
             @test occursin("_lib.jlw_free_strings.argtypes", bindings)
+            @test !occursin("def jlw_free(", bindings)
+            @test !occursin("def jlw_free_strings(", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1025,17 +1032,17 @@ end
                     "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)\n" *
                     "    return _out", facade
             )
-            # jlw_free/jlw_free_strings take raw pointers, so they are not
-            # auto-wrappable and stay mechanical TODO re-exports — this
-            # task does not hide them from the façade.
-            @test occursin(
-                "from ._lowlevel import jlw_free  # TODO: hand-wrap — " *
-                    "`p`: argument has raw pointer type `Ptr{Nothing}`", facade
-            )
-            @test occursin(
-                "from ._lowlevel import jlw_free_strings  # TODO: hand-wrap — " *
-                    "`p`: argument has raw pointer type `Ptr{Ptr{UInt8}}`", facade
-            )
+            # jlw_free/jlw_free_strings are release-entrypoint internals —
+            # never re-exported from the façade (no TODO line, no bare
+            # re-export) and never listed in `__all__`, regardless of what
+            # their own (raw-pointer) argument shape would otherwise
+            # classify to. The internal call inside give_strs's own
+            # auto-wrapper body (`_lowlevel._lib.jlw_free_strings(...)`)
+            # is legitimate and stays.
+            @test !occursin("import jlw_free", facade)
+            @test !occursin("\"jlw_free\"", facade)
+            @test !occursin("\"jlw_free_strings\"", facade)
+            @test occursin("_lowlevel._lib.jlw_free_strings(_result.data, _result.length)", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
@@ -1057,10 +1064,11 @@ end
         # CStrArray. Exercises a borrow-in argument (take_dict), an owning
         # return that must be converted then freed via BOTH release
         # entrypoints (give_dict: jlw_free_strings for `keys`, jlw_free for
-        # `values`), and the macro-emitted jlw_free/jlw_free_strings
-        # release entrypoints themselves (left as mechanical TODO
-        # re-exports in this milestone — Task 9 hides them from the
-        # façade, not this one).
+        # `values` — both present in this fixture, so give_dict is
+        # auto-wrapped), and the macro-emitted jlw_free/jlw_free_strings
+        # release entrypoints themselves: bound on `_lib` but excluded
+        # from `_lowlevel.py`'s module-level `def`s and from the
+        # façade/`__all__` entirely — they are internal plumbing.
         abi = read_abi_info("bindinginfo_cdict.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_demo", "libcdict")
@@ -1089,10 +1097,14 @@ end
             # Round-trip-direction entrypoints are emitted as bare bindings.
             @test occursin("_lib.take_dict.argtypes = [CDict_Float64]", bindings)
             @test occursin("_lib.give_dict.restype = CDict_Float64", bindings)
-            # The macro-emitted release entrypoints are bound like any
-            # other function.
+            # The macro-emitted release entrypoints are bound (argtypes/
+            # restype) like any other function, so give_dict's direct
+            # `_lowlevel._lib.jlw_free*(...)` calls work — but they get no
+            # module-level `def` wrapper.
             @test occursin("_lib.jlw_free_strings.argtypes", bindings)
             @test occursin("_lib.jlw_free.argtypes", bindings)
+            @test !occursin("def jlw_free(", bindings)
+            @test !occursin("def jlw_free_strings(", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
@@ -1111,16 +1123,16 @@ end
                     "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
                     "    return _out", facade
             )
-            # jlw_free/jlw_free_strings take raw pointers, so they are not
-            # auto-wrappable and stay mechanical TODO re-exports — this
-            # task does not hide them from the façade.
+            # jlw_free/jlw_free_strings are release-entrypoint internals —
+            # never re-exported and never listed in `__all__`. The
+            # internal calls inside give_dict's own auto-wrapper body
+            # are legitimate and stay.
+            @test !occursin("import jlw_free", facade)
+            @test !occursin("\"jlw_free\"", facade)
+            @test !occursin("\"jlw_free_strings\"", facade)
+            @test occursin("_lowlevel._lib.jlw_free_strings(_result.keys, _result.length)", facade)
             @test occursin(
-                "from ._lowlevel import jlw_free  # TODO: hand-wrap — " *
-                    "`p`: argument has raw pointer type `Ptr{Nothing}`", facade
-            )
-            @test occursin(
-                "from ._lowlevel import jlw_free_strings  # TODO: hand-wrap — " *
-                    "`p`: argument has raw pointer type `Ptr{Ptr{UInt8}}`", facade
+                "_lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))", facade
             )
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
@@ -1193,6 +1205,111 @@ end
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "copt_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "_release_symbols_present" begin
+        # Both jlw_free AND jlw_free_strings must be present — either alone
+        # is not enough, and a library with no release entrypoints at all
+        # (or an unrelated function that happens to be named similarly)
+        # must not be mistaken for having them.
+        present = JuliaLibWrapping._release_symbols_present
+        abi_both = read_abi_info("bindinginfo_cstrarray.json")
+        @test present(abi_both) === true
+        abi_neither = read_abi_info("bindinginfo_cstrarray_nofree.json")
+        @test present(abi_neither) === false
+
+        # Hand-built: only one of the two symbols present.
+        only_free = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc("jlw_free", "jlw_free(p)", 1, JuliaLibWrapping.ArgDesc[]),
+            ]
+        )
+        @test present(only_free) === false
+        only_strings = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p, n)", 1, JuliaLibWrapping.ArgDesc[]
+                ),
+            ]
+        )
+        @test present(only_strings) === false
+        neither = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(), JuliaLibWrapping.MethodDesc[]
+        )
+        @test present(neither) === false
+        both = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc("jlw_free", "jlw_free(p)", 1, JuliaLibWrapping.ArgDesc[]),
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p, n)", 1, JuliaLibWrapping.ArgDesc[]
+                ),
+            ]
+        )
+        @test present(both) === true
+    end
+
+    @testset "CStrArray without release symbols" begin
+        # Task 9 gate: a library that defines the CStrArray carrier but has
+        # not exported the release entrypoints (no jlw_free/jlw_free_strings
+        # among its functions) must not have its owning return auto-wrapped
+        # — that would emit a call to a symbol the shared library does not
+        # export. take_strs (borrow-in) is unaffected; give_strs (owning
+        # return) falls back to a mechanical TODO naming the macro to add.
+        abi = read_abi_info("bindinginfo_cstrarray_nofree.json")
+        @test JuliaLibWrapping._release_symbols_present(abi) === false
+        mktempdir() do path
+            dest = PythonTarget(path, "cstrarray_nofree_demo", "libcstrarraynofree")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            # No jlw_free* entrypoints in this fixture at all — nothing to
+            # bind, nothing to exclude.
+            @test !occursin("jlw_free", bindings)
+            @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
+            @test occursin("_lib.give_strs.restype = CStrArray", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cstrarray_nofree_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "cstrarray_nofree_demo", "_facade.py"), String)
+            # take_strs (borrow-in) is still auto-wrapped — the release-
+            # symbol gate applies only to owning RETURNS.
+            @test occursin(
+                "def take_strs(a):\n    _a = CStrArray.from_list(a)\n" *
+                    "    return _lowlevel.take_strs(_a)", facade
+            )
+            # give_strs (owning return) is NOT auto-wrapped: no free call
+            # exists to emit safely, so it falls back to a mechanical
+            # re-export with a TODO naming the fix.
+            @test !occursin("def give_strs():", facade)
+            @test occursin(
+                "from ._lowlevel import give_strs  # TODO: hand-wrap — " *
+                    "owning return needs release entrypoints; add " *
+                    "JLWInterop.@export_release_entrypoints to the library",
+                facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_nofree_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing # noidiom: matches sibling testsets' style
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
                 cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
                 @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")

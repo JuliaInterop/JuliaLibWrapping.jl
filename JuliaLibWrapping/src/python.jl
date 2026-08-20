@@ -947,6 +947,17 @@ function _write_bindings(
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)
 
+        if method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS
+            # The release entrypoints (`jlw_free`/`jlw_free_strings`) are
+            # internal plumbing an owning-return façade wrapper calls
+            # directly via `_lowlevel._lib.<symbol>(...)` — bind argtypes/
+            # restype above so that call works, but emit no module-level
+            # `def` wrapper for them (see `_write_facade_stub`, which
+            # correspondingly excludes them from the façade and `__all__`).
+            println(f)
+            continue
+        end
+
         arg_names_seen = Set{String}()
         argnames = String[sanitize_python_argname(a.name, arg_names_seen) for a in method.args]
 
@@ -1036,9 +1047,41 @@ function _facade_classify_arg(
 end
 
 """
-    _facade_classify_return(method, typeinfo, typedict) -> NamedTuple
+    _RELEASE_ENTRYPOINT_SYMBOLS :: NTuple{2, String}
 
-Classify a method's return for façade auto-wrapping. The return is one of:
+The macro-emitted release entrypoint symbols (`JLWInterop.@export_release_entrypoints`)
+that owning-return façade wrappers call to free Julia-allocated buffers:
+`jlw_free_strings` (string-array/dict-key allocations) and `jlw_free`
+(generic single allocations, e.g. `CDict.values`). Used by
+[`_release_symbols_present`](@ref) to gate owning-return auto-wrapping and
+to exclude these two symbols from the public façade (they are internal
+plumbing, bound on `_lib` only).
+"""
+const _RELEASE_ENTRYPOINT_SYMBOLS = ("jlw_free", "jlw_free_strings")
+
+"""
+    _release_symbols_present(abi_info::ABIInfo) -> Bool
+
+Return `true` iff *both* macro-emitted release entrypoints
+([`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref): `jlw_free` and `jlw_free_strings`)
+appear among `abi_info.entrypoints`' symbols. The ABI JSON carries no
+ownership metadata (see design/spike-notes.md), so this is the only signal
+that a library actually exposes the release plumbing an owning-return
+carrier (`CStrArray`, `CDict`) needs; without it, [`_facade_classify_return`](@ref)
+refuses to auto-wrap such a return rather than emit a call to a symbol
+that does not exist.
+"""
+function _release_symbols_present(abi_info::ABIInfo)
+    symbols = Set{String}(m.symbol for m in abi_info.entrypoints)
+    return all(sym -> sym in symbols, _RELEASE_ENTRYPOINT_SYMBOLS)
+end
+
+"""
+    _facade_classify_return(method, typeinfo, typedict, release_present) -> NamedTuple
+
+Classify a method's return for façade auto-wrapping. `release_present` is
+[`_release_symbols_present`](@ref)'s verdict for the surrounding library.
+The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
 - `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
@@ -1048,14 +1091,18 @@ Classify a method's return for façade auto-wrapping. The return is one of:
   free the owned `keys` buffer via `jlw_free_strings` AND the owned
   `values` buffer via `jlw_free` (two separate allocations)
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
-  is by-value, so no free is involved
+  is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
-- `(kind=:opaque, reason=…)` — bail out.
+- `(kind=:opaque, reason=…)` — bail out. Also returned in place of
+  `:cstrarray_unwrap`/`:cdict_unwrap` when `release_present` is `false`:
+  auto-wrapping an owning return with no release entrypoints available
+  would emit a call to a symbol that does not exist.
 """
 function _facade_classify_return(
         method::MethodDesc,
         typeinfo::OrderedDict{Int, TypeDesc},
-        typedict::Dict{Int, String}
+        typedict::Dict{Int, String},
+        release_present::Bool
     )
     rt = typeinfo[method.return_type]
     if rt isa PrimitiveTypeDesc
@@ -1068,8 +1115,16 @@ function _facade_classify_return(
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
         elseif cstrarray_struct_info(rt, typeinfo)
+            release_present || return (
+                kind = :opaque,
+                reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+            )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
         elseif cdict_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+            release_present || return (
+                kind = :opaque,
+                reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+            )
             return (kind = :cdict_unwrap, classname = typedict[method.return_type])
         elseif copt_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
             return (kind = :copt_unwrap, classname = typedict[method.return_type])
@@ -1090,10 +1145,13 @@ function _facade_classify_return(
 end
 
 """
-    _facade_plan(method, typeinfo, typedict) -> NamedTuple
+    _facade_plan(method, typeinfo, typedict, release_present) -> NamedTuple
 
-Decide whether an entrypoint should be auto-wrapped on the façade. Returns
-`(auto::Bool, reason::String, args::Vector, ret::NamedTuple, uses_numpy::Bool)`.
+Decide whether an entrypoint should be auto-wrapped on the façade.
+`release_present` is [`_release_symbols_present`](@ref)'s verdict for the
+surrounding library, threaded through to [`_facade_classify_return`](@ref).
+Returns `(auto::Bool, reason::String, args::Vector, ret::NamedTuple,
+uses_numpy::Bool)`.
 
 A function is auto-wrapped only when every argument and return classifies
 as a recognized form *and* the wrapping actually adds value (converts a
@@ -1103,7 +1161,8 @@ primitive-in/primitive-out functions are left as straight re-exports.
 function _facade_plan(
         method::MethodDesc,
         typeinfo::OrderedDict{Int, TypeDesc},
-        typedict::Dict{Int, String}
+        typedict::Dict{Int, String},
+        release_present::Bool
     )
     arg_classes = [_facade_classify_arg(a, typeinfo, typedict) for a in method.args]
     for (i, c) in enumerate(arg_classes)
@@ -1115,7 +1174,7 @@ function _facade_plan(
             )
         end
     end
-    ret = _facade_classify_return(method, typeinfo, typedict)
+    ret = _facade_classify_return(method, typeinfo, typedict, release_present)
     if ret.kind === :opaque
         return (
             category = :mechanical, reason = ret.reason,
@@ -1226,7 +1285,8 @@ function _write_facade_stub(
         end
     end
 
-    plans = [_facade_plan(m, typeinfo, typedict) for m in entrypoints]
+    release_present = _release_symbols_present(abi_info)
+    plans = [_facade_plan(m, typeinfo, typedict, release_present) for m in entrypoints]
     needs_np = any(p -> p.uses_numpy, plans)
     # `:cdict_unwrap`'s release call casts `_result.values` via
     # `ctypes.cast(...)` directly in facade.py (see
@@ -1281,6 +1341,7 @@ function _write_facade_stub(
 
     any_reexport = false
     for (method, plan) in zip(entrypoints, plans)
+        method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         if plan.category === :mechanical
             println(
                 f, "from ._lowlevel import ", method.symbol,
@@ -1312,6 +1373,9 @@ function _write_facade_stub(
         isfirst = false
     end
     for method in entrypoints
+        # The release entrypoints are internal plumbing (bound on `_lib`
+        # only in `_lowlevel.py`, see `_write_bindings`) — never public.
+        method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         isfirst || print(f, ", ")
         print(f, "\"", method.symbol, "\"")
         isfirst = false

@@ -21,9 +21,6 @@ from ._lowlevel import (
     CDict_Float64,
 )
 
-from ._lowlevel import jlw_free  # TODO: hand-wrap — `p`: argument has raw pointer type `Ptr{Nothing}`
-from ._lowlevel import jlw_free_strings  # TODO: hand-wrap — `p`: argument has raw pointer type `Ptr{Ptr{UInt8}}`
-
 def take_dict(d):
     _d = CDict_Float64.from_dict(d)
     return _lowlevel.take_dict(_d)
@@ -35,4 +32,4 @@ def give_dict():
     _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))
     return _out
 
-__all__ = ["Nothing", "CDict_Float64", "take_dict", "give_dict", "jlw_free", "jlw_free_strings"]
+__all__ = ["Nothing", "CDict_Float64", "take_dict", "give_dict"]
