@@ -70,7 +70,11 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
+          # macos-latest is an Apple Silicon (arm64) runner; matrix.arch is
+          # x64 for the ubuntu/windows cells, so override it to "default"
+          # (let setup-julia pick the host's native arch) on macOS instead of
+          # forcing an x64 Julia onto an arm64 runner.
+          arch: ${{ matrix.os == 'macos-latest' && 'default' || matrix.arch }}
           project: ${{ matrix.package }}
       - uses: julia-actions/cache@v3
       - uses: actions/setup-python@v5

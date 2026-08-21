@@ -282,7 +282,7 @@ end
         abi_info = read_abi_info("bindinginfo_libsimple.json")
         mktempdir() do path
             dest = PythonTarget(path, "libsimple", "libsimple")
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
 
             bindings_path = joinpath(path, "libsimple", "_lowlevel.py")
             facade_path = joinpath(path, "libsimple", "_facade.py")
@@ -342,7 +342,7 @@ end
             open(facade_path, "a") do io
                 write(io, sentinel)
             end
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
             @test occursin(sentinel, read(facade_path, String))
 
             pyproject = read(pyproject_path, String)
@@ -402,13 +402,13 @@ end
             abi_info = read_abi_info("bindinginfo_libsimple.json")
             mktempdir() do path
                 dest = PythonTarget(path, "libsimple", "libsimple"; version = "1.2.3")
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
                 pyproject = read(joinpath(path, "pyproject.toml"), String)
                 @test occursin("version = \"1.2.3\"", pyproject)
             end
             mktempdir() do path
                 dest = PythonTarget(path, "libsimple", "libsimple")
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
                 pyproject = read(joinpath(path, "pyproject.toml"), String)
                 @test occursin("version = \"0.0.0\"", pyproject)
             end
@@ -424,7 +424,7 @@ end
                     path, "libsimple", "libsimple";
                     bundle_subdir = "bundle"
                 )
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
 
                 bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
                 # Bundle path is searched first so the baked-in RUNPATH
@@ -1178,7 +1178,7 @@ end
         abi = read_abi_info("bindinginfo_cstring.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstring_demo", "libcstring")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstring_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1242,7 +1242,7 @@ end
         abi = read_abi_info("bindinginfo_cstrarray.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstrarray_demo", "libcstrarray")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstrarray_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1309,7 +1309,7 @@ end
         abi = read_abi_info("bindinginfo_cdict.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_demo", "libcdict")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cdict_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1372,7 +1372,7 @@ end
         abi = read_abi_info("bindinginfo_cdict_int32.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_int32_demo", "libcdicti32")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cdict_int32_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1429,7 +1429,7 @@ end
         abi = read_abi_info("bindinginfo_copt.json")
         mktempdir() do path
             dest = PythonTarget(path, "copt_demo", "libcopt")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "copt_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1520,7 +1520,7 @@ end
         @test JuliaLibWrapping._release_symbols_present(abi) === false
         mktempdir() do path
             dest = PythonTarget(path, "cstrarray_nofree_demo", "libcstrarraynofree")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1570,7 +1570,7 @@ end
         abi = read_abi_info("bindinginfo_cmatrix.json")
         mktempdir() do path
             dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cmatrix_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1631,7 +1631,7 @@ end
         abi = read_abi_info("bindinginfo_carray3.json")
         mktempdir() do path
             dest = PythonTarget(path, "carray3_demo", "libcarray3")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "carray3_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1677,7 +1677,7 @@ end
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
             bindings = @test_logs (:info,) match_mode = :any begin
-                write_wrapper(dest, abi)
+                write_wrapper(dest, abi; os_kernel = :linux)
                 read(joinpath(path, "rawptr_demo", "_lowlevel.py"), String)
             end
 
@@ -1734,7 +1734,7 @@ end
         abi_info = read_abi_info("bindinginfo_jlwstatus.json")
         mktempdir() do path
             dest = PythonTarget(path, "demo", "libdemo")
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
 
             bindings = read(joinpath(path, "demo", "_lowlevel.py"), String)
             facade = read(joinpath(path, "demo", "_facade.py"), String)
