@@ -67,18 +67,6 @@ function Base.show(io::IO, t::PythonTarget)
 end
 
 """
-    _current_os_kernel() -> Symbol
-
-Identify the host OS as `:windows`, `:apple`, or `:linux`, for selecting
-which platform-dependent text [`write_wrapper`](@ref)'s writers emit into
-the generated Python package (DLL search path setup on Windows, `.dylib`
-suffix ordering on macOS). A function, deliberately, not a `@static`
-branch: tests force the non-host branches to exercise Windows/macOS
-codegen from a Linux CI runner.
-"""
-_current_os_kernel() = Sys.iswindows() ? :windows : Sys.isapple() ? :apple : :linux
-
-"""
     pytypes :: Dict{String, String}
 
 Map from Julia primitive type name (as it appears in a `PrimitiveTypeDesc`'s
@@ -601,11 +589,14 @@ function write_wrapper(
             # `ctypes.CDLL(...)`) can find libjulia*.dll.
             println(f, "import os as _os")
             println(f, "_d = _os.path.dirname(_os.path.abspath(__file__))")
-            println(f, "_bin = _os.path.join(_d, ", repr(dest.bundle_subdir), ", \"bin\")")
+            println(
+                f, "_bin = _os.path.join(_d, ", repr(dest.bundle_subdir), ", ",
+                repr(bundle_libdir(os_kernel)), ")"
+            )
             println(f, "if hasattr(_os, \"add_dll_directory\"):")
             println(f, "    _os.add_dll_directory(_bin)")
             println(f, "else:")
-            println(f, "    _os.environ[\"PATH\"] = _bin + \";\" + _os.environ.get(\"PATH\", \"\")")
+            println(f, "    _os.environ[\"PATH\"] = _bin + _os.pathsep + _os.environ.get(\"PATH\", \"\")")
             println(f, "del _os, _d, _bin")
         end
         if !has_any_export
@@ -961,10 +952,9 @@ function _write_bindings(
         # still works for a developer who drops a bare .so beside the package.
         # JuliaC's `--bundle` puts everything (including this library) under
         # `bin/`, not `lib/`, on Windows (no rpath there for `lib/` to serve).
-        bundle_libdir = os_kernel === :windows ? "bin" : "lib"
         println(
             f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
-            " / \"", bundle_libdir, "\", _HERE)"
+            " / \"", bundle_libdir(os_kernel), "\", _HERE)"
         )
         println(f, "    for directory in search_dirs:")
         println(f, "        for suffix in suffixes:")
@@ -981,20 +971,18 @@ function _write_bindings(
     end
     if win_flat_fallback
         # Nothing found next to the package: widen the DLL search path with
-        # a located Julia install (so a subsequent `ctypes.CDLL` resolves
-        # libjulia*.dll) and try once more, treating Julia's own bin/ as one
-        # more plausible place the wrapped library was dropped.
+        # a located Julia install so a subsequent `ctypes.CDLL` call can
+        # resolve libjulia*.dll. This is DLL-search-path-only — Julia's own
+        # bin/ is never itself searched as a candidate location for the
+        # wrapped library: a user's built library never lives there, and a
+        # same-named DLL that happened to be there would be silently loaded
+        # and fail confusingly later.
         println(f, "    _julia_bin = _find_julia_bin()")
         println(f, "    if _julia_bin is not None:")
         println(f, "        if hasattr(os, \"add_dll_directory\"):")
         println(f, "            os.add_dll_directory(_julia_bin)")
         println(f, "        else:")
-        println(f, "            os.environ[\"PATH\"] = _julia_bin + \";\" + os.environ.get(\"PATH\", \"\")")
-        println(f, "        for suffix in suffixes:")
-        println(f, "            candidate = pathlib.Path(_julia_bin) / (_LIBRARY_BASENAME + suffix)")
-        println(f, "            tried.append(str(candidate))")
-        println(f, "            if candidate.exists():")
-        println(f, "                return str(candidate)")
+        println(f, "            os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")")
     end
     println(f, "    raise FileNotFoundError(")
     println(f, "        f\"Could not locate shared library {_LIBRARY_BASENAME!r}. \"")

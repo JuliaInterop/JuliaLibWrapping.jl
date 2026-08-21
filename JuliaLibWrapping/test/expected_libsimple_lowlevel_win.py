@@ -51,12 +51,7 @@ def _resolve_library_path():
         if hasattr(os, "add_dll_directory"):
             os.add_dll_directory(_julia_bin)
         else:
-            os.environ["PATH"] = _julia_bin + ";" + os.environ.get("PATH", "")
-        for suffix in suffixes:
-            candidate = pathlib.Path(_julia_bin) / (_LIBRARY_BASENAME + suffix)
-            tried.append(str(candidate))
-            if candidate.exists():
-                return str(candidate)
+            os.environ["PATH"] = _julia_bin + os.pathsep + os.environ.get("PATH", "")
     raise FileNotFoundError(
         f"Could not locate shared library {_LIBRARY_BASENAME!r}. "
         f"Tried: {tried}. Set {_LIBRARY_ENV_VAR} to an explicit path."

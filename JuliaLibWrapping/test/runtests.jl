@@ -449,8 +449,13 @@ end
 
         @testset "cross-platform loader (os_kernel)" begin
             # `_current_os_kernel` reports one of the three supported kernels
-            # for whatever host actually runs this test.
+            # for whatever host actually runs this test. Both facts live in
+            # shared module scope (`platform.jl`), not inside the Python
+            # emitter, so any future target consumes the same definitions.
             @test JuliaLibWrapping._current_os_kernel() in (:linux, :apple, :windows)
+            @test JuliaLibWrapping.bundle_libdir(:windows) == "bin"
+            @test JuliaLibWrapping.bundle_libdir(:linux) == "lib"
+            @test JuliaLibWrapping.bundle_libdir(:apple) == "lib"
 
             abi_info = read_abi_info("bindinginfo_libsimple.json")
 
@@ -468,9 +473,15 @@ end
                 @test occursin("_julia_bin = _find_julia_bin()", bindings)
                 @test occursin("os.add_dll_directory(_julia_bin)", bindings)
                 @test occursin(
-                    "os.environ[\"PATH\"] = _julia_bin + \";\" + os.environ.get(\"PATH\", \"\")",
+                    "os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")",
                     bindings
                 )
+                # DLL-search-path-only: Julia's own bin/ is never searched as
+                # a candidate location for the wrapped library itself — a
+                # user's built library never lives there, and a same-named
+                # DLL that happened to live there would be silently
+                # (mis)loaded and fail confusingly later.
+                @test !occursin("pathlib.Path(_julia_bin)", bindings)
                 # The runtime `sys.platform` suffix-selection logic is
                 # unchanged — it already handles all three platforms
                 # dynamically, independent of the build-time `os_kernel`.
@@ -515,7 +526,7 @@ end
                 @test occursin("_bin = _os.path.join(_d, \"bundle\", \"bin\")", init)
                 @test occursin("hasattr(_os, \"add_dll_directory\")", init)
                 @test occursin(
-                    "_os.environ[\"PATH\"] = _bin + \";\" + _os.environ.get(\"PATH\", \"\")",
+                    "_os.environ[\"PATH\"] = _bin + _os.pathsep + _os.environ.get(\"PATH\", \"\")",
                     init
                 )
                 # The add_dll_directory preamble runs before the facade/
