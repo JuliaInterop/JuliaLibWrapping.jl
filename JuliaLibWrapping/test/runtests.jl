@@ -447,6 +447,119 @@ end
             end
         end
 
+        @testset "cross-platform loader (os_kernel)" begin
+            # `_current_os_kernel` reports one of the three supported kernels
+            # for whatever host actually runs this test.
+            @test JuliaLibWrapping._current_os_kernel() in (:linux, :apple, :windows)
+
+            abi_info = read_abi_info("bindinginfo_libsimple.json")
+
+            # ── flat layout, :windows — the `_find_julia_bin` fallback ─────
+            mktempdir() do path
+                dest = PythonTarget(path, "libsimple", "libsimple")
+                write_wrapper(dest, abi_info; os_kernel = :windows)
+                bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+
+                @test occursin("import shutil", bindings)
+                @test occursin("def _find_julia_bin():", bindings)
+                @test occursin("JULIA_BINDIR", bindings)
+                @test occursin("JULIA_PREFIX", bindings)
+                @test occursin("shutil.which(\"julia\")", bindings)
+                @test occursin("_julia_bin = _find_julia_bin()", bindings)
+                @test occursin("os.add_dll_directory(_julia_bin)", bindings)
+                @test occursin(
+                    "os.environ[\"PATH\"] = _julia_bin + \";\" + os.environ.get(\"PATH\", \"\")",
+                    bindings
+                )
+                # The runtime `sys.platform` suffix-selection logic is
+                # unchanged — it already handles all three platforms
+                # dynamically, independent of the build-time `os_kernel`.
+                @test occursin("suffixes = (\".dll\",)", bindings)
+                @test occursin("suffixes = (\".dylib\", \".so\")", bindings)
+                @test occursin("suffixes = (\".so\", \".dylib\")", bindings)
+
+                # `__init__.py` has NO add_dll_directory preamble in the flat
+                # layout — that fallback lives entirely in `_lowlevel.py`
+                # (there is no static bundle/bin directory to point at).
+                init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                @test !occursin("add_dll_directory", init)
+
+                golden = read(joinpath(@__DIR__, "expected_libsimple_lowlevel_win.py"), String)
+                @test bindings == golden
+
+                python3 = _find_python()
+                if !isnothing(python3)
+                    @test _ast_parse_ok(python3, joinpath(path, "libsimple", "_lowlevel.py"))
+                elseif haskey(ENV, "CI")
+                    error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+                end
+            end
+
+            # ── bundled layout, :windows — bin/ search dir + __init__ preamble ─
+            mktempdir() do path
+                dest = PythonTarget(
+                    path, "libsimple", "libsimple";
+                    bundle_subdir = "bundle"
+                )
+                write_wrapper(dest, abi_info; os_kernel = :windows)
+                bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+
+                # Bundled layout needs no `_find_julia_bin` fallback — the
+                # bundle already carries its own runtime.
+                @test !occursin("_find_julia_bin", bindings)
+                @test !occursin("import shutil", bindings)
+                @test occursin("search_dirs = (_HERE / \"bundle\" / \"bin\", _HERE)", bindings)
+
+                init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                @test occursin("add_dll_directory", init)
+                @test occursin("_bin = _os.path.join(_d, \"bundle\", \"bin\")", init)
+                @test occursin("hasattr(_os, \"add_dll_directory\")", init)
+                @test occursin(
+                    "_os.environ[\"PATH\"] = _bin + \";\" + _os.environ.get(\"PATH\", \"\")",
+                    init
+                )
+                # The add_dll_directory preamble runs before the facade/
+                # lowlevel import that transitively reaches `ctypes.CDLL`.
+                @test first(findfirst("add_dll_directory", init)) < first(findfirst("from ._facade import", init))
+            end
+
+            # ── default host (:linux on CI) and explicit :linux — no Windows
+            #    text anywhere, in either layout ──────────────────────────
+            for bundle_subdir in (nothing, "bundle")
+                mktempdir() do path
+                    dest = PythonTarget(
+                        path, "libsimple", "libsimple";
+                        bundle_subdir
+                    )
+                    write_wrapper(dest, abi_info; os_kernel = :linux)
+                    bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+                    @test !occursin("_find_julia_bin", bindings)
+                    @test !occursin("add_dll_directory", bindings)
+                    init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                    @test !occursin("add_dll_directory", init)
+                end
+            end
+
+            # ── :apple spot-check — no Windows-only branch fires; codegen is
+            #    byte-identical to the (default) :linux output, since no
+            #    macOS-specific text exists on the emitter side (JuliaC
+            #    itself handles @loader_path + codesign; nothing here is
+            #    macOS-conditional beyond the runtime `sys.platform` check
+            #    already covered above) ───────────────────────────────────
+            mktempdir() do path_linux
+                mktempdir() do path_apple
+                    dest_linux = PythonTarget(path_linux, "libsimple", "libsimple")
+                    dest_apple = PythonTarget(path_apple, "libsimple", "libsimple")
+                    write_wrapper(dest_linux, abi_info; os_kernel = :linux)
+                    write_wrapper(dest_apple, abi_info; os_kernel = :apple)
+                    bindings_linux = read(joinpath(path_linux, "libsimple", "_lowlevel.py"), String)
+                    bindings_apple = read(joinpath(path_apple, "libsimple", "_lowlevel.py"), String)
+                    @test bindings_linux == bindings_apple
+                    @test occursin("suffixes = (\".dylib\", \".so\")", bindings_apple)
+                end
+            end
+        end
+
         @testset "unsupported primitive" begin
             typedict = Dict{Int, String}()
             typeinfo = OrderedDict{Int, TypeDesc}(

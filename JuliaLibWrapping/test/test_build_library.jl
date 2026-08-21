@@ -133,6 +133,34 @@ using Test
         @test occursin("\"pkg\"", err.msg)
     end
 
+    @testset "privatize mislabel (Windows build host)" begin
+        # `_iswindows` is injectable so this exercises the Windows no-op
+        # branch on any host: `privatize = true` must be downgraded to
+        # `privatized = false` (with a warning) rather than mislabeling a
+        # package whose bundle was never actually salted — JuliaC does not
+        # implement libjulia SONAME salting on Windows.
+        apply = JuliaLibWrapping._apply_privatization
+        t = PythonTarget("/tmp/pkgdir", "pkg", "libfoo"; bundle_subdir = "bundle")
+
+        out = @test_logs (:warn, r"privatize = true.*no effect.*Windows"i) match_mode = :any begin
+            apply(t, true; _iswindows = true)
+        end
+        @test !out.privatized
+        @test out.dir == t.dir
+        @test out.package_name == t.package_name
+        @test out.bundle_subdir == t.bundle_subdir
+
+        # A non-Windows host still privatizes normally — the new branch
+        # changes nothing off Windows.
+        out2 = apply(t, true; _iswindows = false)
+        @test out2.privatized
+
+        # The default `_iswindows = Sys.iswindows()` reflects whatever host
+        # actually runs this test (true unless CI ever runs it on Windows).
+        out3 = apply(t, true)
+        @test out3.privatized == !Sys.iswindows()
+    end
+
     @testset "end-to-end" begin
         # Drive the full pipeline against examples/abi_stress. The compile
         # step is expensive (~minutes), so this is gated on having a
