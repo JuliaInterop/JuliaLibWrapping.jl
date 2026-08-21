@@ -16,6 +16,26 @@ function onlymatch(f, collection)
     return matches[1]
 end
 
+# Locate a Python 3 interpreter for the wrapper-validation tests below. Some
+# platforms (notably python.org installers on Windows) register `python`
+# rather than `python3` on PATH; accept either.
+function _find_python()
+    p = Sys.which("python3")
+    isnothing(p) || return p
+    return Sys.which("python")
+end
+
+# Run `python -c "ast.parse(...)"` against `path`, syntax-checking the
+# generated wrapper. The path is passed as a `sys.argv` element rather than
+# interpolated into a single-quoted Python string literal: a Windows
+# absolute path contains backslashes, which are escape characters inside a
+# Python string literal, so interpolating one directly is a correctness
+# hazard that argv sidesteps entirely.
+function _ast_parse_ok(python::AbstractString, path::AbstractString)
+    cmd = `$python -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" $path`
+    return success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+end
+
 @testset "JuliaLibWrapping.jl" begin
     @testset "parse_abi_info" begin
         abi_info = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
@@ -351,16 +371,14 @@ end
             @test !occursin("RuntimeWarning", priv)
             @test occursin("_jlw_loaded.add(_jlw_this_pkg)", priv)
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 === nothing
                 # CI must exercise the Python wrapper; locally we allow skipping
                 # so contributors without python3 can still run the suite.
                 haskey(ENV, "CI") && error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             else
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
+                @test _ast_parse_ok(python3, facade_path)
             end
         end
 
@@ -421,11 +439,10 @@ end
                 @test occursin("\"bundle/lib/julia/*\"", pyproject)
                 @test occursin("\"bundle/artifacts/*/**/*\"", pyproject)
 
-                python3 = Sys.which("python3")
+                python3 = _find_python()
                 if python3 !== nothing
                     bp = joinpath(path, "libsimple", "_lowlevel.py")
-                    cmd = `$python3 -c "import ast; ast.parse(open('$bp').read())"`
-                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                    @test _ast_parse_ok(python3, bp)
                 end
             end
         end
@@ -1079,10 +1096,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1145,13 +1161,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing # noidiom: matches sibling testsets' style
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1210,13 +1224,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing # noidiom: matches sibling testsets' style
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cdict_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1275,13 +1287,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing # noidiom: matches sibling testsets' style
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cdict_int32_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1316,13 +1326,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_copt_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing # noidiom: matches sibling testsets' style
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "copt_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1421,13 +1429,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_nofree_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing # noidiom: matches sibling testsets' style
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1485,10 +1491,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1528,10 +1533,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1585,11 +1589,10 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_rawptr_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
                 bindings_path = joinpath(path, "rawptr_demo", "_lowlevel.py")
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1666,11 +1669,10 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_jlwstatus_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
                 bindings_path = joinpath(path, "demo", "_lowlevel.py")
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
