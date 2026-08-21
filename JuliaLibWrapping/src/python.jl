@@ -752,9 +752,9 @@ end
 
 Emit the "encode each string into a UTF-8+NUL-terminated buffer, then build
 a `ctypes` array of `POINTER(c_uint8)` pointing at each buffer" template
-shared, byte-for-byte, by [`_write_cstrarray_helpers`](@ref)'s `from_list`
+shared, byte-for-byte, by `_write_cstrarray_helpers`'s `from_list`
 (`list_var="bufs"`, `arr_var="arr"`, `source_expr="items"`, `item_var="s"`)
-and [`_write_cdict_helpers`](@ref)'s `from_dict` (`list_var="keys"`,
+and `_write_cdict_helpers`'s `from_dict` (`list_var="keys"`,
 `arr_var="karr"`, `source_expr="d.keys()"`, `item_var="k"`) — both build a
 `ctypes` argument out of an iterable of Python `str`s, differing only in
 what the iterable/result Python variables are named. `source_expr` is the
