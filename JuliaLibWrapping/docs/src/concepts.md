@@ -205,8 +205,12 @@ Two limits apply to that arrangement:
 - **Each runtime uses its own resources.** Two sysimages, two GC heaps, and
   two thread pools are resident at once.
 
-This behavior was measured on Linux. macOS and Windows use different library
-resolution rules and have not been tested.
+This behavior is tested on Linux and macOS, both of which resolve
+`libjulia` via a baked-in rpath (`$ORIGIN`/`@loader_path`). Windows has no
+rpath equivalent, and `juliac` does not yet implement SONAME salting there,
+so `privatize = true` has no effect on a Windows build — see
+[Platform support](@ref) for the Windows loader mechanism and the
+resulting privatization caveat.
 
 At import time, generated `_lowlevel.py` files record their package names in
 `sys._jlw_loaded_packages`. A non-privatized package emits a `RuntimeWarning`
