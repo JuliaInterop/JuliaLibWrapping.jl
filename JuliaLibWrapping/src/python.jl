@@ -937,6 +937,26 @@ function _write_bindings(
     println(f, "    override = os.environ.get(_LIBRARY_ENV_VAR)")
     println(f, "    if override:")
     println(f, "        return override")
+    if win_flat_fallback
+        # Widen the DLL search path FIRST, unconditionally — before the
+        # suffix search below, not only as a last resort on the not-found
+        # path. The library is normally found right next to the package
+        # (the loop a few lines down returns early), so if the widening
+        # only ran after that loop it would never execute on the real
+        # path: `ctypes.CDLL` would then fail to resolve the found
+        # library's dependency on libjulia*.dll (WinError 126). This is
+        # DLL-search-path-only — Julia's own bin/ is never itself searched
+        # as a candidate location for the wrapped library: a user's built
+        # library never lives there, and a same-named DLL that happened to
+        # live there would be silently (mis)loaded and fail confusingly
+        # later.
+        println(f, "    _julia_bin = _find_julia_bin()")
+        println(f, "    if _julia_bin is not None:")
+        println(f, "        if hasattr(os, \"add_dll_directory\"):")
+        println(f, "            os.add_dll_directory(_julia_bin)")
+        println(f, "        else:")
+        println(f, "            os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")")
+    end
     println(f, "    if sys.platform == \"win32\":")
     println(f, "        suffixes = (\".dll\",)")
     println(f, "    elif sys.platform == \"darwin\":")
@@ -968,21 +988,6 @@ function _write_bindings(
         println(f, "        tried.append(str(candidate))")
         println(f, "        if candidate.exists():")
         println(f, "            return str(candidate)")
-    end
-    if win_flat_fallback
-        # Nothing found next to the package: widen the DLL search path with
-        # a located Julia install so a subsequent `ctypes.CDLL` call can
-        # resolve libjulia*.dll. This is DLL-search-path-only — Julia's own
-        # bin/ is never itself searched as a candidate location for the
-        # wrapped library: a user's built library never lives there, and a
-        # same-named DLL that happened to be there would be silently loaded
-        # and fail confusingly later.
-        println(f, "    _julia_bin = _find_julia_bin()")
-        println(f, "    if _julia_bin is not None:")
-        println(f, "        if hasattr(os, \"add_dll_directory\"):")
-        println(f, "            os.add_dll_directory(_julia_bin)")
-        println(f, "        else:")
-        println(f, "            os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")")
     end
     println(f, "    raise FileNotFoundError(")
     println(f, "        f\"Could not locate shared library {_LIBRARY_BASENAME!r}. \"")

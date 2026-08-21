@@ -482,6 +482,15 @@ end
                 # DLL that happened to live there would be silently
                 # (mis)loaded and fail confusingly later.
                 @test !occursin("pathlib.Path(_julia_bin)", bindings)
+                # The widening runs BEFORE the suffix search loop, not only
+                # as a last resort right before the raise: the library is
+                # normally found right next to the package (the loop
+                # returns early), so widening the DLL search path only on
+                # the not-found path would never run on that real path —
+                # `ctypes.CDLL` would then fail to resolve the found
+                # library's own dependency on libjulia*.dll.
+                @test first(findfirst("_julia_bin = _find_julia_bin()", bindings)) <
+                    first(findfirst("for suffix in suffixes:", bindings))
                 # The runtime `sys.platform` suffix-selection logic is
                 # unchanged — it already handles all three platforms
                 # dynamically, independent of the build-time `os_kernel`.

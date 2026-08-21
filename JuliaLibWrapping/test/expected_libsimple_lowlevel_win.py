@@ -34,6 +34,12 @@ def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
     if override:
         return override
+    _julia_bin = _find_julia_bin()
+    if _julia_bin is not None:
+        if hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(_julia_bin)
+        else:
+            os.environ["PATH"] = _julia_bin + os.pathsep + os.environ.get("PATH", "")
     if sys.platform == "win32":
         suffixes = (".dll",)
     elif sys.platform == "darwin":
@@ -46,12 +52,6 @@ def _resolve_library_path():
         tried.append(str(candidate))
         if candidate.exists():
             return str(candidate)
-    _julia_bin = _find_julia_bin()
-    if _julia_bin is not None:
-        if hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(_julia_bin)
-        else:
-            os.environ["PATH"] = _julia_bin + os.pathsep + os.environ.get("PATH", "")
     raise FileNotFoundError(
         f"Could not locate shared library {_LIBRARY_BASENAME!r}. "
         f"Tried: {tried}. Set {_LIBRARY_ENV_VAR} to an explicit path."
