@@ -58,13 +58,6 @@ jobs:
           - package: JuliaLibWrapping
             version: 'nightly'
             experimental: true
-          # macOS/Windows are newly added to the matrix; keep them soft-fail
-          # until a green run confirms each OS end-to-end. Drop these once
-          # proven (see docs/superpowers/plans/2026-08-21-jlw-xplat.md, Task 3).
-          - os: macos-latest
-            experimental: true
-          - os: windows-latest
-            experimental: true
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
