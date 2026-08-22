@@ -37,12 +37,6 @@ jobs:
           - ubuntu-latest
         arch:
           - x64
-        exclude:
-          # JuliaLibWrapping's compat floor is julia = "1.13", which has no
-          # stable release yet, so setup-julia cannot resolve `min` for it.
-          # Re-enable this cell once 1.13.0 final ships.
-          - package: JuliaLibWrapping
-            version: 'min'
         include:
           - package: JuliaLibWrapping
             coverage_dirs: JuliaLibWrapping/src,JuliaLibWrapping/ext
@@ -61,6 +55,9 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
           project: ${{ matrix.package }}
+          # `min` must resolve while JuliaLibWrapping's compat floor (1.13) has only
+          # prereleases; harmless for JLWInterop (1.10 stable exists).
+          include-all-prereleases: true
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
         with:
