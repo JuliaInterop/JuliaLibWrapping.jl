@@ -1647,19 +1647,22 @@ end
             bindings = read(bindings_path, String)
             # No jlw_free* entrypoints in this fixture's `functions` list at
             # all, so nothing gets bound on `_lib` (argtypes/restype) for
-            # them. `CStrArray.free()` is still emitted unconditionally on
-            # the class (the bypass escape hatch is not gated on release-
-            # symbol presence) — its body references `_lib.jlw_free_strings`
-            # textually, but no `_lib.jlw_free_strings.(argtypes|restype)`
-            # line exists, so calling `.free()` here would raise an
-            # AttributeError at runtime, same as any other undeclared
-            # ctypes.CDLL symbol.
+            # them. `CStrArray.free()` is still emitted (the bypass escape
+            # hatch keeps the same API shape either way), but its body is a
+            # clear `RuntimeError` instead of a call to a symbol `_lib` never
+            # bound — calling it would otherwise raise a bare, confusing
+            # `AttributeError` at runtime.
             @test !occursin("_lib.jlw_free_strings.argtypes", bindings)
             @test !occursin("_lib.jlw_free_strings.restype", bindings)
             @test !occursin("_lib.jlw_free.argtypes", bindings)
             @test !occursin("_lib.jlw_free.restype", bindings)
             @test occursin("def free(self):", bindings)
-            @test occursin("_lib.jlw_free_strings(self.data, self.length)", bindings)
+            @test !occursin("_lib.jlw_free_strings(self.data, self.length)", bindings)
+            @test occursin(
+                "raise RuntimeError(\"this library does not export release entrypoints; " *
+                    "add JLWInterop.@export_release_entrypoints to the library\")",
+                bindings
+            )
             @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
             @test occursin("_lib.give_strs.restype = CStrArray", bindings)
 

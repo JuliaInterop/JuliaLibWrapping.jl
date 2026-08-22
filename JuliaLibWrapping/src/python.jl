@@ -832,7 +832,7 @@ function _emit_cstring_array(
     )
 end
 
-function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
+function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, release_present::Bool)
     # CStrArray shape — see `cstrarray_struct_info`. The `length`, `data`,
     # and `owned` field names are guaranteed by the recognizer, and `data`
     # is always Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like
@@ -841,7 +841,11 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
     # convention), so unlike CString's helpers there is no `as_bytes`/
     # from-buffer split — the caller-facing vocabulary is `list[str]` in
     # and out. `from_list` always builds a caller-owned (`owned=0`) value:
-    # the object never allocated it and must never free it.
+    # the object never allocated it and must never free it. `release_present`
+    # is `_release_symbols_present`'s verdict for the surrounding library —
+    # `.free()` stays present either way (stable API shape), but raises a
+    # clear `RuntimeError` instead of a bare `AttributeError` when the
+    # library never exported `jlw_free_strings`.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_list(cls, items):")
@@ -868,19 +872,27 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
     println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
     println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
     println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    println(f, "        if self.owned == 1:")
-    println(f, "            _lib.jlw_free_strings(self.data, self.length)")
-    return println(f, "            self.owned = 0")
+    if release_present
+        println(f, "        if self.owned == 1:")
+        println(f, "            _lib.jlw_free_strings(self.data, self.length)")
+        return println(f, "            self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
 end
 
-function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
+function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
     # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`,
     # `values`, and `owned` field names are guaranteed by the recognizer;
     # `keys` is always Ptr{CString} (like CStrArray's `data`), `values` is
     # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
     # `values` is `d.values()` boxed into a fresh ctypes array on the way
     # in, and read back element-by-element on the way out. `from_dict`
-    # always builds a caller-owned (`owned=0`) value.
+    # always builds a caller-owned (`owned=0`) value. `release_present` — see
+    # the identical parameter on `_write_cstrarray_helpers`.
     ctype = cdinfo.value_ctype
     println(f, "")
     println(f, "    @classmethod")
@@ -908,10 +920,17 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
     println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
     println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
     println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    println(f, "        if self.owned == 1:")
-    println(f, "            _lib.jlw_free_strings(self.keys, self.length)")
-    println(f, "            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))")
-    return println(f, "            self.owned = 0")
+    if release_present
+        println(f, "        if self.owned == 1:")
+        println(f, "            _lib.jlw_free_strings(self.keys, self.length)")
+        println(f, "            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))")
+        return println(f, "            self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
 end
 
 function _write_copt_helpers(f::IO, coinfo)
@@ -953,6 +972,10 @@ function _write_bindings(
     # only applies to the flat layout: a bundle already carries its own
     # runtime (see the `bundle/bin` search directory below).
     win_flat_fallback = os_kernel === :windows && isnothing(dest.bundle_subdir)
+    # Threaded into `_write_cstrarray_helpers`/`_write_cdict_helpers` so their
+    # `.free()` method can raise a clear error instead of a bare
+    # AttributeError when the library never exported the release entrypoints.
+    release_present = _release_symbols_present(abi_info)
 
     println(f, "\"\"\"Auto-generated by JuliaLibWrapping. Do not edit by hand.\"\"\"")
     println(f, "import ctypes")
@@ -1149,11 +1172,11 @@ function _write_bindings(
             elseif cstrarray_struct_info(type, typeinfo)
                 # Emit CStrArray conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
-                _write_cstrarray_helpers(f, cs_classname)
+                _write_cstrarray_helpers(f, cs_classname, release_present)
             elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
-                _write_cdict_helpers(f, cdinfo, cs_classname)
+                _write_cdict_helpers(f, cdinfo, cs_classname, release_present)
             elseif !isnothing(coinfo)
                 # Emit COpt conversion helpers.
                 _write_copt_helpers(f, coinfo)
