@@ -17,6 +17,7 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     Nothing,
+    CString,
     CStrArray,
 )
 
@@ -30,4 +31,4 @@ def give_strs():
     _lowlevel._lib.jlw_free_strings(_result.data, _result.length)
     return _out
 
-__all__ = ["Nothing", "CStrArray", "take_strs", "give_strs"]
+__all__ = ["Nothing", "CString", "CStrArray", "take_strs", "give_strs"]

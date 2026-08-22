@@ -2,14 +2,14 @@ flowchart LR
     subgraph CStrArray["CStrArray — 16 bytes"]
         direction TB
         CSA0["offset 0  ·  length : Int64"]
-        CSA8["offset 8  ·  data : Ptr{Ptr{UInt8}}"]
+        CSA8["offset 8  ·  data : Ptr{CString}"]
         CSA0 --> CSA8
     end
 
     subgraph CDict["CDict{V} — 24 bytes"]
         direction TB
         CD0["offset 0   ·  length : Int64"]
-        CD8["offset 8   ·  keys : Ptr{Ptr{UInt8}}"]
+        CD8["offset 8   ·  keys : Ptr{CString}"]
         CD16["offset 16  ·  values : Ptr{V}"]
         CD0 --> CD8 --> CD16
     end

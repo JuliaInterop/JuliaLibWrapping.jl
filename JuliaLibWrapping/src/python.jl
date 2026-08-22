@@ -352,13 +352,12 @@ end
 
 Recognize the JLWInterop `CStrArray` shape: a struct whose name starts with
 `"CStrArray"`, with exactly two fields named `length` (a signed primitive
-integer) and `data` (a pointer-to-pointer to `UInt8`, i.e. `Ptr{Ptr{UInt8}}`
-— one level of indirection deeper than [`cstring_struct_info`](@ref)'s
-single `Ptr{UInt8}`). Returns `true` on a match, `false` otherwise. Field
-order may be either `length, data` or `data, length`. Recognition is by
-name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale);
-the name is only the first gate — the pointer-of-pointer chain down to its
-`UInt8` leaf is walked and checked as well.
+integer) and `data` (a pointer to the `CString` struct, i.e.
+`Ptr{CString}` — recognized via [`cstring_struct_info`](@ref) applied to the
+pointee). Returns `true` on a match, `false` otherwise. Field order may be
+either `length, data` or `data, length`. Recognition is by name + full shape
+(see [`is_jlwstatus_struct`](@ref) for the rationale); the name is only the
+first gate — the pointee is walked and checked as well.
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CStrArray") || return false
@@ -366,13 +365,11 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
     isnothing(m) && return false
     length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc && length_type.signed || return false
-    outer_type = typeinfo[m.data.type]
-    outer_type isa PointerDesc || return false
-    inner_type = typeinfo[outer_type.pointee_type]
-    inner_type isa PointerDesc || return false
-    elem_type = typeinfo[inner_type.pointee_type]
-    elem_type isa PrimitiveTypeDesc || return false
-    elem_type.name == "UInt8" || return false
+    data_type = typeinfo[m.data.type]
+    data_type isa PointerDesc || return false
+    pointee = typeinfo[data_type.pointee_type]
+    pointee isa StructDesc || return false
+    cstring_struct_info(pointee, typeinfo) || return false
     return true
 end
 
@@ -381,12 +378,13 @@ end
 
 Recognize the JLWInterop `CDict{V}` shape: a struct whose name starts with
 `"CDict"`, with exactly three fields named `length` (a primitive integer),
-`keys` (a pointer-to-pointer to `UInt8`, i.e. `Ptr{Ptr{UInt8}}` — the same
-chain as [`cstrarray_struct_info`](@ref)'s `data`), and `values` (a pointer
-to a primitive type recognized by [`pytypes`](@ref)). Field order may be
-any permutation of the three. Returns `(; value_ctype)` on a match (the
-`ctypes` expression for `V`), otherwise `nothing`. Recognition is by name +
-full shape (see [`is_jlwstatus_struct`](@ref) for the rationale).
+`keys` (a pointer to the `CString` struct, i.e. `Ptr{CString}` — the
+same shape as [`cstrarray_struct_info`](@ref)'s `data`, recognized via
+[`cstring_struct_info`](@ref) applied to the pointee), and `values` (a
+pointer to a primitive type recognized by [`pytypes`](@ref)). Field order
+may be any permutation of the three. Returns `(; value_ctype)` on a match
+(the `ctypes` expression for `V`), otherwise `nothing`. Recognition is by
+name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale).
 """
 function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CDict") || return nothing
@@ -395,19 +393,37 @@ function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
     length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc || return nothing
     (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
-    keys_outer = typeinfo[m.keys.type]
-    keys_outer isa PointerDesc || return nothing
-    keys_inner = typeinfo[keys_outer.pointee_type]
-    keys_inner isa PointerDesc || return nothing
-    keys_leaf = typeinfo[keys_inner.pointee_type]
-    keys_leaf isa PrimitiveTypeDesc || return nothing
-    keys_leaf.name == "UInt8" || return nothing
+    keys_type = typeinfo[m.keys.type]
+    keys_type isa PointerDesc || return nothing
+    keys_pointee = typeinfo[keys_type.pointee_type]
+    keys_pointee isa StructDesc || return nothing
+    cstring_struct_info(keys_pointee, typeinfo) || return nothing
     values_type = typeinfo[m.values.type]
     values_type isa PointerDesc || return nothing
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
     values_pointee.name in keys(pytypes) || return nothing
     return (; value_ctype = pytypes[values_pointee.name])
+end
+
+"""
+    _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
+
+Return the mangled Python `ctypes.Structure` class name for the
+`CString` struct pointed to by `desc`'s field named `fieldname`
+(`"data"` for [`cstrarray_struct_info`](@ref), `"keys"` for
+[`cdict_struct_info`](@ref)). Callers must have already confirmed the field
+recognizes as `Ptr{CString}`. `typedict` already carries the pointee's class
+name by the time this is called — every struct is pre-mangled, in
+declaration order, before `_write_bindings` walks `typeinfo`.
+"""
+function _cstring_pointee_classname(
+        desc::StructDesc, fieldname::String,
+        typeinfo::OrderedDict{Int, TypeDesc}, typedict::Dict{Int, String}
+    )
+    field = only(f for f in desc.fields if f.name == fieldname)
+    pointee_id = (typeinfo[field.type]::PointerDesc).pointee_type
+    return typedict[pointee_id]
 end
 
 """
@@ -769,66 +785,70 @@ function _write_cstring_helpers(f::IO)
 end
 
 """
-    _emit_encoded_str_ptrarray(f, list_var, arr_var, source_expr, item_var)
+    _emit_cstring_array(f, list_var, arr_var, source_expr, item_var, cstring_classname)
 
-Emit the "encode each string into a UTF-8+NUL-terminated buffer, then build
-a `ctypes` array of `POINTER(c_uint8)` pointing at each buffer" template
-shared, byte-for-byte, by `_write_cstrarray_helpers`'s `from_list`
-(`list_var="bufs"`, `arr_var="arr"`, `source_expr="items"`, `item_var="s"`)
-and `_write_cdict_helpers`'s `from_dict` (`list_var="keys"`,
-`arr_var="karr"`, `source_expr="d.keys()"`, `item_var="k"`) — both build a
-`ctypes` argument out of an iterable of Python `str`s, differing only in
-what the iterable/result Python variables are named. `source_expr` is the
-Python expression iterated to produce raw strings; `item_var` names the
-loop variable used in the outer comprehension only — the inner
-per-buffer comprehension's loop variable is always `b`, so both call
-sites emit identical text apart from the substituted names.
+Emit the "encode each string into a raw (non-NUL-terminated) buffer, then
+build a `ctypes` array of `<cstring_classname>` structs, each holding that
+buffer's length and a pointer into it" template shared, byte-for-byte, by
+`_write_cstrarray_helpers`'s `from_list` (`list_var="bufs"`, `arr_var="arr"`,
+`source_expr="items"`, `item_var="s"`) and `_write_cdict_helpers`'s
+`from_dict` (`list_var="keys"`, `arr_var="karr"`, `source_expr="d.keys()"`,
+`item_var="k"`) — both build a `ctypes` argument out of an iterable of
+Python `str`s, differing only in what the iterable/result Python variables
+are named. `source_expr` is the Python expression iterated to produce raw
+strings; `item_var` names the loop variable used in the outer comprehension
+only — the inner per-buffer comprehension's loop variable is always `b`, so
+both call sites emit identical text apart from the substituted names.
+Embedded NUL bytes in the source strings survive intact: each element's
+`length` is the exact byte count, not a NUL-terminator search.
 """
-function _emit_encoded_str_ptrarray(
+function _emit_cstring_array(
         f::IO, list_var::AbstractString, arr_var::AbstractString,
-        source_expr::AbstractString, item_var::AbstractString
+        source_expr::AbstractString, item_var::AbstractString,
+        cstring_classname::AbstractString
     )
     println(
-        f, "        ", list_var, " = [", item_var, ".encode(\"utf-8\") + b\"\\x00\" for ",
+        f, "        ", list_var, " = [", item_var, ".encode(\"utf-8\") for ",
         item_var, " in ", source_expr, "]"
     )
-    println(f, "        ", arr_var, " = (ctypes.POINTER(ctypes.c_uint8) * len(", list_var, "))(")
+    println(f, "        ", arr_var, " = (", cstring_classname, " * len(", list_var, "))(")
     return println(
-        f, "            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ",
-        "ctypes.POINTER(ctypes.c_uint8)) for b in ", list_var, "])"
+        f, "            *[", cstring_classname, "(length=len(b), data=ctypes.cast(",
+        "ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in ",
+        list_var, "])"
     )
 end
 
-function _write_cstrarray_helpers(f::IO)
+function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
     # CStrArray shape — see `cstrarray_struct_info`. The `length` and `data`
     # field names are guaranteed by the recognizer, and `data` is always
-    # Ptr{Ptr{UInt8}} / ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)).
-    # Like CString this emits no numpy dependency; helpers use only
-    # `ctypes`. `data` is Julia-allocated memory (own-out convention), so
-    # unlike CString's helpers there is no `as_bytes`/from-buffer split —
-    # the caller-facing vocabulary is `list[str]` in and out.
+    # Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like CString this
+    # emits no numpy dependency; helpers use only `ctypes`. `data` is
+    # Julia-allocated memory (own-out convention), so unlike CString's
+    # helpers there is no `as_bytes`/from-buffer split — the caller-facing
+    # vocabulary is `list[str]` in and out.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_list(cls, items):")
     println(f, "        if not isinstance(items, (list, tuple)):")
     println(f, "            raise TypeError(\"expected a list of str\")")
-    _emit_encoded_str_ptrarray(f, "bufs", "arr", "items", "s")
-    println(f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))))")
+    _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
+    println(f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(", cstring_classname, ")))")
     println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
     println(f, "        return obj")
     println(f, "")
     println(f, "    def as_list(self):")
     println(f, "        out = []")
     println(f, "        for i in range(self.length):")
-    println(f, "            p = ctypes.cast(self.data[i], ctypes.c_char_p)")
-    println(f, "            out.append(p.value.decode(\"utf-8\"))")
+    println(f, "            e = self.data[i]")
+    println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
     return println(f, "        return out")
 end
 
-function _write_cdict_helpers(f::IO, cdinfo)
+function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
     # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`, and
     # `values` field names are guaranteed by the recognizer; `keys` is
-    # always Ptr{Ptr{UInt8}} (like CStrArray's `data`), `values` is
+    # always Ptr{CString} (like CStrArray's `data`), `values` is
     # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
     # `values` is `d.values()` boxed into a fresh ctypes array on the way
     # in, and read back element-by-element on the way out.
@@ -836,10 +856,10 @@ function _write_cdict_helpers(f::IO, cdinfo)
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_dict(cls, d):")
-    _emit_encoded_str_ptrarray(f, "keys", "karr", "d.keys()", "k")
+    _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname)
     println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
     println(f, "        obj = cls(length=len(keys),")
-    println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),")
+    println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
     println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")))")
     println(f, "        obj._buffer = (keys, karr, varr)")
     println(f, "        return obj")
@@ -847,7 +867,8 @@ function _write_cdict_helpers(f::IO, cdinfo)
     println(f, "    def as_dict(self):")
     println(f, "        out = {}")
     println(f, "        for i in range(self.length):")
-    println(f, "            k = ctypes.cast(self.keys[i], ctypes.c_char_p).value.decode(\"utf-8\")")
+    println(f, "            e = self.keys[i]")
+    println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
     println(f, "            out[k] = self.values[i]")
     return println(f, "        return out")
 end
@@ -1086,10 +1107,12 @@ function _write_bindings(
                 _write_cstring_helpers(f)
             elseif cstrarray_struct_info(type, typeinfo)
                 # Emit CStrArray conversion helpers.
-                _write_cstrarray_helpers(f)
+                cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
+                _write_cstrarray_helpers(f, cs_classname)
             elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
-                _write_cdict_helpers(f, cdinfo)
+                cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
+                _write_cdict_helpers(f, cdinfo, cs_classname)
             elseif !isnothing(coinfo)
                 # Emit COpt conversion helpers.
                 _write_copt_helpers(f, coinfo)

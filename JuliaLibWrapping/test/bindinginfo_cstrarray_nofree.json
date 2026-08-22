@@ -26,26 +26,46 @@
       "pointee_type_id": 1
     },
     {
-      "kind": "pointer",
-      "name": "Ptr{Ptr{UInt8}}",
+      "kind": "primitive",
+      "name": "Int32",
       "id": 4,
-      "pointee_type_id": 3
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "CString",
+      "id": 5,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString}",
+      "id": 6,
+      "pointee_type_id": 5
     },
     {
       "kind": "struct",
       "name": "CStrArray",
-      "id": 5,
+      "id": 7,
       "size": 16,
       "fields": [
         { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     },
     {
       "kind": "struct",
       "name": "Nothing",
-      "id": 6,
+      "id": 8,
       "size": 0,
       "fields": [],
       "alignment": 1
@@ -53,8 +73,8 @@
     {
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 7,
-      "pointee_type_id": 6
+      "id": 9,
+      "pointee_type_id": 8
     }
   ],
   "functions": [
@@ -62,12 +82,12 @@
       "returns": { "type_id": 2 },
       "name": "take_strs(a::CStrArray)",
       "arguments": [
-        { "name": "a", "type_id": 5 }
+        { "name": "a", "type_id": 7 }
       ],
       "symbol": "take_strs"
     },
     {
-      "returns": { "type_id": 5 },
+      "returns": { "type_id": 7 },
       "name": "give_strs()",
       "arguments": [],
       "symbol": "give_strs"

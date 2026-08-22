@@ -77,7 +77,7 @@ the rest of this design deliberately avoids.
 ```julia
 struct CStrArray
     length::Int64
-    data::Ptr{Ptr{UInt8}}     # each element NUL-terminated UTF-8
+    data::Ptr{CString}     # each element a length-prefixed CString
 end
 ```
 
@@ -89,7 +89,7 @@ end
   into a fresh `Vector{String}`; never frees `a.data` or the per-string
   buffers. The Python side builds the carrier with `CStrArray.from_list`,
   which keeps `(bufs, arr)` alive on `obj._buffer`.
-- **Own-out** (`CStrArray(v::Vector{String})`): `Libc.malloc`s the pointer
+- **Own-out** (`CStrArray(v::Vector{String})`): `Libc.malloc`s the `CString`
   array and each per-string buffer. The generated Python wrapper reads the
   result with `.as_list()`, then releases the buffers with
   `_lowlevel._lib.jlw_free_strings(result.data, result.length)`.
@@ -103,7 +103,7 @@ CStrArray
 ```julia
 struct CDict{V}
     length::Int64
-    keys::Ptr{Ptr{UInt8}}
+    keys::Ptr{CString}
     values::Ptr{V}
 end
 ```
@@ -120,7 +120,7 @@ call site rather than compiling something unsound.
 - **Borrow-in** (`Base.Dict{String,V}(d::CDict{V})`): copies keys and values
   out into a fresh `Dict`; never frees `d.keys`, the per-key buffers, or
   `d.values`. The Python side builds the carrier with `CDict.from_dict`.
-- **Own-out** (`CDict(d::Dict{String,V})`): `Libc.malloc`s the key pointer
+- **Own-out** (`CDict(d::Dict{String,V})`): `Libc.malloc`s the key `CString`
   array, each per-key buffer, **and** the value array — two separate
   allocations. The generated Python wrapper reads the result with
   `.as_dict()`, then releases **both**: the keys via

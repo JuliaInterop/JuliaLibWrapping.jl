@@ -56,21 +56,58 @@ _jlw_loaded.add(_jlw_this_pkg)
 class Nothing(ctypes.Structure):
     _fields_ = []
 
+class CString(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int32),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
+    ]
+
+    @classmethod
+    def from_str(cls, s):
+        """Return a CString whose buffer holds the UTF-8 encoding of `s`.
+
+        Allocates a fresh ctypes buffer and copies the bytes into it; the
+        returned object holds a reference to that buffer, so the caller
+        must keep it alive for the duration of any C call that uses it."""
+        if not isinstance(s, str):
+            raise TypeError(f"expected str, got {type(s).__name__}")
+        return cls.from_bytes(s.encode("utf-8"))
+
+    @classmethod
+    def from_bytes(cls, b):
+        """Return a CString whose buffer holds a copy of the bytes `b`."""
+        if not isinstance(b, (bytes, bytearray)):
+            raise TypeError(f"expected bytes-like, got {type(b).__name__}")
+        n = len(b)
+        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()
+        obj = cls(length=n,
+                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
+        obj._buffer = buf
+        return obj
+
+    def as_bytes(self):
+        """Return a copy of the underlying bytes as a Python `bytes` object."""
+        return ctypes.string_at(self.data, self.length)
+
+    def as_str(self):
+        """Return the underlying bytes decoded as UTF-8."""
+        return self.as_bytes().decode("utf-8")
+
 class CDict_Int32(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("keys", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+        ("keys", ctypes.POINTER(CString)),
         ("values", ctypes.POINTER(ctypes.c_int32)),
     ]
 
     @classmethod
     def from_dict(cls, d):
-        keys = [k.encode("utf-8") + b"\x00" for k in d.keys()]
-        karr = (ctypes.POINTER(ctypes.c_uint8) * len(keys))(
-            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in keys])
+        keys = [k.encode("utf-8") for k in d.keys()]
+        karr = (CString * len(keys))(
+            *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
         varr = (ctypes.c_int32 * len(keys))(*d.values())
         obj = cls(length=len(keys),
-                  keys=ctypes.cast(karr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+                  keys=ctypes.cast(karr, ctypes.POINTER(CString)),
                   values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
         obj._buffer = (keys, karr, varr)
         return obj
@@ -78,7 +115,8 @@ class CDict_Int32(ctypes.Structure):
     def as_dict(self):
         out = {}
         for i in range(self.length):
-            k = ctypes.cast(self.keys[i], ctypes.c_char_p).value.decode("utf-8")
+            e = self.keys[i]
+            k = ctypes.string_at(e.data, e.length).decode("utf-8")
             out[k] = self.values[i]
         return out
 
@@ -95,6 +133,6 @@ def give_dict_i32():
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None
 
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.c_int64]
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
 _lib.jlw_free_strings.restype = None
 
