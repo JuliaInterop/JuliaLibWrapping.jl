@@ -173,13 +173,11 @@ JLWInterop.@export_release_entrypoints
 This emits two `@ccallable` functions — `jlw_free` and `jlw_free_strings` —
 that the generated Python façade calls to release Julia-malloc'd buffers (see
 [Ownership contract](@ref) above). The macro-emitted `@ccallable`s reach the
-ABI JSON exactly like a hand-written one (confirmed in
-[`design/spike-notes.md`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/blob/main/design/spike-notes.md)),
-so no extra emitter-side plumbing is needed to make them visible.
+ABI JSON exactly like any other `@ccallable`-annotated function, so no extra
+emitter-side plumbing is needed to make them visible.
 
-Without it, the ABI JSON carries no ownership metadata at all (see
-`design/spike-notes.md` again — this is a fundamental limitation of a pure
-C-ABI description, not a bug), so
+Without it, the ABI JSON carries no ownership metadata at all — this is a
+fundamental limitation of a pure C-ABI description, not a bug — so
 [`_release_symbols_present`](@ref JuliaLibWrapping._release_symbols_present)
 cannot find `jlw_free`/`jlw_free_strings` among the library's exported
 symbols. Rather than emit a façade call to a symbol that does not exist, the

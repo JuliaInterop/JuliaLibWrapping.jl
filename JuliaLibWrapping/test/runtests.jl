@@ -749,7 +749,7 @@ end
         )
         cd = abi.typeinfo[findtype(abi.typeinfo, "CDict{Float64}")]
         info = cdinfo(cd, abi.typeinfo)
-        @test info !== nothing # noidiom: matches sibling testsets' style
+        @test !isnothing(info)
         @test info.value_ctype == "ctypes.c_double"
 
         # Hand-built rejections.
@@ -815,12 +815,12 @@ end
                 ]
             ),
         )
-        @test cdinfo(ti[11], ti) !== nothing # noidiom: matches sibling testsets' style
-        @test cdinfo(ti[12], ti) === nothing # noidiom: matches sibling testsets' style — wrong name prefix
-        @test cdinfo(ti[13], ti) === nothing # noidiom: matches sibling testsets' style — keys is single-indirection pointer
-        @test cdinfo(ti[14], ti) === nothing # noidiom: matches sibling testsets' style — wrong field names
-        @test cdinfo(ti[15], ti) === nothing # noidiom: matches sibling testsets' style — missing `values` field
-        @test cdinfo(ti[18], ti) === nothing # noidiom: matches sibling testsets' style — values pointee not in pytypes
+        @test !isnothing(cdinfo(ti[11], ti))
+        @test isnothing(cdinfo(ti[12], ti)) # wrong name prefix
+        @test isnothing(cdinfo(ti[13], ti)) # keys is single-indirection pointer
+        @test isnothing(cdinfo(ti[14], ti)) # wrong field names
+        @test isnothing(cdinfo(ti[15], ti)) # missing `values` field
+        @test isnothing(cdinfo(ti[18], ti)) # values pointee not in pytypes
 
         # Field order may be any permutation.
         permuted = StructDesc(
@@ -830,7 +830,7 @@ end
                 FieldDesc("keys", 8, 8),
             ]
         )
-        @test cdinfo(permuted, ti) !== nothing # noidiom: matches sibling testsets' style
+        @test !isnothing(cdinfo(permuted, ti))
     end
 
     @testset "copt_struct_info" begin
@@ -845,7 +845,7 @@ end
         )
         co = abi.typeinfo[findtype(abi.typeinfo, "COpt{Float64}")]
         info = coinfo(co, abi.typeinfo)
-        @test info !== nothing # noidiom: matches sibling testsets' style
+        @test !isnothing(info)
         @test info.value_ctype == "ctypes.c_double"
 
         # Hand-built rejections.
@@ -893,12 +893,12 @@ end
                 ]
             ),
         )
-        @test coinfo(ti[5], ti) !== nothing # noidiom: matches sibling testsets' style
-        @test coinfo(ti[6], ti) === nothing # noidiom: matches sibling testsets' style — wrong name prefix
-        @test coinfo(ti[7], ti) === nothing # noidiom: matches sibling testsets' style — has_value is Int64, not Int32
-        @test coinfo(ti[8], ti) === nothing # noidiom: matches sibling testsets' style — wrong field names
-        @test coinfo(ti[9], ti) === nothing # noidiom: matches sibling testsets' style — value pointee not in pytypes
-        @test coinfo(ti[10], ti) === nothing # noidiom: matches sibling testsets' style — too many fields
+        @test !isnothing(coinfo(ti[5], ti))
+        @test isnothing(coinfo(ti[6], ti)) # wrong name prefix
+        @test isnothing(coinfo(ti[7], ti)) # has_value is Int64, not Int32
+        @test isnothing(coinfo(ti[8], ti)) # wrong field names
+        @test isnothing(coinfo(ti[9], ti)) # value pointee not in pytypes
+        @test isnothing(coinfo(ti[10], ti)) # too many fields
 
         # Field order may be either way.
         flipped = StructDesc(
@@ -907,19 +907,18 @@ end
                 FieldDesc("has_value", 1, 0),
             ]
         )
-        @test coinfo(flipped, ti) !== nothing # noidiom: matches sibling testsets' style
+        @test !isnothing(coinfo(flipped, ti))
     end
 
     @testset "_is_void_struct" begin
-        # Fix rounds 1 + 2 (Task 10 findings): juliac's ABI JSON represents
-        # `Cvoid` as a zero-field `struct Nothing`, not a PrimitiveTypeDesc
-        # named "Cvoid" — in EVERY position: a bare return (round 1, routed
-        # to a Python `None` restype instead of a real, zero-size,
-        # libffi-incompatible ctypes.Structure class) AND a pointer's
-        # pointee (round 2: `Ptr{Nothing}` routed to `ctypes.c_void_p`
-        # instead of `ctypes.POINTER(Nothing)`, which ctypes refuses to
-        # accept a `c_void_p` argument for). This predicate is the shared
-        # gate both call sites use.
+        # juliac's ABI JSON represents `Cvoid` as a zero-field `struct
+        # Nothing`, not a PrimitiveTypeDesc named "Cvoid" — in EVERY
+        # position: a bare return (routed to a Python `None` restype
+        # instead of a real, zero-size, libffi-incompatible
+        # ctypes.Structure class) AND a pointer's pointee (`Ptr{Nothing}`
+        # routed to `ctypes.c_void_p` instead of `ctypes.POINTER(Nothing)`,
+        # which ctypes refuses to accept a `c_void_p` argument for). This
+        # predicate is the shared gate both call sites use.
         is_void = JuliaLibWrapping._is_void_struct
         @test is_void(StructDesc("Nothing", 0, 1, FieldDesc[])) === true
         # Name alone is not enough: a real struct literally named Nothing
@@ -938,9 +937,9 @@ end
     end
 
     @testset "mangle_python! Ptr{Nothing} collapse" begin
-        # Fix round 2: a PointerDesc whose pointee is the zero-field
-        # `Nothing` struct (juliac's real representation of `Ptr{Cvoid}`,
-        # per `_is_void_struct`) must collapse to `ctypes.c_void_p`, same
+        # A PointerDesc whose pointee is the zero-field `Nothing` struct
+        # (juliac's real representation of `Ptr{Cvoid}`, per
+        # `_is_void_struct`) must collapse to `ctypes.c_void_p`, same
         # as the pre-existing `Ptr{Cvoid}`-as-primitive special case —
         # NOT render as `ctypes.POINTER(Nothing)`, which is what broke
         # `jlw_free`'s argtype (ctypes refuses a `c_void_p` argument where
@@ -968,12 +967,11 @@ end
     end
 
     @testset "mangle_python! Nothing type_id sweep" begin
-        # Advisory-review follow-up to fix round 2: pin behavior at EVERY
-        # position `mangle_python!` can reach the zero-field `Nothing`
-        # struct type_id from, not just the two fixed call sites (bare
-        # return, pointer pointee) — so a gap is a failing assertion, not
-        # a silent assumption. See `_is_void_struct`'s docstring for the
-        # per-position rationale.
+        # Pins behavior at EVERY position `mangle_python!` can reach the
+        # zero-field `Nothing` struct type_id from, not just the two fixed
+        # call sites (bare return, pointer pointee) — so a gap is a
+        # failing assertion, not a silent assumption. See
+        # `_is_void_struct`'s docstring for the per-position rationale.
 
         # Struct FIELD typed as a POINTER to Nothing (Ptr{Cvoid} field) —
         # this goes through the same fixed PointerDesc branch as an
@@ -1117,13 +1115,13 @@ end
             # below for the argtypes/restype shape).
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
-            # Fix rounds 1 + 2 (Task 10 findings): juliac's ABI JSON
-            # represents `Cvoid` as a zero-field `Nothing` StructDesc, not
-            # a PrimitiveTypeDesc, in EVERY position — round 1 fixed the
-            # bare-return case, round 2 the `Ptr{Nothing}`-argument case.
-            # Both regressions would silently reintroduce
-            # `ffi_prep_cif failed` / `TypeError: expected LP_Nothing
-            # instance instead of c_void_p` at the first real call.
+            # juliac's ABI JSON represents `Cvoid` as a zero-field
+            # `Nothing` StructDesc, not a PrimitiveTypeDesc, in EVERY
+            # position — both the bare-return case and the
+            # `Ptr{Nothing}`-argument case. Mishandling either would
+            # silently reintroduce `ffi_prep_cif failed` / `TypeError:
+            # expected LP_Nothing instance instead of c_void_p` at the
+            # first real call.
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
@@ -1146,7 +1144,7 @@ end
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
-            if python3 !== nothing # noidiom: matches sibling testsets' style
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
@@ -1186,8 +1184,8 @@ end
             # below for the argtypes/restype shape).
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
-            # Fix rounds 1 + 2 (Task 10 findings): see the identical comment
-            # in the "CStrArray vocabulary" testset above. CDict's owning
+            # See the identical comment in the "CStrArray vocabulary"
+            # testset above. CDict's owning
             # return frees `values` via `jlw_free(ctypes.cast(...,
             # ctypes.c_void_p))`, so a regression here would silently
             # reintroduce `TypeError: expected LP_Nothing instance instead
@@ -1211,7 +1209,7 @@ end
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
-            if python3 !== nothing # noidiom: matches sibling testsets' style
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cdict_demo", "_facade.py")
@@ -1224,15 +1222,14 @@ end
     end
 
     @testset "CDict{Int32} vocabulary" begin
-        # Advisory-review follow-up to fix round 2: proves `value_ctype`/
-        # `value_dtype_name` parameterization (and the generated
-        # from_dict/as_dict codegen that substitutes them) varies
-        # correctly for a value type OTHER than the Float64 exercised by
-        # the main "CDict vocabulary" testset. Field offsets are identical
-        # to the Float64 fixture — `values` is a pointer field, so its own
-        # size never depends on the pointee's size. Also re-exercises the
-        # jlw_free `ctypes.c_void_p` argtype fix (round 2) on a second,
-        # independent fixture.
+        # Proves `value_ctype`/`value_dtype_name` parameterization (and
+        # the generated from_dict/as_dict codegen that substitutes them)
+        # varies correctly for a value type OTHER than the Float64
+        # exercised by the main "CDict vocabulary" testset. Field offsets
+        # are identical to the Float64 fixture — `values` is a pointer
+        # field, so its own size never depends on the pointee's size.
+        # Also re-exercises the jlw_free `ctypes.c_void_p` argtype
+        # handling on a second, independent fixture.
         abi = read_abi_info("bindinginfo_cdict_int32.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_int32_demo", "libcdicti32")
@@ -1276,7 +1273,7 @@ end
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
-            if python3 !== nothing # noidiom: matches sibling testsets' style
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cdict_int32_demo", "_facade.py")
@@ -1317,7 +1314,7 @@ end
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
-            if python3 !== nothing # noidiom: matches sibling testsets' style
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "copt_demo", "_facade.py")
@@ -1378,7 +1375,7 @@ end
     end
 
     @testset "CStrArray without release symbols" begin
-        # Task 9 gate: a library that defines the CStrArray carrier but has
+        # A library that defines the CStrArray carrier but has
         # not exported the release entrypoints (no jlw_free/jlw_free_strings
         # among its functions) must not have its owning return auto-wrapped
         # — that would emit a call to a symbol the shared library does not
@@ -1422,7 +1419,7 @@ end
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
-            if python3 !== nothing # noidiom: matches sibling testsets' style
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
