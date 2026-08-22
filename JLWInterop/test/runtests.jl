@@ -285,6 +285,22 @@ using Test
         @test Vector{String}(CStrArray(String[])) == String[]
     end
 
+    @testset "CStrArray owned flag" begin
+        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        a = CStrArray(["x", "y"])
+        @test fieldtype(CStrArray, :owned) === Int32
+        @test a.owned === Int32(1)
+        @test Vector{String}(a) == ["x", "y"]   # borrow-in ignores owned, copies regardless
+        JLWInterop._free_strings(a.data, a.length)
+
+        # A hand-built borrowed (owned=0) CStrArray round-trips identically —
+        # borrow-in never frees and never branches on the flag.
+        a2 = CStrArray(["p", "q"])
+        borrowed = CStrArray(a2.length, a2.data, Int32(0))
+        @test Vector{String}(borrowed) == ["p", "q"]
+        JLWInterop._free_strings(a2.data, a2.length)
+    end
+
     @testset "CDict round-trip and allowlist" begin
         d = Dict("a" => 1.5, "b" => -2.0, "c\0d" => 3.0, "" => 4.0)
         c = CDict(d)
@@ -296,6 +312,23 @@ using Test
         JLWInterop._free_strings(c.keys, c.length)
         Libc.free(c.values)
         @test_throws MethodError CDict(Dict("x" => 1.0im))   # ComplexF64 not allowlisted
+    end
+
+    @testset "CDict owned flag" begin
+        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        c = CDict(Dict("a" => 1.5))
+        @test fieldtype(CDict{Float64}, :owned) === Int32
+        @test c.owned === Int32(1)
+        @test Dict{String, Float64}(c) == Dict("a" => 1.5)   # borrow-in ignores owned, copies regardless
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
+
+        # A hand-built borrowed (owned=0) CDict round-trips identically.
+        c2 = CDict(Dict("b" => 2.5))
+        borrowed = CDict{Float64}(c2.length, c2.keys, c2.values, Int32(0))
+        @test Dict{String, Float64}(borrowed) == Dict("b" => 2.5)
+        JLWInterop._free_strings(c2.keys, c2.length)
+        Libc.free(c2.values)
     end
 
     @testset "COpt" begin

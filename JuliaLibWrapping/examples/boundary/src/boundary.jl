@@ -26,4 +26,16 @@ Base.@ccallable function maybe_sqrt(o::COpt{Float64})::COpt{Float64}
     return COpt(sqrt(x))
 end
 
+# Pass-through of a borrowed argument: `a` arrives with `owned == 0` and is
+# returned unchanged, still `owned == 0`. The regression case explicit
+# ownership exists to prevent — a naive "returns always own" wrapper would
+# double-free the caller's buffer here.
+Base.@ccallable function echo_strs(a::CStrArray)::CStrArray
+    return a
+end
+
+Base.@ccallable function echo_dict(d::CDict{Float64})::CDict{Float64}
+    return d
+end
+
 end # module

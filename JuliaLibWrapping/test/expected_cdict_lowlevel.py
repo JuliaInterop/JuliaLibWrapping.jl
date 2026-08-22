@@ -98,6 +98,7 @@ class CDict_Float64(ctypes.Structure):
         ("length", ctypes.c_int64),
         ("keys", ctypes.POINTER(CString)),
         ("values", ctypes.POINTER(ctypes.c_double)),
+        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -108,7 +109,8 @@ class CDict_Float64(ctypes.Structure):
         varr = (ctypes.c_double * len(keys))(*d.values())
         obj = cls(length=len(keys),
                   keys=ctypes.cast(karr, ctypes.POINTER(CString)),
-                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_double)))
+                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_double)),
+                  owned=0)
         obj._buffer = (keys, karr, varr)
         return obj
 
@@ -119,6 +121,17 @@ class CDict_Float64(ctypes.Structure):
             k = ctypes.string_at(e.data, e.length).decode("utf-8")
             out[k] = self.values[i]
         return out
+
+    def free(self):
+        """Free the Julia-allocated buffers iff this object owns them (owned is 1).
+
+        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
+        no-op. For callers who bypass the façade's convert-then-free wrapper and
+        talk to `_lowlevel` directly."""
+        if self.owned == 1:
+            _lib.jlw_free_strings(self.keys, self.length)
+            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
+            self.owned = 0
 
 _lib.take_dict.argtypes = [CDict_Float64]
 _lib.take_dict.restype = ctypes.c_int64

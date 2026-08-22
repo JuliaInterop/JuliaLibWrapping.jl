@@ -279,14 +279,24 @@ NUL-terminated; embedded NUL bytes are allowed). Each element's own length is
 
 # Ownership contract
 
+Ownership is carried **explicitly in the data**, via the `owned` field —
+never inferred from which direction a value happens to cross the boundary.
+`owned = 0` means caller-owned/borrowed: nothing here frees it. `owned = 1`
+means Julia's own-out constructor allocated it: it must be released exactly
+once. There is no partial ownership — the flag covers the whole struct
+(`data` and every per-string buffer it points to) as a single unit.
+
 - `Base.Vector{String}(a::CStrArray)` **borrows**: it copies the strings out
   into a fresh Julia `Vector{String}` and never frees `a.data` or any of the
-  per-string buffers. The caller retains ownership.
+  per-string buffers, regardless of `a.owned`. The caller retains ownership.
 - `CStrArray(v::Vector{String})` **owns out**: it `Libc.malloc`s the `CString`
-  array and each per-string buffer. The consumer is responsible for
-  releasing them exactly once, via [`JLWInterop._free_strings`](@ref) (or,
-  at a `@ccallable` boundary, `jlw_free_strings` from
-  [`@export_release_entrypoints`](@ref)).
+  array and each per-string buffer, and sets `owned` to `1`. The consumer is
+  responsible for releasing them exactly once, via
+  [`JLWInterop._free_strings`](@ref) (or, at a `@ccallable` boundary,
+  `jlw_free_strings` from [`@export_release_entrypoints`](@ref)).
+- Julia never retains a reference to an `owned = 1` buffer once it has
+  handed it across the boundary — the whole point of the flag is that the
+  receiving side can tell, from the value alone, whether it must free.
 
 # Example
 
@@ -294,6 +304,7 @@ NUL-terminated; embedded NUL bytes are allowed). Each element's own length is
 using JLWInterop
 
 a = CStrArray(["hello", "world"])
+a.owned == Int32(1)
 Vector{String}(a) == ["hello", "world"]
 JLWInterop._free_strings(a.data, a.length)
 ```
@@ -301,9 +312,10 @@ JLWInterop._free_strings(a.data, a.length)
 struct CStrArray
     length::Int64
     data::Ptr{CString}     # each element a length-prefixed CString
+    owned::Int32            # 0 = caller-owned/borrowed; 1 = allocated by CStrArray(::Vector{String})
 end
 
-# Borrow-in: copy out, never free (the caller owns the buffers).
+# Borrow-in: copy out, never free (the caller owns the buffers, regardless of `owned`).
 function Base.Vector{String}(a::CStrArray)
     v = Vector{String}(undef, a.length)
     for i in 1:a.length
@@ -312,7 +324,7 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Own-out: malloc'd copy; consumer releases via jlw_free_strings.
+# Own-out: malloc'd copy, owned=1; consumer releases via jlw_free_strings.
 function CStrArray(v::Vector{String})
     n = length(v)
     data = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
@@ -323,7 +335,7 @@ function CStrArray(v::Vector{String})
         GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
         unsafe_store!(data, CString(Int32(nb), p), i)
     end
-    return CStrArray(Int64(n), data)
+    return CStrArray(Int64(n), data, Int32(1))
 end
 
 """
@@ -369,15 +381,26 @@ length is `CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
 
 # Ownership contract
 
+Ownership is carried **explicitly in the data**, via the `owned` field —
+never inferred from which direction a value happens to cross the boundary.
+`owned = 0` means caller-owned/borrowed: nothing here frees it. `owned = 1`
+means Julia's own-out constructor allocated it: it must be released exactly
+once. There is no partial ownership — the flag covers the whole struct
+(`keys` and `values`, and every per-key buffer `keys` points to) as a single
+unit.
+
 - `Base.Dict{String,V}(d::CDict{V})` **borrows**: it copies keys and values
   out into a fresh Julia `Dict` and never frees `d.keys`, the per-key
-  buffers, or `d.values`. The caller retains ownership.
+  buffers, or `d.values`, regardless of `d.owned`. The caller retains
+  ownership.
 - `CDict(d::Dict{String,V})` **owns out**: it `Libc.malloc`s the key
-  `CString` array, each per-key buffer, and the value array. The consumer
-  must release them exactly once: the keys via
+  `CString` array, each per-key buffer, and the value array, and sets
+  `owned` to `1`. The consumer must release them exactly once: the keys via
   [`JLWInterop._free_strings`](@ref) (or `jlw_free_strings` from
   [`@export_release_entrypoints`](@ref)) and `values` via `Libc.free` (or
   `jlw_free`).
+- Julia never retains a reference to an `owned = 1` buffer once it has
+  handed it across the boundary.
 
 # Example
 
@@ -385,6 +408,7 @@ length is `CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
 using JLWInterop
 
 c = CDict(Dict("a" => 1.5, "b" => -2.0))
+c.owned == Int32(1)
 Dict{String,Float64}(c) == Dict("a" => 1.5, "b" => -2.0)
 JLWInterop._free_strings(c.keys, c.length)
 Libc.free(c.values)
@@ -394,6 +418,7 @@ struct CDict{V}
     length::Int64
     keys::Ptr{CString}
     values::Ptr{V}
+    owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by CDict(::Dict{String,V})
 end
 
 # The loop IS the allowlist: per-V concrete methods keep trim-safety and reject
@@ -421,7 +446,7 @@ for V in CDICT_VALUE_TYPES
                 unsafe_store!(kp, CString(Int32(nb), p), i)
                 unsafe_store!(vp, v, i)
             end
-            return CDict{$V}(Int64(n), kp, vp)
+            return CDict{$V}(Int64(n), kp, vp, Int32(1))
         end
     end
 end
