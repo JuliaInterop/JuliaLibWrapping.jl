@@ -635,7 +635,7 @@ end
         # `CMatrix = CArray{_,2}` may print under either name) with `dims`
         # (NTuple{N,Int32} → ArrayDesc) and `data` (Ptr{T}) fields, for
         # primitive numeric T recognized by `numpy_dtypes`.
-        cainfo = JuliaLibWrapping.carray_struct_info
+        cainfo(desc, typeinfo) = JuliaLibWrapping.carray_struct_info(desc, typeinfo, JuliaLibWrapping.numpy_dtypes, JuliaLibWrapping.pytypes)
 
         # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
         # and CVector{CTree{Float64}} (struct pointee, no match).
@@ -933,7 +933,7 @@ end
         # pytypes>}), and `owned` (an Int32 explicit-ownership
         # discriminant) fields. The name is only the first gate; the full
         # 4-field shape and the keys pointee's own shape must also match.
-        cdinfo = JuliaLibWrapping.cdict_struct_info
+        cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo, JuliaLibWrapping.pytypes)
         abi = read_abi_info("bindinginfo_cdict.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -1076,7 +1076,7 @@ end
         # Structural recognition of the COpt{T} shape: a struct named COpt
         # with `has_value` (Int32 primitive) and `value` (any primitive in
         # `pytypes`) fields.
-        coinfo = JuliaLibWrapping.copt_struct_info
+        coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo, JuliaLibWrapping.pytypes)
         abi = read_abi_info("bindinginfo_copt.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -1808,7 +1808,7 @@ end
 
         # Helper recognizes the raw-primitive-pointer argument.
         method = only(abi.entrypoints)
-        @test JuliaLibWrapping.raw_primitive_pointer_args(method, abi.typeinfo) == [1]
+        @test JuliaLibWrapping.raw_primitive_pointer_args(method, abi.typeinfo, JuliaLibWrapping.numpy_dtypes) == [1]
 
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
@@ -1862,7 +1862,7 @@ end
         # and don't pick up the docstring.
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
         method_cm = only(abi_cm.entrypoints)
-        @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
+        @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo, JuliaLibWrapping.numpy_dtypes))
     end
 
     @testset "JLWStatus convention" begin

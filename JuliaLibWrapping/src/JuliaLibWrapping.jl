@@ -9,6 +9,7 @@ export AbstractTarget, CTarget, PythonTarget, ABIInfo
 
 include("abi_import.jl")
 include("platform.jl")
+include("recognizers.jl")
 
 """
     AbstractTarget

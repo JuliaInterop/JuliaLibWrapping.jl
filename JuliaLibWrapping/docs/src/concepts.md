@@ -96,6 +96,11 @@ concrete target is a configuration struct passed to
 Adding a new target means defining a struct subtype of `AbstractTarget`
 and a method `write_wrapper(::YourTarget, ::ABIInfo)` that walks the
 sorted descriptors and emits whatever your target language requires.
+The carrier recognizers in `src/recognizers.jl` (`carray_struct_info`,
+`cstring_struct_info`, `is_jlwstatus_struct`, and friends) decide whether a
+`StructDesc`/`MethodDesc` matches a JLWInterop carrier shape by inspecting
+`ABIInfo`/`TypeDesc` alone, so a new target can reuse them as-is instead of
+reimplementing shape detection.
 
 ## Generated and editable Python modules
 

@@ -109,55 +109,6 @@ const pytypes = Dict{String, String}(
 )
 
 """
-    _is_void_struct(desc::StructDesc) -> Bool
-
-Recognize juliac's synthetic zero-field `struct Nothing` — the ABI-JSON
-representation of `Cvoid` (`Cvoid` is a type alias for `Nothing` in Base).
-juliac's `--export-abi` renders `Cvoid` as a real zero-size
-`kind:"struct","name":"Nothing","fields":[]` type node in EVERY position —
-a bare return type, and a pointer's pointee (`Ptr{Cvoid}` prints as
-`Ptr{Nothing}`, pointing at this same node) — never as a `PrimitiveTypeDesc`
-named `"Cvoid"` (`pytypes["Cvoid"] => "None"` only ever fires for the
-primitive spelling and is unreachable for this struct spelling, in either
-position). Two call sites rely on this:
-`mangle_python!`'s `PointerDesc` branch (`Ptr{Nothing}` → `ctypes.c_void_p`,
-matching the existing `Ptr{Cvoid}`-as-primitive special case) and
-`_write_bindings`'s return-type resolution (bare `Nothing` return →
-Python `None`, since libffi cannot build a call interface for a zero-size
-struct return — `ffi_prep_cif failed`).
-
-**Every position `mangle_python!` can reach for this same struct `type_id`
-was swept, not just these two:**
-- **struct field** (`_write_bindings`'s field-emission loops): a field
-  typed as the BARE `Nothing` struct (not a pointer to it) mangles to the
-  real `Nothing` class name, unchanged by this predicate — correctly so,
-  not a gap: a ctypes `_fields_` entry needs a concrete ctypes type object,
-  and Python's `None` is not a valid one. No known carrier or juliac
-  output produces a bare-`Cvoid`-typed struct field (`Cvoid` has no
-  instances beyond the singleton `nothing`, so there is nothing to lay out
-  inline); a `Ptr{Nothing}` *pointer* field, by contrast, already collapses
-  to `ctypes.c_void_p` via the `PointerDesc` branch fix above — see the
-  `mangle_python! Nothing type_id sweep` testset.
-- **array element** (`mangle_python!`'s `ArrayDesc` branch,
-  `type.element_type`): a fixed-size array whose element type is the bare
-  `Nothing` struct (i.e. an ABI representation of `NTuple{N,Cvoid}`) is
-  **left unhandled** — it renders as `(Nothing * N)`, a ctypes array of a
-  zero-size struct. `NTuple{N,Cvoid}` is not a producible Julia value
-  shape (there is nothing to store `N` of), so no carrier or juliac
-  `--export-abi` output has ever been observed to emit this; pinned as
-  current (unfixed) behavior by the sweep testset rather than silently
-  assumed safe, since it is untested territory.
-
-Gated on BOTH the name AND zero fields — matching the
-[`is_jlwstatus_struct`](@ref)/[`cstrarray_struct_info`](@ref) family's
-name-plus-shape convention — so a genuine user struct that happens to be
-named `Nothing` but carries real fields is never swallowed by this check.
-"""
-function _is_void_struct(desc::StructDesc)
-    return desc.name == "Nothing" && isempty(desc.fields)
-end
-
-"""
     mangle_python!(typedict, type_id, typeinfo) -> String
 
 Return a Python expression naming the ctypes type for `type_id`. Struct names
@@ -232,194 +183,6 @@ const numpy_dtypes = Dict{String, String}(
 )
 
 """
-    carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
-
-Recognize the JLWInterop `CArray{T,N}` shape (which subsumes `CVector{T} =
-CArray{T,1}` and `CMatrix{T} = CArray{T,2}`): a struct whose name starts
-with `"CArray"`, `"CVector"`, or `"CMatrix"`, with exactly two fields
-named `dims` (a fixed-size array of `N` integers, i.e. an `ArrayDesc`
-of a signed/unsigned integer primitive in [`numpy_dtypes`](@ref)) and `data`
-(a pointer to a primitive numeric type also in `numpy_dtypes`). Field order
-may be either `dims, data` or `data, dims`. Returns
-`(; pointee_name, pointee_ctype, dtype, ndim)` on a match (with `ndim` set
-to the `dims` array's `count`), otherwise `nothing`.
-
-Like [`is_jlwstatus_struct`](@ref), recognition is by name + shape so
-authors who copy-paste a compatible definition still get the behavior.
-"""
-function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    (
-        startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
-            startswith(desc.name, "CMatrix")
-    ) || return nothing
-    length(desc.fields) == 2 || return nothing
-    dims_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "dims"
-            dims_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (dims_field === nothing || data_field === nothing) && return nothing
-    dims_type = typeinfo[dims_field.type]
-    dims_type isa ArrayDesc || return nothing
-    dims_eltype = typeinfo[dims_type.element_type]
-    dims_eltype isa PrimitiveTypeDesc || return nothing
-    (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
-    dims_eltype.name in keys(numpy_dtypes) || return nothing
-    data_type = typeinfo[data_field.type]
-    data_type isa PointerDesc || return nothing
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa PrimitiveTypeDesc || return nothing
-    pointee.name in keys(numpy_dtypes) || return nothing
-    return (;
-        pointee_name = pointee.name,
-        pointee_ctype = pytypes[pointee.name],
-        dtype = numpy_dtypes[pointee.name],
-        ndim = dims_type.count,
-    )
-end
-
-"""
-    cstring_struct_info(desc::StructDesc, typeinfo) -> Bool
-
-Recognize the JLWInterop `CString` shape: a struct whose name starts with
-`"CString"`, with exactly two fields named `length` (a primitive integer)
-and `data` (a pointer to `UInt8`). The pointee type is restricted to
-`UInt8` specifically (other widths would not round-trip as a UTF-8
-string). Returns `true` on a match, `false` otherwise. Field order may be
-either `length, data` or `data, length`. Recognition is by name + shape
-(see [`is_jlwstatus_struct`](@ref) for the rationale).
-"""
-function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CString") || return false
-    length(desc.fields) == 2 || return false
-    length_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "length"
-            length_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (length_field === nothing || data_field === nothing) && return false
-    length_type = typeinfo[length_field.type]
-    length_type isa PrimitiveTypeDesc || return false
-    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return false
-    data_type = typeinfo[data_field.type]
-    data_type isa PointerDesc || return false
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa PrimitiveTypeDesc || return false
-    pointee.name == "UInt8" || return false
-    return true
-end
-
-"""
-    _match_fields(desc::StructDesc, names::NTuple{N,String}) where {N} -> Union{Nothing,NamedTuple}
-
-Shared "scan fields, match by name" step behind [`cstrarray_struct_info`](@ref),
-[`cdict_struct_info`](@ref), and [`copt_struct_info`](@ref): each recognizer's
-name-prefix gate and type-specific per-field checks stay in the recognizer
-itself, but the mechanical part — walking `desc.fields`, matching each one
-against `names` by name, and rejecting on a field-count or missing-name
-mismatch — is identical across all three and lives here once.
-
-`desc` matches only if it has *exactly* `length(names)` fields and every
-name in `names` appears among them (in any order — this is exactly the
-"field order may be any permutation" behavior the three recognizers
-document); otherwise returns `nothing`. On a match, returns a `NamedTuple`
-keyed by `names` (as `Symbol`s) mapping each name to its `FieldDesc`, so the
-caller can then read `.type` off each field for its own checks. Matches the
-original hand-rolled loops' semantics exactly, including on a (never
-actually seen) struct with a duplicate field name: the LAST field with a
-given name wins, since the scan does not stop early.
-"""
-function _match_fields(desc::StructDesc, names::NTuple{N, String}) where {N}
-    length(desc.fields) == N || return nothing
-    slots = Dict{String, FieldDesc}()
-    for field in desc.fields
-        field.name in names && (slots[field.name] = field)
-    end
-    length(slots) == N || return nothing
-    return NamedTuple{Tuple(Symbol.(names))}(ntuple(i -> slots[names[i]], N))
-end
-
-"""
-    cstrarray_struct_info(desc::StructDesc, typeinfo) -> Bool
-
-Recognize the JLWInterop `CStrArray` shape: a struct whose name starts with
-`"CStrArray"`, with exactly three fields named `length` (a signed primitive
-integer), `data` (a pointer to the `CString` struct, i.e. `Ptr{CString}` —
-recognized via [`cstring_struct_info`](@ref) applied to the pointee), and
-`owned` (an `Int32` explicit-ownership discriminant — see the "Ownership
-contract" section of `CStrArray`'s docstring: `0` = caller-owned/borrowed,
-`1` = allocated by the own-out constructor). Returns `true` on a match,
-`false` otherwise. Field order may be any permutation. Recognition is by
-name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale); the
-name is only the first gate — the pointee is walked and checked as well, and
-the `owned` field is required so a struct predating the ownership flag is
-correctly rejected rather than silently mis-wrapped.
-"""
-function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CStrArray") || return false
-    m = _match_fields(desc, ("length", "data", "owned"))
-    isnothing(m) && return false
-    length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc && length_type.signed || return false
-    data_type = typeinfo[m.data.type]
-    data_type isa PointerDesc || return false
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa StructDesc || return false
-    cstring_struct_info(pointee, typeinfo) || return false
-    owned_type = typeinfo[m.owned.type]
-    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return false
-    return true
-end
-
-"""
-    cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
-
-Recognize the JLWInterop `CDict{V}` shape: a struct whose name starts with
-`"CDict"`, with exactly four fields named `length` (a primitive integer),
-`keys` (a pointer to the `CString` struct, i.e. `Ptr{CString}` — the
-same shape as [`cstrarray_struct_info`](@ref)'s `data`, recognized via
-[`cstring_struct_info`](@ref) applied to the pointee), `values` (a
-pointer to a primitive type recognized by [`pytypes`](@ref)), and `owned`
-(an `Int32` explicit-ownership discriminant — see the "Ownership contract"
-section of `CDict`'s docstring: `0` = caller-owned/borrowed, `1` = allocated
-by the own-out constructor). Field order may be any permutation of the four.
-Returns `(; value_ctype)` on a match (the `ctypes` expression for `V`),
-otherwise `nothing`. Recognition is by name + full shape (see
-[`is_jlwstatus_struct`](@ref) for the rationale); the `owned` field is
-required so a struct predating the ownership flag is correctly rejected
-rather than silently mis-wrapped.
-"""
-function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CDict") || return nothing
-    m = _match_fields(desc, ("length", "keys", "values", "owned"))
-    isnothing(m) && return nothing
-    length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc || return nothing
-    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
-    keys_type = typeinfo[m.keys.type]
-    keys_type isa PointerDesc || return nothing
-    keys_pointee = typeinfo[keys_type.pointee_type]
-    keys_pointee isa StructDesc || return nothing
-    cstring_struct_info(keys_pointee, typeinfo) || return nothing
-    values_type = typeinfo[m.values.type]
-    values_type isa PointerDesc || return nothing
-    values_pointee = typeinfo[values_type.pointee_type]
-    values_pointee isa PrimitiveTypeDesc || return nothing
-    values_pointee.name in keys(pytypes) || return nothing
-    owned_type = typeinfo[m.owned.type]
-    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
-    return (; value_ctype = pytypes[values_pointee.name])
-end
-
-"""
     _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
 
 Return the mangled Python `ctypes.Structure` class name for the
@@ -437,62 +200,6 @@ function _cstring_pointee_classname(
     field = only(f for f in desc.fields if f.name == fieldname)
     pointee_id = (typeinfo[field.type]::PointerDesc).pointee_type
     return typedict[pointee_id]
-end
-
-"""
-    copt_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
-
-Recognize the JLWInterop `COpt{T}` shape: a struct whose name starts with
-`"COpt"`, with exactly two fields named `has_value` (an `Int32` primitive
-— the 0/1 discriminant) and `value` (a primitive type recognized by
-[`pytypes`](@ref)). Field order may be either. Returns `(; value_ctype)` on
-a match (the `ctypes` expression for `T`), otherwise `nothing`. Unlike
-[`cstrarray_struct_info`](@ref) and [`cdict_struct_info`](@ref), `COpt` is
-a by-value carrier (no pointer fields, no heap allocation), so no release
-entrypoint is ever needed for it. Recognition is by name + shape (see
-[`is_jlwstatus_struct`](@ref) for the rationale).
-"""
-function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "COpt") || return nothing
-    m = _match_fields(desc, ("has_value", "value"))
-    isnothing(m) && return nothing
-    hv_type = typeinfo[m.has_value.type]
-    hv_type isa PrimitiveTypeDesc || return nothing
-    hv_type.name == "Int32" || return nothing
-    value_type = typeinfo[m.value.type]
-    value_type isa PrimitiveTypeDesc || return nothing
-    value_type.name in keys(pytypes) || return nothing
-    return (; value_ctype = pytypes[value_type.name])
-end
-
-"""
-    raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
-
-Return positional indices into `method.args` for arguments whose static type is
-a bare `Ptr{T}` where `T` is a primitive numeric type recognized by
-[`numpy_dtypes`](@ref). `Ptr{Cvoid}` is excluded (it lowers to `ctypes.c_void_p`).
-Pointers wrapped inside `CArray` / `CString` structs are *not* reported —
-only top-level argument types are examined.
-
-A non-empty result signals an argument that hands the C function a raw memory
-address with no length, ownership, or layout metadata. The Python emitter uses
-this to attach a docstring on the wrapper noting the column-major contract and
-recommending the [`JLWInterop.CArray`](@ref) vocabulary instead.
-"""
-function raw_primitive_pointer_args(
-        method::MethodDesc,
-        typeinfo::OrderedDict{Int, TypeDesc}
-    )
-    out = Int[]
-    for (i, arg) in pairs(method.args)
-        t = typeinfo[arg.type]
-        t isa PointerDesc || continue
-        pointee = typeinfo[t.pointee_type]
-        pointee isa PrimitiveTypeDesc || continue
-        pointee.name in keys(numpy_dtypes) || continue
-        push!(out, i)
-    end
-    return out
 end
 
 const PYTHON_KEYWORDS = Set{String}(
@@ -567,18 +274,18 @@ function write_wrapper(
     # Report bare-pointer arguments during generation.
     let raw_ptr_methods = [
             m.symbol for m in entrypoints
-                if !isempty(raw_primitive_pointer_args(m, typeinfo))
+                if !isempty(raw_primitive_pointer_args(m, typeinfo, numpy_dtypes))
         ]
         isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
 
     needs_jlwerror = any(
-        jlwstatus_access_path(m, typeinfo) !== nothing
+        jlwstatus_access_path(m, typeinfo, sanitize_python_argname) !== nothing
             for m in entrypoints
     )
     needs_numpy = any(
         type isa StructDesc &&
-            carray_struct_info(type, typeinfo) !== nothing
+            carray_struct_info(type, typeinfo, numpy_dtypes, pytypes) !== nothing
             for type in values(typeinfo)
     )
 
@@ -642,56 +349,6 @@ function write_wrapper(
         _write_pyproject(f, dest, needs_numpy)
     end
 
-    return nothing
-end
-
-"""
-    is_jlwstatus_struct(desc::StructDesc, typeinfo) -> Bool
-
-Recognize the JLWInterop error-status convention by structural shape: a
-struct named `JLWStatus` with two fields — an integer `code` field and a
-`message` field that is a fixed-size byte array. Matching by name + shape
-(rather than by package identity) means authors who copy-paste a compatible
-definition still get the behavior.
-"""
-function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    desc.name == "JLWStatus" || return false
-    length(desc.fields) == 2 || return false
-    code_field, msg_field = desc.fields
-    code_field.name == "code" || return false
-    msg_field.name == "message" || return false
-    code_type = typeinfo[code_field.type]
-    code_type isa PrimitiveTypeDesc || return false
-    code_type.name in ("Int32", "Int64") || return false
-    msg_type = typeinfo[msg_field.type]
-    msg_type isa ArrayDesc || return false
-    eltype = typeinfo[msg_type.element_type]
-    eltype isa PrimitiveTypeDesc && eltype.name == "UInt8" || return false
-    return true
-end
-
-"""
-    jlwstatus_access_path(method, typeinfo) -> Union{Nothing, String}
-
-If `method`'s return type carries a JLWStatus (either the return type *is* a
-JLWStatus or it is a struct with a JLWStatus field), return the Python
-attribute path from `_result` to that status (e.g. `""` for direct return,
-or `".status"` for an embedded field). Otherwise return `nothing`.
-Recognition is shallow on purpose — only the immediate return struct's
-top-level fields are inspected.
-"""
-function jlwstatus_access_path(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    rt = typeinfo[method.return_type]
-    rt isa StructDesc || return nothing
-    if is_jlwstatus_struct(rt, typeinfo)
-        return ""
-    end
-    for field in rt.fields
-        ftype = typeinfo[field.type]
-        if ftype isa StructDesc && is_jlwstatus_struct(ftype, typeinfo)
-            return "." * sanitize_python_argname(field.name)
-        end
-    end
     return nothing
 end
 
@@ -1160,9 +817,9 @@ function _write_bindings(
                 end
                 println(f, "    ]")
             end
-            cainfo = carray_struct_info(type, typeinfo)
-            cdinfo = cdict_struct_info(type, typeinfo)
-            coinfo = copt_struct_info(type, typeinfo)
+            cainfo = carray_struct_info(type, typeinfo, numpy_dtypes, pytypes)
+            cdinfo = cdict_struct_info(type, typeinfo, pytypes)
+            coinfo = copt_struct_info(type, typeinfo, pytypes)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo)
@@ -1225,10 +882,10 @@ function _write_bindings(
         arg_names_seen = Set{String}()
         argnames = String[sanitize_python_argname(a.name, arg_names_seen) for a in method.args]
 
-        status_path = jlwstatus_access_path(method, typeinfo)
+        status_path = jlwstatus_access_path(method, typeinfo, sanitize_python_argname)
 
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
-        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
+        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo, numpy_dtypes)
         if !isempty(raw_ptr_idx)
             # Document metadata absent from bare primitive pointers.
             println(f, "    \"\"\"Raw pointer arguments — caller owns layout and lifetime.")
@@ -1290,15 +947,15 @@ function _facade_classify_arg(
     if t isa PrimitiveTypeDesc
         return (kind = :primitive,)
     elseif t isa StructDesc
-        if !isnothing(carray_struct_info(t, typeinfo))
+        if !isnothing(carray_struct_info(t, typeinfo, numpy_dtypes, pytypes))
             return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind = :cstring, classname = typedict[arg.type])
         elseif cstrarray_struct_info(t, typeinfo)
             return (kind = :cstrarray, classname = typedict[arg.type])
-        elseif !isnothing(cdict_struct_info(t, typeinfo))
+        elseif !isnothing(cdict_struct_info(t, typeinfo, pytypes))
             return (kind = :cdict, classname = typedict[arg.type])
-        elseif !isnothing(copt_struct_info(t, typeinfo))
+        elseif !isnothing(copt_struct_info(t, typeinfo, pytypes))
             return (kind = :copt, classname = typedict[arg.type])
         else
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
@@ -1308,36 +965,6 @@ function _facade_classify_arg(
     else  # PointerDesc
         return (kind = :opaque, reason = "argument has raw pointer type `" * t.name * "`")
     end
-end
-
-"""
-    _RELEASE_ENTRYPOINT_SYMBOLS :: NTuple{2, String}
-
-The macro-emitted release entrypoint symbols (`JLWInterop.@export_release_entrypoints`)
-that owning-return façade wrappers call to free Julia-allocated buffers:
-`jlw_free_strings` (string-array/dict-key allocations) and `jlw_free`
-(generic single allocations, e.g. `CDict.values`). Used by
-[`_release_symbols_present`](@ref) to gate owning-return auto-wrapping and
-to exclude these two symbols from the public façade (they are internal
-plumbing, bound on `_lib` only).
-"""
-const _RELEASE_ENTRYPOINT_SYMBOLS = ("jlw_free", "jlw_free_strings")
-
-"""
-    _release_symbols_present(abi_info::ABIInfo) -> Bool
-
-Return `true` iff *both* macro-emitted release entrypoints
-([`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref): `jlw_free` and `jlw_free_strings`)
-appear among `abi_info.entrypoints`' symbols. The ABI JSON carries no
-ownership metadata, so this is the only signal that a library actually
-exposes the release plumbing an owning-return
-carrier (`CStrArray`, `CDict`) needs; without it, [`_facade_classify_return`](@ref)
-refuses to auto-wrap such a return rather than emit a call to a symbol
-that does not exist.
-"""
-function _release_symbols_present(abi_info::ABIInfo)
-    symbols = Set{String}(m.symbol for m in abi_info.entrypoints)
-    return all(sym -> sym in symbols, _RELEASE_ENTRYPOINT_SYMBOLS)
 end
 
 """
@@ -1377,7 +1004,7 @@ function _facade_classify_return(
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind = :jlwstatus_discard,)
-        elseif !isnothing(carray_struct_info(rt, typeinfo))
+        elseif !isnothing(carray_struct_info(rt, typeinfo, numpy_dtypes, pytypes))
             return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
@@ -1387,15 +1014,15 @@ function _facade_classify_return(
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(cdict_struct_info(rt, typeinfo))
+        elseif !isnothing(cdict_struct_info(rt, typeinfo, pytypes))
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cdict_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(copt_struct_info(rt, typeinfo))
+        elseif !isnothing(copt_struct_info(rt, typeinfo, pytypes))
             return (kind = :copt_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(jlwstatus_access_path(method, typeinfo))
+        elseif !isnothing(jlwstatus_access_path(method, typeinfo, sanitize_python_argname))
             return (
                 kind = :opaque,
                 reason = "returns struct `" * rt.name *
