@@ -275,18 +275,20 @@ using Test
     end
 
     @testset "CStrArray round-trip" begin
-        v = ["hello", "wörld", ""]          # incl. UTF-8 and empty
+        v = ["hello", "wörld", "", "a\0b"]   # incl. UTF-8, empty, and embedded NUL
         a = CStrArray(v)
-        @test a.length == 3
+        @test a.length == 4
+        @test fieldtype(CStrArray, :data) === Ptr{CString}
         @test Vector{String}(a) == v
         JLWInterop._free_strings(a.data, a.length)   # tests own the free
         @test Vector{String}(CStrArray(String[])) == String[]
     end
 
     @testset "CDict round-trip and allowlist" begin
-        d = Dict("a" => 1.5, "b" => -2.0)
+        d = Dict("a" => 1.5, "b" => -2.0, "c\0d" => 3.0, "" => 4.0)
         c = CDict(d)
-        @test c.length == 2
+        @test c.length == 4
+        @test fieldtype(CDict{Float64}, :keys) === Ptr{CString}
         @test Dict{String, Float64}(c) == d
         JLWInterop._free_strings(c.keys, c.length)
         Libc.free(c.values)

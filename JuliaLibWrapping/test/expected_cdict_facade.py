@@ -18,6 +18,7 @@ import ctypes
 
 from ._lowlevel import (
     Nothing,
+    CString,
     CDict_Float64,
 )
 
@@ -32,4 +33,4 @@ def give_dict():
     _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))
     return _out
 
-__all__ = ["Nothing", "CDict_Float64", "take_dict", "give_dict"]
+__all__ = ["Nothing", "CString", "CDict_Float64", "take_dict", "give_dict"]

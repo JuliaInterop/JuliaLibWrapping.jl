@@ -56,28 +56,65 @@ _jlw_loaded.add(_jlw_this_pkg)
 class Nothing(ctypes.Structure):
     _fields_ = []
 
+class CString(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int32),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
+    ]
+
+    @classmethod
+    def from_str(cls, s):
+        """Return a CString whose buffer holds the UTF-8 encoding of `s`.
+
+        Allocates a fresh ctypes buffer and copies the bytes into it; the
+        returned object holds a reference to that buffer, so the caller
+        must keep it alive for the duration of any C call that uses it."""
+        if not isinstance(s, str):
+            raise TypeError(f"expected str, got {type(s).__name__}")
+        return cls.from_bytes(s.encode("utf-8"))
+
+    @classmethod
+    def from_bytes(cls, b):
+        """Return a CString whose buffer holds a copy of the bytes `b`."""
+        if not isinstance(b, (bytes, bytearray)):
+            raise TypeError(f"expected bytes-like, got {type(b).__name__}")
+        n = len(b)
+        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()
+        obj = cls(length=n,
+                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
+        obj._buffer = buf
+        return obj
+
+    def as_bytes(self):
+        """Return a copy of the underlying bytes as a Python `bytes` object."""
+        return ctypes.string_at(self.data, self.length)
+
+    def as_str(self):
+        """Return the underlying bytes decoded as UTF-8."""
+        return self.as_bytes().decode("utf-8")
+
 class CStrArray(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))),
+        ("data", ctypes.POINTER(CString)),
     ]
 
     @classmethod
     def from_list(cls, items):
         if not isinstance(items, (list, tuple)):
             raise TypeError("expected a list of str")
-        bufs = [s.encode("utf-8") + b"\x00" for s in items]
-        arr = (ctypes.POINTER(ctypes.c_uint8) * len(bufs))(
-            *[ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8)) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8))))
+        bufs = [s.encode("utf-8") for s in items]
+        arr = (CString * len(bufs))(
+            *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
+        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)))
         obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern
         return obj
 
     def as_list(self):
         out = []
         for i in range(self.length):
-            p = ctypes.cast(self.data[i], ctypes.c_char_p)
-            out.append(p.value.decode("utf-8"))
+            e = self.data[i]
+            out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
         return out
 
 _lib.take_strs.argtypes = [CStrArray]

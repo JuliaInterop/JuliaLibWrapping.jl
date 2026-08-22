@@ -654,9 +654,10 @@ end
     @testset "cstrarray_struct_info" begin
         # Structural recognition of the CStrArray shape: a struct named
         # CStrArray with `length` (signed primitive integer) and `data`
-        # (Ptr{Ptr{UInt8}} — one indirection deeper than CString's
-        # Ptr{UInt8}) fields. The name is only the first gate; the full
-        # pointer chain down to the UInt8 leaf must also match.
+        # (Ptr{CString} — the length-prefixed CString struct, recognized
+        # via `cstring_struct_info` applied to the pointee) fields. The
+        # name is only the first gate; the pointee's own shape must also
+        # match.
         csainfo = JuliaLibWrapping.cstrarray_struct_info
         abi = read_abi_info("bindinginfo_cstrarray.json")
         findtype(descs, name) = (
@@ -667,68 +668,83 @@ end
         @test csainfo(csa, abi.typeinfo) === true
 
         # Hand-built rejections.
-        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primi64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
         primu64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8)
         primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
         primu16 = PrimitiveTypeDesc("UInt16", false, 16, 2, 2)
         ptr_to_u8 = PointerDesc("Ptr{UInt8}", 4)
         ptr_to_u16 = PointerDesc("Ptr{UInt16}", 5)
-        ptr_to_ptr_u8 = PointerDesc("Ptr{Ptr{UInt8}}", 6)
-        ptr_to_ptr_u16 = PointerDesc("Ptr{Ptr{UInt16}}", 7)
+        cstring_ok = StructDesc(
+            "CString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 6, 8),
+            ]
+        )
+        cstring_bad = StructDesc(
+            # `data` points to UInt16, not UInt8 — `cstring_struct_info`
+            # rejects this, so it must not be accepted as a CString pointee.
+            "NotCString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 7, 8),
+            ]
+        )
+        ptr_to_cstring = PointerDesc("Ptr{CString}", 8)
+        ptr_to_not_cstring = PointerDesc("Ptr{NotCString}", 9)
         ti = OrderedDict{Int, TypeDesc}(
-            1 => primint, 2 => primi64, 3 => primu64,
+            1 => primi32, 2 => primi64, 3 => primu64,
             4 => primu8, 5 => primu16,
             6 => ptr_to_u8, 7 => ptr_to_u16,
-            8 => ptr_to_ptr_u8, 9 => ptr_to_ptr_u16,
-            10 => StructDesc(
+            8 => cstring_ok, 9 => cstring_bad,
+            10 => ptr_to_cstring, 11 => ptr_to_not_cstring,
+            12 => StructDesc(
                 "CStrArray", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("data", 8, 8),
-                ]
-            ),
-            11 => StructDesc(
-                "NotACStrArray", 16, 8, FieldDesc[
-                    FieldDesc("length", 2, 0),
-                    FieldDesc("data", 8, 8),
-                ]
-            ),
-            12 => StructDesc(
-                "CStrArrayU16", 16, 8, FieldDesc[
-                    FieldDesc("length", 2, 0),
-                    FieldDesc("data", 9, 8),  # Ptr{Ptr{UInt16}} — not ...UInt8
+                    FieldDesc("data", 10, 8),
                 ]
             ),
             13 => StructDesc(
-                "CStrArrayBadNames", 16, 8, FieldDesc[
-                    FieldDesc("size", 2, 0),
-                    FieldDesc("data", 8, 8),
+                "NotACStrArray", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 10, 8),
                 ]
             ),
             14 => StructDesc(
-                "CStrArrayUnsignedLen", 16, 8, FieldDesc[
-                    FieldDesc("length", 3, 0),  # UInt64 — not signed
-                    FieldDesc("data", 8, 8),
+                "CStrArrayBadPointee", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 11, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
                 ]
             ),
             15 => StructDesc(
+                "CStrArrayBadNames", 16, 8, FieldDesc[
+                    FieldDesc("size", 2, 0),
+                    FieldDesc("data", 10, 8),
+                ]
+            ),
+            16 => StructDesc(
+                "CStrArrayUnsignedLen", 16, 8, FieldDesc[
+                    FieldDesc("length", 3, 0),  # UInt64 — not signed
+                    FieldDesc("data", 10, 8),
+                ]
+            ),
+            17 => StructDesc(
                 "CStrArraySinglePtr", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("data", 6, 8),  # Ptr{UInt8} — only one indirection
+                    FieldDesc("data", 6, 8),  # Ptr{UInt8} — pointee isn't a struct at all
                 ]
             ),
         )
-        @test csainfo(ti[10], ti) === true
-        @test csainfo(ti[11], ti) === false  # wrong name prefix
-        @test csainfo(ti[12], ti) === false  # inner pointee is UInt16, not UInt8
-        @test csainfo(ti[13], ti) === false  # wrong field names
-        @test csainfo(ti[14], ti) === false  # unsigned length
-        @test csainfo(ti[15], ti) === false  # only one level of pointer indirection
+        @test csainfo(ti[12], ti) === true
+        @test csainfo(ti[13], ti) === false  # wrong name prefix
+        @test csainfo(ti[14], ti) === false  # data's pointee isn't CString-shaped
+        @test csainfo(ti[15], ti) === false  # wrong field names
+        @test csainfo(ti[16], ti) === false  # unsigned length
+        @test csainfo(ti[17], ti) === false  # data isn't a pointer-to-struct at all
 
         # Field order may be either way.
         flipped = StructDesc(
             "CStrArray", 16, 8, FieldDesc[
-                FieldDesc("data", 8, 0),
+                FieldDesc("data", 10, 0),
                 FieldDesc("length", 2, 8),
             ]
         )
@@ -737,10 +753,11 @@ end
 
     @testset "cdict_struct_info" begin
         # Structural recognition of the CDict{V} shape: a struct named CDict
-        # with `length` (primitive integer), `keys` (Ptr{Ptr{UInt8}} — same
-        # chain as CStrArray's `data`), and `values` (Ptr{<primitive in
+        # with `length` (primitive integer), `keys` (Ptr{CString} — same
+        # shape as CStrArray's `data`, recognized via `cstring_struct_info`
+        # applied to the pointee), and `values` (Ptr{<primitive in
         # pytypes>}) fields. The name is only the first gate; the full
-        # 3-field shape and both pointer chains must also match.
+        # 3-field shape and the keys pointee's own shape must also match.
         cdinfo = JuliaLibWrapping.cdict_struct_info
         abi = read_abi_info("bindinginfo_cdict.json")
         findtype(descs, name) = (
@@ -753,7 +770,7 @@ end
         @test info.value_ctype == "ctypes.c_double"
 
         # Hand-built rejections.
-        primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primi64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
         primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
         primu16 = PrimitiveTypeDesc("UInt16", false, 16, 2, 2)
@@ -761,73 +778,95 @@ end
         primnotreal = PrimitiveTypeDesc("NotARealType", false, 32, 4, 4)
         ptr_to_u8 = PointerDesc("Ptr{UInt8}", 3)
         ptr_to_u16 = PointerDesc("Ptr{UInt16}", 4)
-        ptr_to_ptr_u8 = PointerDesc("Ptr{Ptr{UInt8}}", 6)
-        ptr_to_ptr_u16 = PointerDesc("Ptr{Ptr{UInt16}}", 7)
         ptr_to_f64 = PointerDesc("Ptr{Float64}", 5)
-        ptr_to_notreal = PointerDesc("Ptr{NotARealType}", 9)
+        ptr_to_notreal = PointerDesc("Ptr{NotARealType}", 6)
+        cstring_ok = StructDesc(
+            "CString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 7, 8),
+            ]
+        )
+        cstring_bad = StructDesc(
+            # `data` points to UInt16, not UInt8 — `cstring_struct_info`
+            # rejects this, so it must not be accepted as a CString pointee.
+            "NotCString", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 8, 8),
+            ]
+        )
+        ptr_to_cstring = PointerDesc("Ptr{CString}", 9)
+        ptr_to_not_cstring = PointerDesc("Ptr{NotCString}", 10)
         ti = OrderedDict{Int, TypeDesc}(
-            1 => primint, 2 => primi64,
+            1 => primi32, 2 => primi64,
             3 => primu8, 4 => primu16, 5 => primf64,
-            6 => ptr_to_u8, 7 => ptr_to_u16,
-            8 => ptr_to_ptr_u8, 9 => ptr_to_ptr_u16,
-            10 => ptr_to_f64,
-            11 => StructDesc(
+            6 => primnotreal,
+            7 => ptr_to_u8, 8 => ptr_to_u16,
+            9 => cstring_ok, 10 => cstring_bad,
+            11 => ptr_to_cstring, 12 => ptr_to_not_cstring,
+            13 => ptr_to_f64, 14 => ptr_to_notreal,
+            15 => StructDesc(
                 "CDict{Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 8, 8),
-                    FieldDesc("values", 10, 16),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
                 ]
             ),
-            12 => StructDesc(
+            16 => StructDesc(
                 "NotACDict", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 8, 8),
-                    FieldDesc("values", 10, 16),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
                 ]
             ),
-            13 => StructDesc(
-                "CDictSinglePtrKeys", 24, 8, FieldDesc[
+            17 => StructDesc(
+                "CDictBadKeysPointee", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 6, 8),  # Ptr{UInt8} — only one indirection
-                    FieldDesc("values", 10, 16),
+                    FieldDesc("keys", 12, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
+                    FieldDesc("values", 13, 16),
                 ]
             ),
-            14 => StructDesc(
+            18 => StructDesc(
                 "CDictBadNames", 24, 8, FieldDesc[
                     FieldDesc("len", 2, 0),
-                    FieldDesc("keys", 8, 8),
-                    FieldDesc("values", 10, 16),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
                 ]
             ),
-            15 => StructDesc(
+            19 => StructDesc(
                 "CDictTwoFields", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 8, 8),
+                    FieldDesc("keys", 11, 8),
                 ]
             ),
-            16 => primnotreal,
-            17 => ptr_to_notreal,
-            18 => StructDesc(
+            20 => StructDesc(
                 "CDictUnsupportedValue", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 8, 8),
-                    FieldDesc("values", 17, 16),  # Ptr{NotARealType} — not in pytypes
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 14, 16),  # Ptr{NotARealType} — not in pytypes
+                ]
+            ),
+            21 => StructDesc(
+                "CDictSinglePtrKeys", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 7, 8),  # Ptr{UInt8} — pointee isn't a struct at all
+                    FieldDesc("values", 13, 16),
                 ]
             ),
         )
-        @test !isnothing(cdinfo(ti[11], ti))
-        @test isnothing(cdinfo(ti[12], ti)) # wrong name prefix
-        @test isnothing(cdinfo(ti[13], ti)) # keys is single-indirection pointer
-        @test isnothing(cdinfo(ti[14], ti)) # wrong field names
-        @test isnothing(cdinfo(ti[15], ti)) # missing `values` field
-        @test isnothing(cdinfo(ti[18], ti)) # values pointee not in pytypes
+        @test !isnothing(cdinfo(ti[15], ti))
+        @test isnothing(cdinfo(ti[16], ti)) # wrong name prefix
+        @test isnothing(cdinfo(ti[17], ti)) # keys' pointee isn't CString-shaped
+        @test isnothing(cdinfo(ti[18], ti)) # wrong field names
+        @test isnothing(cdinfo(ti[19], ti)) # missing `values` field
+        @test isnothing(cdinfo(ti[20], ti)) # values pointee not in pytypes
+        @test isnothing(cdinfo(ti[21], ti)) # keys isn't a pointer-to-struct at all
 
         # Field order may be any permutation.
         permuted = StructDesc(
             "CDict{Float64}", 24, 8, FieldDesc[
-                FieldDesc("values", 10, 16),
+                FieldDesc("values", 13, 16),
                 FieldDesc("length", 2, 0),
-                FieldDesc("keys", 8, 8),
+                FieldDesc("keys", 11, 8),
             ]
         )
         @test !isnothing(cdinfo(permuted, ti))
@@ -1241,7 +1280,7 @@ end
             @test occursin("class CDict_Int32(ctypes.Structure):", bindings)
             @test occursin("(\"length\", ctypes.c_int64)", bindings)
             @test occursin(
-                "(\"keys\", ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)))", bindings
+                "(\"keys\", ctypes.POINTER(CString))", bindings
             )
             @test occursin("(\"values\", ctypes.POINTER(ctypes.c_int32))", bindings)
             # <value_ctype> substitution varies: Int32 here, not Float64.

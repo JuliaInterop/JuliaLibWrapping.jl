@@ -17,6 +17,7 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     Nothing,
+    CString,
     CStrArray,
 )
 
@@ -26,4 +27,4 @@ def take_strs(a):
     _a = CStrArray.from_list(a)
     return _lowlevel.take_strs(_a)
 
-__all__ = ["Nothing", "CStrArray", "take_strs", "give_strs"]
+__all__ = ["Nothing", "CString", "CStrArray", "take_strs", "give_strs"]

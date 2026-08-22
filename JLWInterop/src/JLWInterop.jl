@@ -271,16 +271,16 @@ end
 """
     CStrArray
 
-Owning-or-borrowed C-ABI descriptor for an array of NUL-terminated UTF-8
-strings: `length` elements at `data`, each a `Ptr{UInt8}` to one
-NUL-terminated string.
+Owning-or-borrowed C-ABI descriptor for an array of UTF-8 strings: `length`
+elements at `data`, each a length-prefixed [`CString`](@ref) (16 bytes, not
+NUL-terminated; embedded NUL bytes are allowed).
 
 # Ownership contract
 
 - `Base.Vector{String}(a::CStrArray)` **borrows**: it copies the strings out
   into a fresh Julia `Vector{String}` and never frees `a.data` or any of the
   per-string buffers. The caller retains ownership.
-- `CStrArray(v::Vector{String})` **owns out**: it `Libc.malloc`s the pointer
+- `CStrArray(v::Vector{String})` **owns out**: it `Libc.malloc`s the `CString`
   array and each per-string buffer. The consumer is responsible for
   releasing them exactly once, via [`JLWInterop._free_strings`](@ref) (or,
   at a `@ccallable` boundary, `jlw_free_strings` from
@@ -298,14 +298,14 @@ JLWInterop._free_strings(a.data, a.length)
 """
 struct CStrArray
     length::Int64
-    data::Ptr{Ptr{UInt8}}     # each element NUL-terminated UTF-8
+    data::Ptr{CString}     # each element a length-prefixed CString
 end
 
 # Borrow-in: copy out, never free (the caller owns the buffers).
 function Base.Vector{String}(a::CStrArray)
     v = Vector{String}(undef, a.length)
     for i in 1:a.length
-        v[i] = unsafe_string(unsafe_load(a.data, i))
+        v[i] = String(unsafe_load(a.data, i))
     end
     return v
 end
@@ -313,29 +313,28 @@ end
 # Own-out: malloc'd copy; consumer releases via jlw_free_strings.
 function CStrArray(v::Vector{String})
     n = length(v)
-    data = Ptr{Ptr{UInt8}}(Libc.malloc(max(n, 1) * sizeof(Ptr{UInt8})))
+    data = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
     for i in 1:n
         s = v[i]
         nb = sizeof(s)
-        p = Ptr{UInt8}(Libc.malloc(nb + 1))
+        p = Ptr{UInt8}(Libc.malloc(nb))
         GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
-        unsafe_store!(p, 0x00, nb + 1)
-        unsafe_store!(data, p, i)
+        unsafe_store!(data, CString(Int32(nb), p), i)
     end
     return CStrArray(Int64(n), data)
 end
 
 """
-    JLWInterop._free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)
+    JLWInterop._free_strings(p::Ptr{CString}, n::Int64)
 
-Free `n` NUL-terminated string buffers pointed to by `p`, then free `p`
-itself. Matches the allocation made by [`CStrArray(::Vector{String})`](@ref).
-Internal; exposed at a `@ccallable` boundary as `jlw_free_strings` by
-[`@export_release_entrypoints`](@ref).
+Free `n` string buffers pointed to by the `CString`s at `p` (each one's
+`.data`), then free `p` itself. Matches the allocation made by
+[`CStrArray(::Vector{String})`](@ref). Internal; exposed at a `@ccallable`
+boundary as `jlw_free_strings` by [`@export_release_entrypoints`](@ref).
 """
-function _free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)
+function _free_strings(p::Ptr{CString}, n::Int64)
     for i in 1:n
-        Libc.free(unsafe_load(p, i))
+        Libc.free(unsafe_load(p, i).data)
     end
     Libc.free(p)
     return nothing
@@ -358,8 +357,8 @@ const CDICT_VALUE_TYPES = (
     CDict{V}
 
 Owning-or-borrowed C-ABI descriptor for a `Dict{String,V}`: `length`
-key/value pairs, keys as NUL-terminated UTF-8 strings at `keys`, values as
-a parallel array of `V` at `values`. `V` is restricted to
+key/value pairs, keys as length-prefixed [`CString`](@ref)s at `keys`, values
+as a parallel array of `V` at `values`. `V` is restricted to
 [`CDICT_VALUE_TYPES`](@ref); the allowlist is enforced structurally — the
 per-`V` conversion methods below are the only ones generated, so a
 disallowed `V` fails as a `MethodError` at the call site.
@@ -370,7 +369,7 @@ disallowed `V` fails as a `MethodError` at the call site.
   out into a fresh Julia `Dict` and never frees `d.keys`, the per-key
   buffers, or `d.values`. The caller retains ownership.
 - `CDict(d::Dict{String,V})` **owns out**: it `Libc.malloc`s the key
-  pointer array, each per-key buffer, and the value array. The consumer
+  `CString` array, each per-key buffer, and the value array. The consumer
   must release them exactly once: the keys via
   [`JLWInterop._free_strings`](@ref) (or `jlw_free_strings` from
   [`@export_release_entrypoints`](@ref)) and `values` via `Libc.free` (or
@@ -389,7 +388,7 @@ Libc.free(c.values)
 """
 struct CDict{V}
     length::Int64
-    keys::Ptr{Ptr{UInt8}}
+    keys::Ptr{CString}
     values::Ptr{V}
 end
 
@@ -401,22 +400,21 @@ for V in CDICT_VALUE_TYPES
             out = Dict{String, $V}()
             sizehint!(out, d.length)
             for i in 1:d.length
-                out[unsafe_string(unsafe_load(d.keys, i))] = unsafe_load(d.values, i)
+                out[String(unsafe_load(d.keys, i))] = unsafe_load(d.values, i)
             end
             return out
         end
         function CDict(dict::Dict{String, $V})
             n = length(dict)
-            kp = Ptr{Ptr{UInt8}}(Libc.malloc(max(n, 1) * sizeof(Ptr{UInt8})))
+            kp = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
             i = 0
             for (k, v) in dict
                 i += 1
                 nb = sizeof(k)
-                p = Ptr{UInt8}(Libc.malloc(nb + 1))
+                p = Ptr{UInt8}(Libc.malloc(nb))
                 GC.@preserve k unsafe_copyto!(p, pointer(k), nb)
-                unsafe_store!(p, 0x00, nb + 1)
-                unsafe_store!(kp, p, i)
+                unsafe_store!(kp, CString(Int32(nb), p), i)
                 unsafe_store!(vp, v, i)
             end
             return CDict{$V}(Int64(n), kp, vp)
@@ -464,9 +462,9 @@ unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
 
 Emit the two C-callable release functions a wrapped library must export when it
 returns owning carriers (`CStrArray`, `CDict`): `jlw_free` frees one malloc'd
-block; `jlw_free_strings` frees `n` strings and their pointer array. Generated
-wrappers call them exactly once per returned value, via the library's own handle.
-Place at top level of the entry module.
+block; `jlw_free_strings` frees `n` `CString`-element strings and their array.
+Generated wrappers call them exactly once per returned value, via the
+library's own handle. Place at top level of the entry module.
 """
 macro export_release_entrypoints()
     return esc(
@@ -475,7 +473,7 @@ macro export_release_entrypoints()
                 Libc.free(p)
                 return nothing
             end
-            Base.@ccallable function jlw_free_strings(p::Ptr{Ptr{UInt8}}, n::Int64)::Cvoid
+            Base.@ccallable function jlw_free_strings(p::Ptr{CString}, n::Int64)::Cvoid
                 JLWInterop._free_strings(p, n)
                 return nothing
             end
