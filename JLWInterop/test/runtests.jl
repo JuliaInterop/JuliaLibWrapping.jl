@@ -279,6 +279,7 @@ using Test
         a = CStrArray(v)
         @test a.length == 4
         @test fieldtype(CStrArray, :data) === Ptr{CString}
+        @test unsafe_load(a.data, 3).data != C_NULL   # empty string still mallocs a real, freeable pointer
         @test Vector{String}(a) == v
         JLWInterop._free_strings(a.data, a.length)   # tests own the free
         @test Vector{String}(CStrArray(String[])) == String[]
@@ -289,6 +290,8 @@ using Test
         c = CDict(d)
         @test c.length == 4
         @test fieldtype(CDict{Float64}, :keys) === Ptr{CString}
+        empty_idx = findfirst(i -> iszero(unsafe_load(c.keys, i).length), 1:c.length)
+        @test unsafe_load(c.keys, empty_idx).data != C_NULL   # empty key still mallocs a real, freeable pointer
         @test Dict{String, Float64}(c) == d
         JLWInterop._free_strings(c.keys, c.length)
         Libc.free(c.values)
