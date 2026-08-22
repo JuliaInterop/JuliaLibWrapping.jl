@@ -94,6 +94,9 @@ end
   result with `.as_list()`, then releases the buffers with
   `_lowlevel._lib.jlw_free_strings(result.data, result.length)`.
 
+Each element's own length is `CString`'s `Int32`, so a single string over
+~2 GiB fails loud with an `InexactError` rather than silently truncating.
+
 ```@docs
 CStrArray
 ```
@@ -115,7 +118,9 @@ end
 `V` is a closed, trim-safe allowlist of 11 scalar types
 ([`CDICT_VALUE_TYPES`](@ref)) — the per-`V` conversion methods are generated
 only for those types, so an unsupported `V` fails as a `MethodError` at the
-call site rather than compiling something unsound.
+call site rather than compiling something unsound. Each key's own length is
+`CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
+`InexactError` rather than silently truncating.
 
 - **Borrow-in** (`Base.Dict{String,V}(d::CDict{V})`): copies keys and values
   out into a fresh `Dict`; never frees `d.keys`, the per-key buffers, or

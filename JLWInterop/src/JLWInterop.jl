@@ -273,7 +273,9 @@ end
 
 Owning-or-borrowed C-ABI descriptor for an array of UTF-8 strings: `length`
 elements at `data`, each a length-prefixed [`CString`](@ref) (16 bytes, not
-NUL-terminated; embedded NUL bytes are allowed).
+NUL-terminated; embedded NUL bytes are allowed). Each element's own length is
+`CString`'s `Int32`, so a single string over ~2 GiB fails loud with an
+`InexactError` in the own-out constructor rather than silently truncating.
 
 # Ownership contract
 
@@ -317,7 +319,7 @@ function CStrArray(v::Vector{String})
     for i in 1:n
         s = v[i]
         nb = sizeof(s)
-        p = Ptr{UInt8}(Libc.malloc(nb))
+        p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
         GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
         unsafe_store!(data, CString(Int32(nb), p), i)
     end
@@ -361,7 +363,9 @@ key/value pairs, keys as length-prefixed [`CString`](@ref)s at `keys`, values
 as a parallel array of `V` at `values`. `V` is restricted to
 [`CDICT_VALUE_TYPES`](@ref); the allowlist is enforced structurally — the
 per-`V` conversion methods below are the only ones generated, so a
-disallowed `V` fails as a `MethodError` at the call site.
+disallowed `V` fails as a `MethodError` at the call site. Each key's own
+length is `CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
+`InexactError` in the own-out constructor rather than silently truncating.
 
 # Ownership contract
 
@@ -412,7 +416,7 @@ for V in CDICT_VALUE_TYPES
             for (k, v) in dict
                 i += 1
                 nb = sizeof(k)
-                p = Ptr{UInt8}(Libc.malloc(nb))
+                p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty key still needs a non-NULL, freeable p
                 GC.@preserve k unsafe_copyto!(p, pointer(k), nb)
                 unsafe_store!(kp, CString(Int32(nb), p), i)
                 unsafe_store!(vp, v, i)
