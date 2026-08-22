@@ -96,6 +96,11 @@ concrete target is a configuration struct passed to
 Adding a new target means defining a struct subtype of `AbstractTarget`
 and a method `write_wrapper(::YourTarget, ::ABIInfo)` that walks the
 sorted descriptors and emits whatever your target language requires.
+The carrier recognizers in `src/recognizers.jl` (`carray_struct_info`,
+`cstring_struct_info`, `is_jlwstatus_struct`, and friends) decide whether a
+`StructDesc`/`MethodDesc` matches a JLWInterop carrier shape by inspecting
+`ABIInfo`/`TypeDesc` alone, so a new target can reuse them as-is instead of
+reimplementing shape detection.
 
 ## Generated and editable Python modules
 
@@ -205,8 +210,12 @@ Two limits apply to that arrangement:
 - **Each runtime uses its own resources.** Two sysimages, two GC heaps, and
   two thread pools are resident at once.
 
-This behavior was measured on Linux. macOS and Windows use different library
-resolution rules and have not been tested.
+This behavior is tested on Linux and macOS, both of which resolve
+`libjulia` via a baked-in rpath (`$ORIGIN`/`@loader_path`). Windows has no
+rpath equivalent, and `juliac` does not yet implement SONAME salting there,
+so `privatize = true` has no effect on a Windows build — see
+[Platform support](@ref) for the Windows loader mechanism and the
+resulting privatization caveat.
 
 At import time, generated `_lowlevel.py` files record their package names in
 `sys._jlw_loaded_packages`. A non-privatized package emits a `RuntimeWarning`

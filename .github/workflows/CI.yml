@@ -13,8 +13,9 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
-    name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
     timeout-minutes: 60
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
@@ -34,6 +35,8 @@ jobs:
           - 'nightly'
         os:
           - ubuntu-latest
+          - macos-latest
+          - windows-latest
         arch:
           - x64
         include:
@@ -41,14 +44,40 @@ jobs:
             coverage_dirs: JuliaLibWrapping/src,JuliaLibWrapping/ext
           - package: JLWInterop
             coverage_dirs: JLWInterop/src
+          # JuliaLibWrapping's compat floor (1.13) has no stable release yet, so
+          # setup-julia cannot resolve `min` today. Keep the cell so it starts
+          # testing 1.13.0 automatically once it ships; soft-fail until then.
+          - package: JuliaLibWrapping
+            version: 'min'
+            experimental: true
+          # juliac --trim is currently broken on Julia nightly (verifier
+          # errors in Base, e.g. unresolved HashState/IOContext calls);
+          # keep the signal visible without failing the workflow.
+          - package: JuliaLibWrapping
+            version: 'nightly'
+            experimental: true
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
+          # macos-latest is an Apple Silicon (arm64) runner; matrix.arch is
+          # x64 for the ubuntu/windows cells, so override it to "default"
+          # (let setup-julia pick the host's native arch) on macOS instead of
+          # forcing an x64 Julia onto an arm64 runner.
+          arch: ${{ matrix.os == 'macos-latest' && 'default' || matrix.arch }}
           project: ${{ matrix.package }}
       - uses: julia-actions/cache@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # On Windows, MinGW-w64 is pre-installed at C:\msys64\mingw64\bin but is
+      # not on PATH. Add it so the `gcc`/`clang` availability gates in
+      # test_build_library.jl's end-to-end tests find a compiler.
+      - name: Set up MinGW-w64 (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
       - uses: julia-actions/julia-buildpkg@v1
         with:
           project: ${{ matrix.package }}

@@ -38,25 +38,44 @@ struct PythonTarget <: AbstractTarget
     privatized::Bool
 end
 
-PythonTarget(dir::AbstractString, package_name::AbstractString,
-             library_basename::AbstractString; bundle_subdir = nothing,
-             version::AbstractString = _DEFAULT_PACKAGE_VERSION,
-             privatized::Bool = false) =
-    PythonTarget(String(dir), String(package_name), String(library_basename),
-                 bundle_subdir === nothing ? nothing : String(bundle_subdir),
-                 isempty(version) ? throw(ArgumentError(
-                     "PythonTarget version must not be empty")) : String(version),
-                 privatized)
+PythonTarget(
+    dir::AbstractString, package_name::AbstractString,
+    library_basename::AbstractString; bundle_subdir = nothing,
+    version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+    privatized::Bool = false
+) =
+    PythonTarget(
+    String(dir), String(package_name), String(library_basename),
+    bundle_subdir === nothing ? nothing : String(bundle_subdir),
+    isempty(version) ? throw(
+            ArgumentError(
+                "PythonTarget version must not be empty"
+            )
+        ) : String(version),
+    privatized
+)
 
 function Base.show(io::IO, t::PythonTarget)
-    print(io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
-              ", ", repr(t.library_basename))
+    print(
+        io, "PythonTarget(", repr(t.dir), ", ", repr(t.package_name),
+        ", ", repr(t.library_basename)
+    )
     t.bundle_subdir === nothing || print(io, "; bundle_subdir = ", repr(t.bundle_subdir))
     t.version == _DEFAULT_PACKAGE_VERSION || print(io, "; version = ", repr(t.version))
     t.privatized && print(io, "; privatized = true")
-    print(io, ")")
+    return print(io, ")")
 end
 
+"""
+    pytypes :: Dict{String, String}
+
+Map from Julia primitive type name (as it appears in a `PrimitiveTypeDesc`'s
+`name` field, e.g. `"Int64"`, `"Float32"`, `"Cvoid"`) to the corresponding
+`ctypes` expression (e.g. `"ctypes.c_int64"`, `"ctypes.c_float"`, `"None"`).
+Used by [`mangle_python!`](@ref) for scalar/primitive arguments and returns,
+and by [`cdict_struct_info`](@ref)/[`copt_struct_info`](@ref) to recognize a
+carrier's value-typed field as a supported scalar.
+"""
 const pytypes = Dict{String, String}(
     "Int8" => "ctypes.c_int8",
     "Int16" => "ctypes.c_int16",
@@ -95,12 +114,17 @@ const pytypes = Dict{String, String}(
 Return a Python expression naming the ctypes type for `type_id`. Struct names
 go through `sanitize_for_c` (whose output is also a valid Python identifier)
 with a `_<id>` collision suffix matching `mangle_c!`. Pointer types render
-inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`.
-Array types render inline as `(<eltype> * N)`. Results are memoized in
-`typedict`.
+inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`
+— both when the pointee arrives as a `PrimitiveTypeDesc` named `"Cvoid"`
+and when it arrives as juliac's zero-field `Nothing` struct (see
+[`_is_void_struct`](@ref); the latter is what `Ptr{Nothing}` actually looks
+like in a real ABI JSON). Array types render inline as `(<eltype> * N)`.
+Results are memoized in `typedict`.
 """
-function mangle_python!(typedict::Dict{Int, String}, type_id::Int,
-                        typeinfo::OrderedDict{Int, TypeDesc})
+function mangle_python!(
+        typedict::Dict{Int, String}, type_id::Int,
+        typeinfo::OrderedDict{Int, TypeDesc}
+    )
     if type_id in keys(typedict)
         return typedict[type_id]
     end
@@ -114,6 +138,8 @@ function mangle_python!(typedict::Dict{Int, String}, type_id::Int,
     elseif type isa PointerDesc
         pointee = typeinfo[type.pointee_type]
         if pointee isa PrimitiveTypeDesc && pointee.name == "Cvoid"
+            mangled = "ctypes.c_void_p"
+        elseif pointee isa StructDesc && _is_void_struct(pointee)
             mangled = "ctypes.c_void_p"
         else
             inner = mangle_python!(typedict, type.pointee_type, typeinfo)
@@ -157,121 +183,33 @@ const numpy_dtypes = Dict{String, String}(
 )
 
 """
-    carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+    _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
 
-Recognize the JLWInterop `CArray{T,N}` shape (which subsumes `CVector{T} =
-CArray{T,1}` and `CMatrix{T} = CArray{T,2}`): a struct whose name starts
-with `"CArray"`, `"CVector"`, or `"CMatrix"`, with exactly two fields
-named `dims` (a fixed-size array of `N` integers, i.e. an `ArrayDesc`
-of a signed/unsigned integer primitive in [`numpy_dtypes`](@ref)) and `data`
-(a pointer to a primitive numeric type also in `numpy_dtypes`). Field order
-may be either `dims, data` or `data, dims`. Returns
-`(; pointee_name, pointee_ctype, dtype, ndim)` on a match (with `ndim` set
-to the `dims` array's `count`), otherwise `nothing`.
-
-Like [`is_jlwstatus_struct`](@ref), recognition is by name + shape so
-authors who copy-paste a compatible definition still get the behavior.
+Return the mangled Python `ctypes.Structure` class name for the
+`CString` struct pointed to by `desc`'s field named `fieldname`
+(`"data"` for [`cstrarray_struct_info`](@ref), `"keys"` for
+[`cdict_struct_info`](@ref)). Callers must have already confirmed the field
+recognizes as `Ptr{CString}`. `typedict` already carries the pointee's class
+name by the time this is called — every struct is pre-mangled, in
+declaration order, before `_write_bindings` walks `typeinfo`.
 """
-function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    (startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
-     startswith(desc.name, "CMatrix")) || return nothing
-    length(desc.fields) == 2 || return nothing
-    dims_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "dims"
-            dims_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (dims_field === nothing || data_field === nothing) && return nothing
-    dims_type = typeinfo[dims_field.type]
-    dims_type isa ArrayDesc || return nothing
-    dims_eltype = typeinfo[dims_type.element_type]
-    dims_eltype isa PrimitiveTypeDesc || return nothing
-    (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
-    dims_eltype.name in keys(numpy_dtypes) || return nothing
-    data_type = typeinfo[data_field.type]
-    data_type isa PointerDesc || return nothing
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa PrimitiveTypeDesc || return nothing
-    pointee.name in keys(numpy_dtypes) || return nothing
-    return (; pointee_name = pointee.name,
-              pointee_ctype = pytypes[pointee.name],
-              dtype = numpy_dtypes[pointee.name],
-              ndim = dims_type.count)
+function _cstring_pointee_classname(
+        desc::StructDesc, fieldname::String,
+        typeinfo::OrderedDict{Int, TypeDesc}, typedict::Dict{Int, String}
+    )
+    field = only(f for f in desc.fields if f.name == fieldname)
+    pointee_id = (typeinfo[field.type]::PointerDesc).pointee_type
+    return typedict[pointee_id]
 end
 
-"""
-    cstring_struct_info(desc::StructDesc, typeinfo) -> Bool
-
-Recognize the JLWInterop `CString` shape: a struct whose name starts with
-`"CString"`, with exactly two fields named `length` (a primitive integer)
-and `data` (a pointer to `UInt8`). The pointee type is restricted to
-`UInt8` specifically (other widths would not round-trip as a UTF-8
-string). Returns `true` on a match, `false` otherwise. Field order may be
-either `length, data` or `data, length`. Recognition is by name + shape
-(see [`is_jlwstatus_struct`](@ref) for the rationale).
-"""
-function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CString") || return false
-    length(desc.fields) == 2 || return false
-    length_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "length"
-            length_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (length_field === nothing || data_field === nothing) && return false
-    length_type = typeinfo[length_field.type]
-    length_type isa PrimitiveTypeDesc || return false
-    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return false
-    data_type = typeinfo[data_field.type]
-    data_type isa PointerDesc || return false
-    pointee = typeinfo[data_type.pointee_type]
-    pointee isa PrimitiveTypeDesc || return false
-    pointee.name == "UInt8" || return false
-    return true
-end
-
-"""
-    raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
-
-Return positional indices into `method.args` for arguments whose static type is
-a bare `Ptr{T}` where `T` is a primitive numeric type recognized by
-[`numpy_dtypes`](@ref). `Ptr{Cvoid}` is excluded (it lowers to `ctypes.c_void_p`).
-Pointers wrapped inside `CArray` / `CString` structs are *not* reported —
-only top-level argument types are examined.
-
-A non-empty result signals an argument that hands the C function a raw memory
-address with no length, ownership, or layout metadata. The Python emitter uses
-this to attach a docstring on the wrapper noting the column-major contract and
-recommending the [`JLWInterop.CArray`](@ref) vocabulary instead.
-"""
-function raw_primitive_pointer_args(method::MethodDesc,
-                                    typeinfo::OrderedDict{Int, TypeDesc})
-    out = Int[]
-    for (i, arg) in pairs(method.args)
-        t = typeinfo[arg.type]
-        t isa PointerDesc || continue
-        pointee = typeinfo[t.pointee_type]
-        pointee isa PrimitiveTypeDesc || continue
-        pointee.name in keys(numpy_dtypes) || continue
-        push!(out, i)
-    end
-    return out
-end
-
-const PYTHON_KEYWORDS = Set{String}([
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-    "class", "continue", "def", "del", "elif", "else", "except", "finally",
-    "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
-])
+const PYTHON_KEYWORDS = Set{String}(
+    [
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break",
+        "class", "continue", "def", "del", "elif", "else", "except", "finally",
+        "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+        "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    ]
+)
 
 """
     sanitize_python_argname(name) -> String
@@ -291,7 +229,7 @@ is fresh, skipping any value that itself already collides — so the result is
 safe even when sanitized input happens to look like another argument plus a
 numeric tail. The chosen name is inserted into `seen` before returning.
 """
-function sanitize_python_argname(name::AbstractString, seen=nothing)
+function sanitize_python_argname(name::AbstractString, seen = nothing)
     sanitized = sanitize_for_c(name)
     isempty(sanitized) && (sanitized = "_")
     isdigit(first(sanitized)) && (sanitized = "_" * sanitized)
@@ -311,7 +249,10 @@ function sanitize_python_argname(name::AbstractString, seen=nothing)
     return sanitized
 end
 
-function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
+function write_wrapper(
+        dest::PythonTarget, abi_info::ABIInfo;
+        os_kernel::Symbol = _current_os_kernel()
+    )
     (; entrypoints, typeinfo, forward_declared) = abi_info
 
     pkgdir = joinpath(dest.dir, dest.package_name)
@@ -331,20 +272,26 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     end
 
     # Report bare-pointer arguments during generation.
-    let raw_ptr_methods = [m.symbol for m in entrypoints
-                           if !isempty(raw_primitive_pointer_args(m, typeinfo))]
-        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods=raw_ptr_methods
+    let raw_ptr_methods = [
+            m.symbol for m in entrypoints
+                if !isempty(raw_primitive_pointer_args(m, typeinfo, numpy_dtypes))
+        ]
+        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
 
-    needs_jlwerror = any(jlwstatus_access_path(m, typeinfo) !== nothing
-                        for m in entrypoints)
-    needs_numpy = any(type isa StructDesc &&
-                      carray_struct_info(type, typeinfo) !== nothing
-                      for type in values(typeinfo))
+    needs_jlwerror = any(
+        jlwstatus_access_path(m, typeinfo, sanitize_python_argname) !== nothing
+            for m in entrypoints
+    )
+    needs_numpy = any(
+        type isa StructDesc &&
+            carray_struct_info(type, typeinfo, numpy_dtypes, pytypes) !== nothing
+            for type in values(typeinfo)
+    )
 
     lowlevel_path = joinpath(pkgdir, "_lowlevel.py")
     open(lowlevel_path, "w") do f
-        _write_bindings(f, dest, abi_info, typedict, needs_jlwerror, needs_numpy)
+        _write_bindings(f, dest, abi_info, typedict, needs_jlwerror, needs_numpy; os_kernel)
     end
 
     # `_facade.py` defines the author-editable public API. JuliaLibWrapping
@@ -360,12 +307,34 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     end
 
     has_any_export = needs_jlwerror || !isempty(entrypoints) ||
-                     any(type isa StructDesc
-                         for type in values(typeinfo))
+        any(
+        type isa StructDesc
+            for type in values(typeinfo)
+    )
     init_path = joinpath(pkgdir, "__init__.py")
     open(init_path, "w") do f
-        println(f, "\"\"\"", dest.package_name,
-                   " Python bindings (auto-generated by JuliaLibWrapping).\"\"\"")
+        println(
+            f, "\"\"\"", dest.package_name,
+            " Python bindings (auto-generated by JuliaLibWrapping).\"\"\""
+        )
+        if os_kernel === :windows && !isnothing(dest.bundle_subdir)
+            # JuliaC emits no rpath on Windows (unlike $ORIGIN on Linux or
+            # @loader_path on macOS), so the bundled runtime's DLL directory
+            # must be added to the search path before anything below here
+            # (transitively `_facade`/`_lowlevel`, and `_lowlevel`'s
+            # `ctypes.CDLL(...)`) can find libjulia*.dll.
+            println(f, "import os as _os")
+            println(f, "_d = _os.path.dirname(_os.path.abspath(__file__))")
+            println(
+                f, "_bin = _os.path.join(_d, ", repr(dest.bundle_subdir), ", ",
+                repr(bundle_libdir(os_kernel)), ")"
+            )
+            println(f, "if hasattr(_os, \"add_dll_directory\"):")
+            println(f, "    _os.add_dll_directory(_bin)")
+            println(f, "else:")
+            println(f, "    _os.environ[\"PATH\"] = _bin + _os.pathsep + _os.environ.get(\"PATH\", \"\")")
+            println(f, "del _os, _d, _bin")
+        end
         if !has_any_export
             println(f, "from . import _lowlevel  # noqa: F401")
             println(f, "from . import _facade  # noqa: F401")
@@ -383,56 +352,6 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     return nothing
 end
 
-"""
-    is_jlwstatus_struct(desc::StructDesc, typeinfo) -> Bool
-
-Recognize the JLWInterop error-status convention by structural shape: a
-struct named `JLWStatus` with two fields — an integer `code` field and a
-`message` field that is a fixed-size byte array. Matching by name + shape
-(rather than by package identity) means authors who copy-paste a compatible
-definition still get the behavior.
-"""
-function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    desc.name == "JLWStatus" || return false
-    length(desc.fields) == 2 || return false
-    code_field, msg_field = desc.fields
-    code_field.name == "code" || return false
-    msg_field.name == "message" || return false
-    code_type = typeinfo[code_field.type]
-    code_type isa PrimitiveTypeDesc || return false
-    code_type.name in ("Int32", "Int64") || return false
-    msg_type = typeinfo[msg_field.type]
-    msg_type isa ArrayDesc || return false
-    eltype = typeinfo[msg_type.element_type]
-    eltype isa PrimitiveTypeDesc && eltype.name == "UInt8" || return false
-    return true
-end
-
-"""
-    jlwstatus_access_path(method, typeinfo) -> Union{Nothing, String}
-
-If `method`'s return type carries a JLWStatus (either the return type *is* a
-JLWStatus or it is a struct with a JLWStatus field), return the Python
-attribute path from `_result` to that status (e.g. `""` for direct return,
-or `".status"` for an embedded field). Otherwise return `nothing`.
-Recognition is shallow on purpose — only the immediate return struct's
-top-level fields are inspected.
-"""
-function jlwstatus_access_path(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    rt = typeinfo[method.return_type]
-    rt isa StructDesc || return nothing
-    if is_jlwstatus_struct(rt, typeinfo)
-        return ""
-    end
-    for field in rt.fields
-        ftype = typeinfo[field.type]
-        if ftype isa StructDesc && is_jlwstatus_struct(ftype, typeinfo)
-            return "." * sanitize_python_argname(field.name)
-        end
-    end
-    return nothing
-end
-
 function _write_carray_helpers(f::IO, cainfo)
     # `cainfo` is the return of `carray_struct_info`. Helpers are emitted as
     # methods on the surrounding ctypes.Structure subclass; the `dims` and
@@ -447,8 +366,10 @@ function _write_carray_helpers(f::IO, cainfo)
         "if not arr.flags.f_contiguous:"
     contig_msg = ndim == 1 ?
         "\"array must be contiguous\"" :
-        ("\"array must be Fortran-contiguous (column-major); \"\n" *
-         "                             \"use np.asfortranarray(arr) to convert\"")
+        (
+            "\"array must be Fortran-contiguous (column-major); \"\n" *
+            "                             \"use np.asfortranarray(arr) to convert\""
+        )
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_numpy(cls, arr):")
@@ -480,7 +401,7 @@ function _write_carray_helpers(f::IO, cainfo)
     println(f, "        return obj")
     println(f, "")
     println(f, "    def as_numpy(self):")
-    if ndim == 1
+    return if ndim == 1
         println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))")
     else
@@ -530,7 +451,159 @@ function _write_cstring_helpers(f::IO)
     println(f, "")
     println(f, "    def as_str(self):")
     println(f, "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"")
-    println(f, "        return self.as_bytes().decode(\"utf-8\")")
+    return println(f, "        return self.as_bytes().decode(\"utf-8\")")
+end
+
+"""
+    _emit_cstring_array(f, list_var, arr_var, source_expr, item_var, cstring_classname)
+
+Emit the "encode each string into a raw (non-NUL-terminated) buffer, then
+build a `ctypes` array of `<cstring_classname>` structs, each holding that
+buffer's length and a pointer into it" template shared, byte-for-byte, by
+`_write_cstrarray_helpers`'s `from_list` (`list_var="bufs"`, `arr_var="arr"`,
+`source_expr="items"`, `item_var="s"`) and `_write_cdict_helpers`'s
+`from_dict` (`list_var="keys"`, `arr_var="karr"`, `source_expr="d.keys()"`,
+`item_var="k"`) — both build a `ctypes` argument out of an iterable of
+Python `str`s, differing only in what the iterable/result Python variables
+are named. `source_expr` is the Python expression iterated to produce raw
+strings; `item_var` names the loop variable used in the outer comprehension
+only — the inner per-buffer comprehension's loop variable is always `b`, so
+both call sites emit identical text apart from the substituted names.
+Embedded NUL bytes in the source strings survive intact: each element's
+`length` is the exact byte count, not a NUL-terminator search.
+"""
+function _emit_cstring_array(
+        f::IO, list_var::AbstractString, arr_var::AbstractString,
+        source_expr::AbstractString, item_var::AbstractString,
+        cstring_classname::AbstractString
+    )
+    println(
+        f, "        ", list_var, " = [", item_var, ".encode(\"utf-8\") for ",
+        item_var, " in ", source_expr, "]"
+    )
+    println(f, "        ", arr_var, " = (", cstring_classname, " * len(", list_var, "))(")
+    return println(
+        f, "            *[", cstring_classname, "(length=len(b), data=ctypes.cast(",
+        "ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in ",
+        list_var, "])"
+    )
+end
+
+function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, release_present::Bool)
+    # CStrArray shape — see `cstrarray_struct_info`. The `length`, `data`,
+    # and `owned` field names are guaranteed by the recognizer, and `data`
+    # is always Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like
+    # CString this emits no numpy dependency; helpers use only `ctypes`.
+    # `data` is Julia-allocated memory when `owned` is 1 (own-out
+    # convention), so unlike CString's helpers there is no `as_bytes`/
+    # from-buffer split — the caller-facing vocabulary is `list[str]` in
+    # and out. `from_list` always builds a caller-owned (`owned=0`) value:
+    # the object never allocated it and must never free it. `release_present`
+    # is `_release_symbols_present`'s verdict for the surrounding library —
+    # `.free()` stays present either way (stable API shape), but raises a
+    # clear `RuntimeError` instead of a bare `AttributeError` when the
+    # library never exported `jlw_free_strings`.
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_list(cls, items):")
+    println(f, "        if not isinstance(items, (list, tuple)):")
+    println(f, "            raise TypeError(\"expected a list of str\")")
+    _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
+    println(
+        f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(",
+        cstring_classname, ")), owned=0)"
+    )
+    println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_list(self):")
+    println(f, "        out = []")
+    println(f, "        for i in range(self.length):")
+    println(f, "            e = self.data[i]")
+    println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
+    println(f, "        return out")
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffer iff this object owns it (owned is 1).")
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    if release_present
+        println(f, "        if self.owned == 1:")
+        println(f, "            _lib.jlw_free_strings(self.data, self.length)")
+        return println(f, "            self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
+end
+
+function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
+    # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`,
+    # `values`, and `owned` field names are guaranteed by the recognizer;
+    # `keys` is always Ptr{CString} (like CStrArray's `data`), `values` is
+    # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
+    # `values` is `d.values()` boxed into a fresh ctypes array on the way
+    # in, and read back element-by-element on the way out. `from_dict`
+    # always builds a caller-owned (`owned=0`) value. `release_present` — see
+    # the identical parameter on `_write_cstrarray_helpers`.
+    ctype = cdinfo.value_ctype
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_dict(cls, d):")
+    _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname)
+    println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
+    println(f, "        obj = cls(length=len(keys),")
+    println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
+    println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")),")
+    println(f, "                  owned=0)")
+    println(f, "        obj._buffer = (keys, karr, varr)")
+    println(f, "        return obj")
+    println(f, "")
+    println(f, "    def as_dict(self):")
+    println(f, "        out = {}")
+    println(f, "        for i in range(self.length):")
+    println(f, "            e = self.keys[i]")
+    println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
+    println(f, "            out[k] = self.values[i]")
+    println(f, "        return out")
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffers iff this object owns them (owned is 1).")
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    if release_present
+        println(f, "        if self.owned == 1:")
+        println(f, "            _lib.jlw_free_strings(self.keys, self.length)")
+        println(f, "            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))")
+        return println(f, "            self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
+end
+
+function _write_copt_helpers(f::IO, coinfo)
+    # COpt{T} shape — see `copt_struct_info`. The `has_value`/`value` field
+    # names are guaranteed by the recognizer. COpt is by-value (no pointer
+    # fields), so unlike the other vocabulary helpers there is no
+    # `_buffer` keepalive and no free-on-release concern.
+    println(f, "")
+    println(f, "    @classmethod")
+    println(f, "    def from_optional(cls, x):")
+    println(f, "        if x is None:")
+    println(f, "            return cls(has_value=0, value=0)")
+    println(f, "        return cls(has_value=1, value=x)")
+    println(f, "")
+    println(f, "    def as_optional(self):")
+    return println(f, "        return None if self.has_value == 0 else self.value")
 end
 
 const JLWERROR_DEFINITION = """
@@ -542,17 +615,31 @@ class JLWError(RuntimeError):
         self.message = message
 """
 
-function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
-                         typedict::Dict{Int, String}, needs_jlwerror::Bool=false,
-                         needs_numpy::Bool=false)
+function _write_bindings(
+        f::IO, dest::PythonTarget, abi_info::ABIInfo,
+        typedict::Dict{Int, String}, needs_jlwerror::Bool = false,
+        needs_numpy::Bool = false;
+        os_kernel::Symbol = _current_os_kernel()
+    )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
+    # The flat (non-bundle) layout has no baked-in rpath equivalent on
+    # Windows to resolve the wrapped library's dependency on libjulia*.dll,
+    # so it needs to locate a system Julia install at import time. This
+    # only applies to the flat layout: a bundle already carries its own
+    # runtime (see the `bundle/bin` search directory below).
+    win_flat_fallback = os_kernel === :windows && isnothing(dest.bundle_subdir)
+    # Threaded into `_write_cstrarray_helpers`/`_write_cdict_helpers` so their
+    # `.free()` method can raise a clear error instead of a bare
+    # AttributeError when the library never exported the release entrypoints.
+    release_present = _release_symbols_present(abi_info)
 
     println(f, "\"\"\"Auto-generated by JuliaLibWrapping. Do not edit by hand.\"\"\"")
     println(f, "import ctypes")
     println(f, "import os")
     println(f, "import sys")
     println(f, "import pathlib")
+    win_flat_fallback && println(f, "import shutil")
     if needs_numpy
         # CArray helpers require numpy.
         println(f, "import numpy as np")
@@ -562,10 +649,55 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "_LIBRARY_BASENAME = ", repr(dest.library_basename))
     println(f, "_LIBRARY_ENV_VAR = ", repr(env_var))
     println(f)
+    if win_flat_fallback
+        # Locate a system Julia install: JULIA_BINDIR, then JULIA_PREFIX,
+        # then PATH, then asking `julia` itself where its own
+        # `Sys.BINDIR` is.
+        println(f, "def _find_julia_bin():")
+        println(f, "    _d = os.environ.get(\"JULIA_BINDIR\")")
+        println(f, "    if _d and os.path.isdir(_d):")
+        println(f, "        return _d")
+        println(f, "    _p = os.environ.get(\"JULIA_PREFIX\")")
+        println(f, "    if _p and os.path.isdir(_p):")
+        println(f, "        return os.path.join(_p, \"bin\")")
+        println(f, "    _j = shutil.which(\"julia\")")
+        println(f, "    if _j:")
+        println(f, "        try:")
+        println(f, "            import subprocess as _sp")
+        println(f, "            _d2 = _sp.check_output(")
+        println(f, "                [_j, \"-e\", \"print(Sys.BINDIR)\"],")
+        println(f, "                stderr=_sp.DEVNULL, timeout=30).decode().strip()")
+        println(f, "            if _d2:")
+        println(f, "                return _d2")
+        println(f, "        except Exception:")
+        println(f, "            pass")
+        println(f, "    return None")
+        println(f)
+    end
     println(f, "def _resolve_library_path():")
     println(f, "    override = os.environ.get(_LIBRARY_ENV_VAR)")
     println(f, "    if override:")
     println(f, "        return override")
+    if win_flat_fallback
+        # Widen the DLL search path FIRST, unconditionally — before the
+        # suffix search below, not only as a last resort on the not-found
+        # path. The library is normally found right next to the package
+        # (the loop a few lines down returns early), so if the widening
+        # only ran after that loop it would never execute on the real
+        # path: `ctypes.CDLL` would then fail to resolve the found
+        # library's dependency on libjulia*.dll (WinError 126). This is
+        # DLL-search-path-only — Julia's own bin/ is never itself searched
+        # as a candidate location for the wrapped library: a user's built
+        # library never lives there, and a same-named DLL that happened to
+        # live there would be silently (mis)loaded and fail confusingly
+        # later.
+        println(f, "    _julia_bin = _find_julia_bin()")
+        println(f, "    if _julia_bin is not None:")
+        println(f, "        if hasattr(os, \"add_dll_directory\"):")
+        println(f, "            os.add_dll_directory(_julia_bin)")
+        println(f, "        else:")
+        println(f, "            os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")")
+    end
     println(f, "    if sys.platform == \"win32\":")
     println(f, "        suffixes = (\".dll\",)")
     println(f, "    elif sys.platform == \"darwin\":")
@@ -573,14 +705,18 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     println(f, "    else:")
     println(f, "        suffixes = (\".so\", \".dylib\")")
     println(f, "    tried = []")
-    if dest.bundle_subdir !== nothing
+    if !isnothing(dest.bundle_subdir)
         # Bundle-aware layout: search the juliac --bundle tree first so the
         # baked-in RUNPATH (`$ORIGIN/../lib[/julia]` on Linux,
         # `@loader_path/../lib*` on macOS) resolves libjulia and friends from
         # inside the bundle. Fall back to the flat layout so the same loader
         # still works for a developer who drops a bare .so beside the package.
-        println(f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
-                   " / \"lib\", _HERE)")
+        # JuliaC's `--bundle` puts everything (including this library) under
+        # `bin/`, not `lib/`, on Windows (no rpath there for `lib/` to serve).
+        println(
+            f, "    search_dirs = (_HERE / ", repr(dest.bundle_subdir),
+            " / \"", bundle_libdir(os_kernel), "\", _HERE)"
+        )
         println(f, "    for directory in search_dirs:")
         println(f, "        for suffix in suffixes:")
         println(f, "            candidate = directory / (_LIBRARY_BASENAME + suffix)")
@@ -681,13 +817,26 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
                 end
                 println(f, "    ]")
             end
-            cainfo = carray_struct_info(type, typeinfo)
+            cainfo = carray_struct_info(type, typeinfo, numpy_dtypes, pytypes)
+            cdinfo = cdict_struct_info(type, typeinfo, pytypes)
+            coinfo = copt_struct_info(type, typeinfo, pytypes)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo)
             elseif cstring_struct_info(type, typeinfo)
                 # Emit CString conversion helpers.
                 _write_cstring_helpers(f)
+            elseif cstrarray_struct_info(type, typeinfo)
+                # Emit CStrArray conversion helpers.
+                cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
+                _write_cstrarray_helpers(f, cs_classname, release_present)
+            elseif !isnothing(cdinfo)
+                # Emit CDict conversion helpers.
+                cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
+                _write_cdict_helpers(f, cdinfo, cs_classname, release_present)
+            elseif !isnothing(coinfo)
+                # Emit COpt conversion helpers.
+                _write_copt_helpers(f, coinfo)
             end
         end
         println(f)
@@ -696,25 +845,57 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     # Function bindings.
     for method in entrypoints
         argexprs = String[mangle_python!(typedict, a.type, typeinfo) for a in method.args]
-        rt = mangle_python!(typedict, method.return_type, typeinfo)
+        return_desc = typeinfo[method.return_type]
+        # A bare `::Cvoid` return arrives here as a zero-field `Nothing`
+        # StructDesc (see `_is_void_struct`), not a `PrimitiveTypeDesc` — so
+        # it must be intercepted BEFORE `mangle_python!`, which (correctly,
+        # for every OTHER use of this same struct type_id — e.g. its `class
+        # Nothing(ctypes.Structure): _fields_ = []` definition, still
+        # emitted by the pre-mangle pass below for use as a struct-pointer
+        # pointee elsewhere) mangles it to the real `Nothing` class name.
+        # `restype` needs the Python singleton `None` instead — ctypes
+        # cannot build a call interface for a zero-size struct return
+        # (`ffi_prep_cif failed`). Using `typedict` here would either hit
+        # the already-memoized class name (wrong) or, if overwritten,
+        # corrupt every other reference to this type_id (also wrong) — so
+        # this bypasses `mangle_python!`/`typedict` entirely for this one
+        # call site rather than touching the shared memoized mapping. (A
+        # `Ptr{Nothing}` *pointer* return, unlike a bare `Nothing` struct
+        # return, would fall through to `mangle_python!` below and is
+        # handled there — see `_is_void_struct`'s `PointerDesc`-branch use.)
+        rt = return_desc isa StructDesc && _is_void_struct(return_desc) ?
+            "None" : mangle_python!(typedict, method.return_type, typeinfo)
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)
+
+        if method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS
+            # The release entrypoints (`jlw_free`/`jlw_free_strings`) are
+            # internal plumbing an owning-return façade wrapper calls
+            # directly via `_lowlevel._lib.<symbol>(...)` — bind argtypes/
+            # restype above so that call works, but emit no module-level
+            # `def` wrapper for them (see `_write_facade_stub`, which
+            # correspondingly excludes them from the façade and `__all__`).
+            println(f)
+            continue
+        end
 
         arg_names_seen = Set{String}()
         argnames = String[sanitize_python_argname(a.name, arg_names_seen) for a in method.args]
 
-        status_path = jlwstatus_access_path(method, typeinfo)
+        status_path = jlwstatus_access_path(method, typeinfo, sanitize_python_argname)
 
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
-        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
+        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo, numpy_dtypes)
         if !isempty(raw_ptr_idx)
             # Document metadata absent from bare primitive pointers.
             println(f, "    \"\"\"Raw pointer arguments — caller owns layout and lifetime.")
             println(f)
             for i in raw_ptr_idx
                 pointee_name = typeinfo[typeinfo[method.args[i].type].pointee_type].name
-                println(f, "    `", argnames[i], "` is a raw pointer to ", pointee_name,
-                           ". The wrapper does not check length, shape, or memory order.")
+                println(
+                    f, "    `", argnames[i], "` is a raw pointer to ", pointee_name,
+                    ". The wrapper does not check length, shape, or memory order."
+                )
             end
             println(f)
             println(f, "    Julia indexes multidimensional buffers column-major (Fortran order).")
@@ -729,8 +910,10 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
             # Raise JLWError for a failed status.
             println(f, "    _result = _lib.", method.symbol, "(", join(argnames, ", "), ")")
             println(f, "    if _result", status_path, ".code != 0:")
-            println(f, "        _msg = bytes(_result", status_path,
-                       ".message).rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\")")
+            println(
+                f, "        _msg = bytes(_result", status_path,
+                ".message).rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\")"
+            )
             println(f, "        raise JLWError(_result", status_path, ".code, _msg)")
             println(f, "    return _result")
         elseif rt == "None"
@@ -740,6 +923,7 @@ function _write_bindings(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         end
         println(f)
     end
+    return
 end
 
 """
@@ -749,109 +933,171 @@ Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:primitive,)` — pass-through
 - `(kind=:carray, classname=…)` — wrap with `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
+- `(kind=:cstrarray, classname=…)` — wrap with `<class>.from_list(name)`
+- `(kind=:cdict, classname=…)` — wrap with `<class>.from_dict(name)`
+- `(kind=:copt, classname=…)` — wrap with `<class>.from_optional(name)`
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
-function _facade_classify_arg(arg::ArgDesc,
-                              typeinfo::OrderedDict{Int, TypeDesc},
-                              typedict::Dict{Int, String})
+function _facade_classify_arg(
+        arg::ArgDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String}
+    )
     t = typeinfo[arg.type]
     if t isa PrimitiveTypeDesc
-        return (kind=:primitive,)
+        return (kind = :primitive,)
     elseif t isa StructDesc
-        if carray_struct_info(t, typeinfo) !== nothing
-            return (kind=:carray, classname=typedict[arg.type])
+        if !isnothing(carray_struct_info(t, typeinfo, numpy_dtypes, pytypes))
+            return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
-            return (kind=:cstring, classname=typedict[arg.type])
+            return (kind = :cstring, classname = typedict[arg.type])
+        elseif cstrarray_struct_info(t, typeinfo)
+            return (kind = :cstrarray, classname = typedict[arg.type])
+        elseif !isnothing(cdict_struct_info(t, typeinfo, pytypes))
+            return (kind = :cdict, classname = typedict[arg.type])
+        elseif !isnothing(copt_struct_info(t, typeinfo, pytypes))
+            return (kind = :copt, classname = typedict[arg.type])
         else
-            return (kind=:opaque, reason="argument has unrecognized type `" * t.name * "`")
+            return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
     elseif t isa ArrayDesc
-        return (kind=:opaque, reason="argument has array type `" * t.name * "`")
+        return (kind = :opaque, reason = "argument has array type `" * t.name * "`")
     else  # PointerDesc
-        return (kind=:opaque, reason="argument has raw pointer type `" * t.name * "`")
+        return (kind = :opaque, reason = "argument has raw pointer type `" * t.name * "`")
     end
 end
 
 """
-    _facade_classify_return(method, typeinfo, typedict) -> NamedTuple
+    _facade_classify_return(method, typeinfo, typedict, release_present) -> NamedTuple
 
-Classify a method's return for façade auto-wrapping. The return is one of:
+Classify a method's return for façade auto-wrapping. `release_present` is
+[`_release_symbols_present`](@ref)'s verdict for the surrounding library.
+The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
 - `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
+- `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
+  free the `data` buffer via `jlw_free_strings` iff `_result.owned` is `1`
+  (ownership is read from the returned value itself, not assumed from the
+  fact that it was returned — a pass-through of a borrowed argument stays
+  `owned = 0` and is never freed)
+- `(kind=:cdict_unwrap, classname=…)` — return `_result.as_dict()`, then,
+  iff `_result.owned` is `1`, free the `keys` buffer via `jlw_free_strings`
+  AND the `values` buffer via `jlw_free` (two separate allocations)
+- `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
+  is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
-- `(kind=:opaque, reason=…)` — bail out.
+- `(kind=:opaque, reason=…)` — bail out. Also returned in place of
+  `:cstrarray_unwrap`/`:cdict_unwrap` when `release_present` is `false`:
+  auto-wrapping an owning return with no release entrypoints available
+  would emit a call to a symbol that does not exist.
 """
-function _facade_classify_return(method::MethodDesc,
-                                 typeinfo::OrderedDict{Int, TypeDesc},
-                                 typedict::Dict{Int, String})
+function _facade_classify_return(
+        method::MethodDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String},
+        release_present::Bool
+    )
     rt = typeinfo[method.return_type]
     if rt isa PrimitiveTypeDesc
-        return (kind=:passthrough,)
+        return (kind = :passthrough,)
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
-            return (kind=:jlwstatus_discard,)
-        elseif carray_struct_info(rt, typeinfo) !== nothing
-            return (kind=:carray_unwrap, classname=typedict[method.return_type])
+            return (kind = :jlwstatus_discard,)
+        elseif !isnothing(carray_struct_info(rt, typeinfo, numpy_dtypes, pytypes))
+            return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
-            return (kind=:cstring_unwrap, classname=typedict[method.return_type])
-        elseif jlwstatus_access_path(method, typeinfo) !== nothing
-            return (kind=:opaque,
-                    reason="returns struct `" * rt.name *
-                           "` with embedded JLWStatus; idiomatic shaping depends on the other fields")
+            return (kind = :cstring_unwrap, classname = typedict[method.return_type])
+        elseif cstrarray_struct_info(rt, typeinfo)
+            release_present || return (
+                kind = :opaque,
+                reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+            )
+            return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
+        elseif !isnothing(cdict_struct_info(rt, typeinfo, pytypes))
+            release_present || return (
+                kind = :opaque,
+                reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+            )
+            return (kind = :cdict_unwrap, classname = typedict[method.return_type])
+        elseif !isnothing(copt_struct_info(rt, typeinfo, pytypes))
+            return (kind = :copt_unwrap, classname = typedict[method.return_type])
+        elseif !isnothing(jlwstatus_access_path(method, typeinfo, sanitize_python_argname))
+            return (
+                kind = :opaque,
+                reason = "returns struct `" * rt.name *
+                    "` with embedded JLWStatus; idiomatic shaping depends on the other fields",
+            )
         else
-            return (kind=:opaque, reason="returns unrecognized struct `" * rt.name * "`")
+            return (kind = :opaque, reason = "returns unrecognized struct `" * rt.name * "`")
         end
     elseif rt isa ArrayDesc
-        return (kind=:opaque, reason="returns array type `" * rt.name * "`")
+        return (kind = :opaque, reason = "returns array type `" * rt.name * "`")
     else  # PointerDesc
-        return (kind=:opaque, reason="returns raw pointer type `" * rt.name * "`")
+        return (kind = :opaque, reason = "returns raw pointer type `" * rt.name * "`")
     end
 end
 
 """
-    _facade_plan(method, typeinfo, typedict) -> NamedTuple
+    _facade_plan(method, typeinfo, typedict, release_present) -> NamedTuple
 
-Decide whether an entrypoint should be auto-wrapped on the façade. Returns
-`(auto::Bool, reason::String, args::Vector, ret::NamedTuple, uses_numpy::Bool)`.
+Decide whether an entrypoint should be auto-wrapped on the façade.
+`release_present` is [`_release_symbols_present`](@ref)'s verdict for the
+surrounding library, threaded through to [`_facade_classify_return`](@ref).
+Returns `(auto::Bool, reason::String, args::Vector, ret::NamedTuple,
+uses_numpy::Bool)`.
 
 A function is auto-wrapped only when every argument and return classifies
 as a recognized form *and* the wrapping actually adds value (converts a
 vocabulary type or strips a discardable `JLWStatus`). Plain
 primitive-in/primitive-out functions are left as straight re-exports.
 """
-function _facade_plan(method::MethodDesc,
-                      typeinfo::OrderedDict{Int, TypeDesc},
-                      typedict::Dict{Int, String})
+function _facade_plan(
+        method::MethodDesc,
+        typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String},
+        release_present::Bool
+    )
     arg_classes = [_facade_classify_arg(a, typeinfo, typedict) for a in method.args]
     for (i, c) in enumerate(arg_classes)
         if c.kind === :opaque
-            return (category=:mechanical,
-                    reason="`" * method.args[i].name * "`: " * c.reason,
-                    args=arg_classes, ret=(kind=:opaque,), uses_numpy=false)
+            return (
+                category = :mechanical,
+                reason = "`" * method.args[i].name * "`: " * c.reason,
+                args = arg_classes, ret = (kind = :opaque,), uses_numpy = false,
+            )
         end
     end
-    ret = _facade_classify_return(method, typeinfo, typedict)
+    ret = _facade_classify_return(method, typeinfo, typedict, release_present)
     if ret.kind === :opaque
-        return (category=:mechanical, reason=ret.reason,
-                args=arg_classes, ret=ret, uses_numpy=false)
+        return (
+            category = :mechanical, reason = ret.reason,
+            args = arg_classes, ret = ret, uses_numpy = false,
+        )
     end
     uses_numpy = any(c -> c.kind === :carray, arg_classes) ||
-                 ret.kind === :carray_unwrap
+        ret.kind === :carray_unwrap
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
-                 ret.kind in (:carray_unwrap, :cstring_unwrap, :jlwstatus_discard)
+        ret.kind in (
+        :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap,
+        :cdict_unwrap, :copt_unwrap, :jlwstatus_discard,
+    )
     if !adds_value
         # Primitive-only signatures need no conversion; re-export them directly.
-        return (category=:passthrough, reason="",
-                args=arg_classes, ret=ret, uses_numpy=false)
+        return (
+            category = :passthrough, reason = "",
+            args = arg_classes, ret = ret, uses_numpy = false,
+        )
     end
-    return (category=:auto, reason="", args=arg_classes, ret=ret, uses_numpy=uses_numpy)
+    return (category = :auto, reason = "", args = arg_classes, ret = ret, uses_numpy = uses_numpy)
 end
 
 function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     arg_names_seen = Set{String}()
-    argnames = String[sanitize_python_argname(a.name, arg_names_seen)
-                      for a in method.args]
+    argnames = String[
+        sanitize_python_argname(a.name, arg_names_seen)
+            for a in method.args
+    ]
     println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
     # Convert vocabulary-typed arguments to their lowlevel struct counterparts.
     call_args = String[]
@@ -865,6 +1111,18 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         elseif cls.kind === :cstring
             local_ = "_" * name
             println(f, "    ", local_, " = ", cls.classname, ".from_str(", name, ")")
+            push!(call_args, local_)
+        elseif cls.kind === :cstrarray
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_list(", name, ")")
+            push!(call_args, local_)
+        elseif cls.kind === :cdict
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_dict(", name, ")")
+            push!(call_args, local_)
+        elseif cls.kind === :copt
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, ".from_optional(", name, ")")
             push!(call_args, local_)
         end
     end
@@ -882,12 +1140,43 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     elseif ret.kind === :cstring_unwrap
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
+    elseif ret.kind === :cstrarray_unwrap
+        # `data` may be Julia-allocated (own-out convention, `owned == 1`)
+        # or a pass-through of a borrowed argument (`owned == 0`, e.g. a
+        # function that returns one of its own CStrArray arguments
+        # unchanged): convert to the idiomatic `list[str]` first, then
+        # release the buffer via the macro-emitted `jlw_free_strings`
+        # release entrypoint ONLY if this result owns it — freeing a
+        # borrowed value would double-free the caller's buffer.
+        println(f, "    _result = ", call)
+        println(f, "    _out = _result.as_list()")
+        println(f, "    if _result.owned == 1:")
+        println(f, "        _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
+        println(f, "    return _out")
+    elseif ret.kind === :cdict_unwrap
+        # `keys` and `values` are two SEPARATE buffers, own-out or
+        # pass-through exactly as for CStrArray above: convert to `dict`
+        # first, then release both via their respective release
+        # entrypoints ONLY if this result owns them — the string-array
+        # allocator for `keys`, the generic allocator for `values`.
+        println(f, "    _result = ", call)
+        println(f, "    _out = _result.as_dict()")
+        println(f, "    if _result.owned == 1:")
+        println(f, "        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)")
+        println(f, "        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))")
+        println(f, "    return _out")
+    elseif ret.kind === :copt_unwrap
+        # COpt is by-value (no heap allocation) — unwrap only, no free.
+        println(f, "    _result = ", call)
+        println(f, "    return _result.as_optional()")
     end
-    println(f)
+    return println(f)
 end
 
-function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
-                            typedict::Dict{Int, String}, needs_jlwerror::Bool)
+function _write_facade_stub(
+        f::IO, dest::PythonTarget, abi_info::ABIInfo,
+        typedict::Dict{Int, String}, needs_jlwerror::Bool
+    )
     (; entrypoints, typeinfo) = abi_info
 
     struct_names = String[]
@@ -897,8 +1186,13 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         end
     end
 
-    plans = [_facade_plan(m, typeinfo, typedict) for m in entrypoints]
+    release_present = _release_symbols_present(abi_info)
+    plans = [_facade_plan(m, typeinfo, typedict, release_present) for m in entrypoints]
     needs_np = any(p -> p.uses_numpy, plans)
+    # `:cdict_unwrap`'s release call casts `_result.values` via
+    # `ctypes.cast(...)` directly in facade.py (see
+    # `_emit_facade_autowrapper`), so `ctypes` must be imported there too.
+    needs_ctypes = any(p -> p.ret.kind === :cdict_unwrap, plans)
     has_struct_exports = !isempty(struct_names) || needs_jlwerror
 
     println(f, "\"\"\"", dest.package_name, " idiomatic façade.")
@@ -926,6 +1220,9 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
     end
 
     println(f, "from . import _lowlevel  # noqa: F401")
+    if needs_ctypes
+        println(f, "import ctypes")
+    end
     if needs_np
         println(f, "import numpy as np  # noqa: F401")
     end
@@ -945,9 +1242,12 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
 
     any_reexport = false
     for (method, plan) in zip(entrypoints, plans)
+        method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         if plan.category === :mechanical
-            println(f, "from ._lowlevel import ", method.symbol,
-                       "  # TODO: hand-wrap — ", plan.reason)
+            println(
+                f, "from ._lowlevel import ", method.symbol,
+                "  # TODO: hand-wrap — ", plan.reason
+            )
             any_reexport = true
         elseif plan.category === :passthrough
             println(f, "from ._lowlevel import ", method.symbol)
@@ -974,14 +1274,17 @@ function _write_facade_stub(f::IO, dest::PythonTarget, abi_info::ABIInfo,
         isfirst = false
     end
     for method in entrypoints
+        # The release entrypoints are internal plumbing (bound on `_lib`
+        # only in `_lowlevel.py`, see `_write_bindings`) — never public.
+        method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         isfirst || print(f, ", ")
         print(f, "\"", method.symbol, "\"")
         isfirst = false
     end
-    println(f, "]")
+    return println(f, "]")
 end
 
-function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
+function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool = false)
     println(f, "# Auto-generated by JuliaLibWrapping. Edit only if you know what you are doing.")
     println(f, "[build-system]")
     println(f, "requires = [\"setuptools>=64\"]")
@@ -990,8 +1293,10 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "[project]")
     println(f, "name = ", repr(dest.package_name))
     println(f, "version = ", repr(dest.version))
-    println(f, "description = \"Python bindings for ", dest.library_basename,
-               ", auto-generated by JuliaLibWrapping\"")
+    println(
+        f, "description = \"Python bindings for ", dest.library_basename,
+        ", auto-generated by JuliaLibWrapping\""
+    )
     println(f, "requires-python = \">=3.8\"")
     if needs_numpy
         # CArray helpers depend on numpy.
@@ -1002,7 +1307,7 @@ function _write_pyproject(f::IO, dest::PythonTarget, needs_numpy::Bool=false)
     println(f, "packages = [", repr(dest.package_name), "]")
     println(f)
     println(f, "[tool.setuptools.package-data]")
-    if dest.bundle_subdir === nothing
+    return if dest.bundle_subdir === nothing
         println(f, dest.package_name, " = [\"*.so\", \"*.dylib\", \"*.dll\"]")
     else
         # Setuptools' package-data does not recurse, so each level of the

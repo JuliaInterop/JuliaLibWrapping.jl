@@ -1,0 +1,6 @@
+# Generated Python goldens (test/expected_*.py) are compared byte-for-byte
+# against freshly emitted wrapper code, which JuliaLibWrapping always writes
+# with LF line endings regardless of host OS. Force LF on checkout so a
+# Windows `core.autocrlf` setting can't silently turn a golden into CRLF and
+# break every golden-comparison test.
+*.py text eol=lf
