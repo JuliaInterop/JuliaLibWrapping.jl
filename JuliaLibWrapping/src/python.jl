@@ -117,9 +117,9 @@ juliac's `--export-abi` renders `Cvoid` as a real zero-size
 `kind:"struct","name":"Nothing","fields":[]` type node in EVERY position —
 a bare return type, and a pointer's pointee (`Ptr{Cvoid}` prints as
 `Ptr{Nothing}`, pointing at this same node) — never as a `PrimitiveTypeDesc`
-named `"Cvoid"` (see design/spike-notes.md and `pytypes["Cvoid"] => "None"`,
-which only ever fires for the primitive spelling and is unreachable for
-this struct spelling, in either position). Two call sites rely on this:
+named `"Cvoid"` (`pytypes["Cvoid"] => "None"` only ever fires for the
+primitive spelling and is unreachable for this struct spelling, in either
+position). Two call sites rely on this:
 `mangle_python!`'s `PointerDesc` branch (`Ptr{Nothing}` → `ctypes.c_void_p`,
 matching the existing `Ptr{Cvoid}`-as-primitive special case) and
 `_write_bindings`'s return-type resolution (bare `Nothing` return →
@@ -781,8 +781,8 @@ and `_write_cdict_helpers`'s `from_dict` (`list_var="keys"`,
 what the iterable/result Python variables are named. `source_expr` is the
 Python expression iterated to produce raw strings; `item_var` names the
 loop variable used in the outer comprehension only — the inner
-per-buffer comprehension's loop variable is always `b`, matching both
-call sites' original hand-written text exactly.
+per-buffer comprehension's loop variable is always `b`, so both call
+sites emit identical text apart from the substituted names.
 """
 function _emit_encoded_str_ptrarray(
         f::IO, list_var::AbstractString, arr_var::AbstractString,
@@ -865,7 +865,7 @@ function _write_copt_helpers(f::IO, coinfo)
     println(f, "        return cls(has_value=1, value=x)")
     println(f, "")
     println(f, "    def as_optional(self):")
-    return println(f, "        return None if self.has_value == 0 else self.value") # noidiom: Python source text, not Julia
+    return println(f, "        return None if self.has_value == 0 else self.value")
 end
 
 const JLWERROR_DEFINITION = """
@@ -1076,6 +1076,8 @@ function _write_bindings(
                 println(f, "    ]")
             end
             cainfo = carray_struct_info(type, typeinfo)
+            cdinfo = cdict_struct_info(type, typeinfo)
+            coinfo = copt_struct_info(type, typeinfo)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo)
@@ -1085,10 +1087,10 @@ function _write_bindings(
             elseif cstrarray_struct_info(type, typeinfo)
                 # Emit CStrArray conversion helpers.
                 _write_cstrarray_helpers(f)
-            elseif (cdinfo = cdict_struct_info(type, typeinfo)) !== nothing # noidiom: existing code style
+            elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
                 _write_cdict_helpers(f, cdinfo)
-            elseif (coinfo = copt_struct_info(type, typeinfo)) !== nothing # noidiom: existing code style
+            elseif !isnothing(coinfo)
                 # Emit COpt conversion helpers.
                 _write_copt_helpers(f, coinfo)
             end
@@ -1201,15 +1203,15 @@ function _facade_classify_arg(
     if t isa PrimitiveTypeDesc
         return (kind = :primitive,)
     elseif t isa StructDesc
-        if carray_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+        if !isnothing(carray_struct_info(t, typeinfo))
             return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind = :cstring, classname = typedict[arg.type])
         elseif cstrarray_struct_info(t, typeinfo)
             return (kind = :cstrarray, classname = typedict[arg.type])
-        elseif cdict_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(cdict_struct_info(t, typeinfo))
             return (kind = :cdict, classname = typedict[arg.type])
-        elseif copt_struct_info(t, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(copt_struct_info(t, typeinfo))
             return (kind = :copt, classname = typedict[arg.type])
         else
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
@@ -1240,8 +1242,8 @@ const _RELEASE_ENTRYPOINT_SYMBOLS = ("jlw_free", "jlw_free_strings")
 Return `true` iff *both* macro-emitted release entrypoints
 ([`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref): `jlw_free` and `jlw_free_strings`)
 appear among `abi_info.entrypoints`' symbols. The ABI JSON carries no
-ownership metadata (see design/spike-notes.md), so this is the only signal
-that a library actually exposes the release plumbing an owning-return
+ownership metadata, so this is the only signal that a library actually
+exposes the release plumbing an owning-return
 carrier (`CStrArray`, `CDict`) needs; without it, [`_facade_classify_return`](@ref)
 refuses to auto-wrap such a return rather than emit a call to a symbol
 that does not exist.
@@ -1285,7 +1287,7 @@ function _facade_classify_return(
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind = :jlwstatus_discard,)
-        elseif carray_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(carray_struct_info(rt, typeinfo))
             return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
@@ -1295,15 +1297,15 @@ function _facade_classify_return(
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
-        elseif cdict_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(cdict_struct_info(rt, typeinfo))
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cdict_unwrap, classname = typedict[method.return_type])
-        elseif copt_struct_info(rt, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(copt_struct_info(rt, typeinfo))
             return (kind = :copt_unwrap, classname = typedict[method.return_type])
-        elseif jlwstatus_access_path(method, typeinfo) !== nothing # noidiom: existing code style
+        elseif !isnothing(jlwstatus_access_path(method, typeinfo))
             return (
                 kind = :opaque,
                 reason = "returns struct `" * rt.name *

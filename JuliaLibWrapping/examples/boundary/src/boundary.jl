@@ -22,7 +22,7 @@ end
 
 Base.@ccallable function maybe_sqrt(o::COpt{Float64})::COpt{Float64}
     x = unwrap(o)
-    (x === nothing || x < 0.0) && return COpt{Float64}(nothing)  # noidiom: brief's verbatim spec
+    (isnothing(x) || x < 0.0) && return COpt{Float64}(nothing)
     return COpt(sqrt(x))
 end
 

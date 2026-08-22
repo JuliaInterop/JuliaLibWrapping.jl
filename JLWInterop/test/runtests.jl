@@ -297,7 +297,7 @@ using Test
         @test unwrap(COpt(3.5)) === 3.5
         o = COpt{Float64}(nothing)
         @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
-        @test unwrap(o) === nothing   # exact-value assertion (Test.jl convention), not control flow # noidiom
+        @test isnothing(unwrap(o))
     end
 
     @testset "release entrypoints" begin

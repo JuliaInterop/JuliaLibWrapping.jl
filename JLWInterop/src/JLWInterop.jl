@@ -394,7 +394,7 @@ struct CDict{V}
 end
 
 # The loop IS the allowlist: per-V concrete methods keep trim-safety and reject
-# unsupported V with a MethodError at the call site (PT's proven pattern).
+# unsupported V with a MethodError at the call site.
 for V in CDICT_VALUE_TYPES
     @eval begin
         function Base.Dict{String, $V}(d::CDict{$V})
@@ -432,8 +432,8 @@ C-ABI descriptor for `Union{T,Nothing}`: a discriminant `has_value` (present
 meaningless / zero-filled in the absent branch) so the struct stays
 `isbits` and needs no allocation or ownership handling in either direction.
 
-Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled
-per PT's convention); read back with [`unwrap`](@ref).
+Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled);
+read back with [`unwrap`](@ref).
 
 # Example
 
@@ -449,7 +449,7 @@ struct COpt{T}
     value::T
 end
 COpt(x::T) where {T} = COpt{T}(Int32(1), x)
-COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill (PT pattern)
+COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps the struct isbits
 
 """
     unwrap(o::COpt{T}) -> Union{T,Nothing}
