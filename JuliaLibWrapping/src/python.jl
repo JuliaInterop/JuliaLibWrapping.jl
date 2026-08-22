@@ -351,17 +351,21 @@ end
     cstrarray_struct_info(desc::StructDesc, typeinfo) -> Bool
 
 Recognize the JLWInterop `CStrArray` shape: a struct whose name starts with
-`"CStrArray"`, with exactly two fields named `length` (a signed primitive
-integer) and `data` (a pointer to the `CString` struct, i.e.
-`Ptr{CString}` — recognized via [`cstring_struct_info`](@ref) applied to the
-pointee). Returns `true` on a match, `false` otherwise. Field order may be
-either `length, data` or `data, length`. Recognition is by name + full shape
-(see [`is_jlwstatus_struct`](@ref) for the rationale); the name is only the
-first gate — the pointee is walked and checked as well.
+`"CStrArray"`, with exactly three fields named `length` (a signed primitive
+integer), `data` (a pointer to the `CString` struct, i.e. `Ptr{CString}` —
+recognized via [`cstring_struct_info`](@ref) applied to the pointee), and
+`owned` (an `Int32` explicit-ownership discriminant — see the "Ownership
+contract" section of `CStrArray`'s docstring: `0` = caller-owned/borrowed,
+`1` = allocated by the own-out constructor). Returns `true` on a match,
+`false` otherwise. Field order may be any permutation. Recognition is by
+name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale); the
+name is only the first gate — the pointee is walked and checked as well, and
+the `owned` field is required so a struct predating the ownership flag is
+correctly rejected rather than silently mis-wrapped.
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CStrArray") || return false
-    m = _match_fields(desc, ("length", "data"))
+    m = _match_fields(desc, ("length", "data", "owned"))
     isnothing(m) && return false
     length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc && length_type.signed || return false
@@ -370,6 +374,8 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
     pointee = typeinfo[data_type.pointee_type]
     pointee isa StructDesc || return false
     cstring_struct_info(pointee, typeinfo) || return false
+    owned_type = typeinfo[m.owned.type]
+    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return false
     return true
 end
 
@@ -377,18 +383,23 @@ end
     cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize the JLWInterop `CDict{V}` shape: a struct whose name starts with
-`"CDict"`, with exactly three fields named `length` (a primitive integer),
+`"CDict"`, with exactly four fields named `length` (a primitive integer),
 `keys` (a pointer to the `CString` struct, i.e. `Ptr{CString}` — the
 same shape as [`cstrarray_struct_info`](@ref)'s `data`, recognized via
-[`cstring_struct_info`](@ref) applied to the pointee), and `values` (a
-pointer to a primitive type recognized by [`pytypes`](@ref)). Field order
-may be any permutation of the three. Returns `(; value_ctype)` on a match
-(the `ctypes` expression for `V`), otherwise `nothing`. Recognition is by
-name + full shape (see [`is_jlwstatus_struct`](@ref) for the rationale).
+[`cstring_struct_info`](@ref) applied to the pointee), `values` (a
+pointer to a primitive type recognized by [`pytypes`](@ref)), and `owned`
+(an `Int32` explicit-ownership discriminant — see the "Ownership contract"
+section of `CDict`'s docstring: `0` = caller-owned/borrowed, `1` = allocated
+by the own-out constructor). Field order may be any permutation of the four.
+Returns `(; value_ctype)` on a match (the `ctypes` expression for `V`),
+otherwise `nothing`. Recognition is by name + full shape (see
+[`is_jlwstatus_struct`](@ref) for the rationale); the `owned` field is
+required so a struct predating the ownership flag is correctly rejected
+rather than silently mis-wrapped.
 """
 function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CDict") || return nothing
-    m = _match_fields(desc, ("length", "keys", "values"))
+    m = _match_fields(desc, ("length", "keys", "values", "owned"))
     isnothing(m) && return nothing
     length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc || return nothing
@@ -403,6 +414,8 @@ function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
     values_pointee.name in keys(pytypes) || return nothing
+    owned_type = typeinfo[m.owned.type]
+    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
     return (; value_ctype = pytypes[values_pointee.name])
 end
 
@@ -820,20 +833,25 @@ function _emit_cstring_array(
 end
 
 function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
-    # CStrArray shape — see `cstrarray_struct_info`. The `length` and `data`
-    # field names are guaranteed by the recognizer, and `data` is always
-    # Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like CString this
-    # emits no numpy dependency; helpers use only `ctypes`. `data` is
-    # Julia-allocated memory (own-out convention), so unlike CString's
-    # helpers there is no `as_bytes`/from-buffer split — the caller-facing
-    # vocabulary is `list[str]` in and out.
+    # CStrArray shape — see `cstrarray_struct_info`. The `length`, `data`,
+    # and `owned` field names are guaranteed by the recognizer, and `data`
+    # is always Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like
+    # CString this emits no numpy dependency; helpers use only `ctypes`.
+    # `data` is Julia-allocated memory when `owned` is 1 (own-out
+    # convention), so unlike CString's helpers there is no `as_bytes`/
+    # from-buffer split — the caller-facing vocabulary is `list[str]` in
+    # and out. `from_list` always builds a caller-owned (`owned=0`) value:
+    # the object never allocated it and must never free it.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_list(cls, items):")
     println(f, "        if not isinstance(items, (list, tuple)):")
     println(f, "            raise TypeError(\"expected a list of str\")")
     _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
-    println(f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(", cstring_classname, ")))")
+    println(
+        f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(",
+        cstring_classname, ")), owned=0)"
+    )
     println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
     println(f, "        return obj")
     println(f, "")
@@ -842,16 +860,27 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString)
     println(f, "        for i in range(self.length):")
     println(f, "            e = self.data[i]")
     println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
-    return println(f, "        return out")
+    println(f, "        return out")
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffer iff this object owns it (owned is 1).")
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    println(f, "        if self.owned == 1:")
+    println(f, "            _lib.jlw_free_strings(self.data, self.length)")
+    return println(f, "            self.owned = 0")
 end
 
 function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
-    # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`, and
-    # `values` field names are guaranteed by the recognizer; `keys` is
-    # always Ptr{CString} (like CStrArray's `data`), `values` is
+    # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`,
+    # `values`, and `owned` field names are guaranteed by the recognizer;
+    # `keys` is always Ptr{CString} (like CStrArray's `data`), `values` is
     # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
     # `values` is `d.values()` boxed into a fresh ctypes array on the way
-    # in, and read back element-by-element on the way out.
+    # in, and read back element-by-element on the way out. `from_dict`
+    # always builds a caller-owned (`owned=0`) value.
     ctype = cdinfo.value_ctype
     println(f, "")
     println(f, "    @classmethod")
@@ -860,7 +889,8 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
     println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
     println(f, "        obj = cls(length=len(keys),")
     println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
-    println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")))")
+    println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")),")
+    println(f, "                  owned=0)")
     println(f, "        obj._buffer = (keys, karr, varr)")
     println(f, "        return obj")
     println(f, "")
@@ -870,7 +900,18 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString)
     println(f, "            e = self.keys[i]")
     println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
     println(f, "            out[k] = self.values[i]")
-    return println(f, "        return out")
+    println(f, "        return out")
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffers iff this object owns them (owned is 1).")
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    println(f, "        if self.owned == 1:")
+    println(f, "            _lib.jlw_free_strings(self.keys, self.length)")
+    println(f, "            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))")
+    return println(f, "            self.owned = 0")
 end
 
 function _write_copt_helpers(f::IO, coinfo)
@@ -1286,10 +1327,13 @@ The return is one of:
 - `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
 - `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
-  free the owned `data` buffer via `jlw_free_strings`
-- `(kind=:cdict_unwrap, classname=…)` — return `_result.as_dict()`, then
-  free the owned `keys` buffer via `jlw_free_strings` AND the owned
-  `values` buffer via `jlw_free` (two separate allocations)
+  free the `data` buffer via `jlw_free_strings` iff `_result.owned` is `1`
+  (ownership is read from the returned value itself, not assumed from the
+  fact that it was returned — a pass-through of a borrowed argument stays
+  `owned = 0` and is never freed)
+- `(kind=:cdict_unwrap, classname=…)` — return `_result.as_dict()`, then,
+  iff `_result.owned` is `1`, free the `keys` buffer via `jlw_free_strings`
+  AND the `values` buffer via `jlw_free` (two separate allocations)
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
@@ -1447,22 +1491,29 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
     elseif ret.kind === :cstrarray_unwrap
-        # `data` is Julia-allocated (own-out convention): convert to the
-        # idiomatic `list[str]` first, then release the buffer via the
-        # macro-emitted `jlw_free_strings` release entrypoint.
+        # `data` may be Julia-allocated (own-out convention, `owned == 1`)
+        # or a pass-through of a borrowed argument (`owned == 0`, e.g. a
+        # function that returns one of its own CStrArray arguments
+        # unchanged): convert to the idiomatic `list[str]` first, then
+        # release the buffer via the macro-emitted `jlw_free_strings`
+        # release entrypoint ONLY if this result owns it — freeing a
+        # borrowed value would double-free the caller's buffer.
         println(f, "    _result = ", call)
         println(f, "    _out = _result.as_list()")
-        println(f, "    _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
+        println(f, "    if _result.owned == 1:")
+        println(f, "        _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
         println(f, "    return _out")
     elseif ret.kind === :cdict_unwrap
-        # `keys` and `values` are two SEPARATE Julia-allocated buffers
-        # (own-out convention): convert to `dict` first, then release
-        # both via their respective release entrypoints — the string-array
+        # `keys` and `values` are two SEPARATE buffers, own-out or
+        # pass-through exactly as for CStrArray above: convert to `dict`
+        # first, then release both via their respective release
+        # entrypoints ONLY if this result owns them — the string-array
         # allocator for `keys`, the generic allocator for `values`.
         println(f, "    _result = ", call)
         println(f, "    _out = _result.as_dict()")
-        println(f, "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)")
-        println(f, "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))")
+        println(f, "    if _result.owned == 1:")
+        println(f, "        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)")
+        println(f, "        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))")
         println(f, "    return _out")
     elseif ret.kind === :copt_unwrap
         # COpt is by-value (no heap allocation) — unwrap only, no free.

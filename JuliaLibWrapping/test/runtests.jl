@@ -803,11 +803,12 @@ end
 
     @testset "cstrarray_struct_info" begin
         # Structural recognition of the CStrArray shape: a struct named
-        # CStrArray with `length` (signed primitive integer) and `data`
+        # CStrArray with `length` (signed primitive integer), `data`
         # (Ptr{CString} — the length-prefixed CString struct, recognized
-        # via `cstring_struct_info` applied to the pointee) fields. The
-        # name is only the first gate; the pointee's own shape must also
-        # match.
+        # via `cstring_struct_info` applied to the pointee), and `owned`
+        # (an Int32 explicit-ownership discriminant) fields. The name is
+        # only the first gate; the pointee's own shape and the `owned`
+        # field's presence/type must also match.
         csainfo = JuliaLibWrapping.cstrarray_struct_info
         abi = read_abi_info("bindinginfo_cstrarray.json")
         findtype(descs, name) = (
@@ -848,39 +849,59 @@ end
             8 => cstring_ok, 9 => cstring_bad,
             10 => ptr_to_cstring, 11 => ptr_to_not_cstring,
             12 => StructDesc(
-                "CStrArray", 16, 8, FieldDesc[
+                "CStrArray", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             13 => StructDesc(
-                "NotACStrArray", 16, 8, FieldDesc[
+                "NotACStrArray", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             14 => StructDesc(
-                "CStrArrayBadPointee", 16, 8, FieldDesc[
+                "CStrArrayBadPointee", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 11, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             15 => StructDesc(
-                "CStrArrayBadNames", 16, 8, FieldDesc[
+                "CStrArrayBadNames", 24, 8, FieldDesc[
                     FieldDesc("size", 2, 0),
                     FieldDesc("data", 10, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             16 => StructDesc(
-                "CStrArrayUnsignedLen", 16, 8, FieldDesc[
+                "CStrArrayUnsignedLen", 24, 8, FieldDesc[
                     FieldDesc("length", 3, 0),  # UInt64 — not signed
                     FieldDesc("data", 10, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             17 => StructDesc(
-                "CStrArraySinglePtr", 16, 8, FieldDesc[
+                "CStrArraySinglePtr", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 6, 8),  # Ptr{UInt8} — pointee isn't a struct at all
+                    FieldDesc("owned", 1, 16),
+                ]
+            ),
+            18 => StructDesc(
+                "CStrArrayMissingOwned", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 10, 8),
+                    # no `owned` field at all — otherwise identical to ti[12]
+                ]
+            ),
+            19 => StructDesc(
+                "CStrArrayOwnedWrongType", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 10, 8),
+                    FieldDesc("owned", 2, 16),  # Int64, not Int32
                 ]
             ),
         )
@@ -890,10 +911,13 @@ end
         @test csainfo(ti[15], ti) === false  # wrong field names
         @test csainfo(ti[16], ti) === false  # unsigned length
         @test csainfo(ti[17], ti) === false  # data isn't a pointer-to-struct at all
+        @test csainfo(ti[18], ti) === false  # missing `owned` field entirely
+        @test csainfo(ti[19], ti) === false  # `owned` present but not Int32
 
-        # Field order may be either way.
+        # Field order may be any permutation.
         flipped = StructDesc(
-            "CStrArray", 16, 8, FieldDesc[
+            "CStrArray", 24, 8, FieldDesc[
+                FieldDesc("owned", 1, 16),
                 FieldDesc("data", 10, 0),
                 FieldDesc("length", 2, 8),
             ]
@@ -905,9 +929,10 @@ end
         # Structural recognition of the CDict{V} shape: a struct named CDict
         # with `length` (primitive integer), `keys` (Ptr{CString} — same
         # shape as CStrArray's `data`, recognized via `cstring_struct_info`
-        # applied to the pointee), and `values` (Ptr{<primitive in
-        # pytypes>}) fields. The name is only the first gate; the full
-        # 3-field shape and the keys pointee's own shape must also match.
+        # applied to the pointee), `values` (Ptr{<primitive in
+        # pytypes>}), and `owned` (an Int32 explicit-ownership
+        # discriminant) fields. The name is only the first gate; the full
+        # 4-field shape and the keys pointee's own shape must also match.
         cdinfo = JuliaLibWrapping.cdict_struct_info
         abi = read_abi_info("bindinginfo_cdict.json")
         findtype(descs, name) = (
@@ -955,31 +980,35 @@ end
             11 => ptr_to_cstring, 12 => ptr_to_not_cstring,
             13 => ptr_to_f64, 14 => ptr_to_notreal,
             15 => StructDesc(
-                "CDict{Float64}", 24, 8, FieldDesc[
+                "CDict{Float64}", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 1, 24),
                 ]
             ),
             16 => StructDesc(
-                "NotACDict", 24, 8, FieldDesc[
+                "NotACDict", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 1, 24),
                 ]
             ),
             17 => StructDesc(
-                "CDictBadKeysPointee", 24, 8, FieldDesc[
+                "CDictBadKeysPointee", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 12, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
                     FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 1, 24),
                 ]
             ),
             18 => StructDesc(
-                "CDictBadNames", 24, 8, FieldDesc[
+                "CDictBadNames", 32, 8, FieldDesc[
                     FieldDesc("len", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 1, 24),
                 ]
             ),
             19 => StructDesc(
@@ -989,17 +1018,35 @@ end
                 ]
             ),
             20 => StructDesc(
-                "CDictUnsupportedValue", 24, 8, FieldDesc[
+                "CDictUnsupportedValue", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 14, 16),  # Ptr{NotARealType} — not in pytypes
+                    FieldDesc("owned", 1, 24),
                 ]
             ),
             21 => StructDesc(
-                "CDictSinglePtrKeys", 24, 8, FieldDesc[
+                "CDictSinglePtrKeys", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 7, 8),  # Ptr{UInt8} — pointee isn't a struct at all
                     FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 1, 24),
+                ]
+            ),
+            22 => StructDesc(
+                "CDictMissingOwned", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
+                    # no `owned` field at all — otherwise identical to ti[15]
+                ]
+            ),
+            23 => StructDesc(
+                "CDictOwnedWrongType", 32, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
+                    FieldDesc("owned", 2, 24),  # Int64, not Int32
                 ]
             ),
         )
@@ -1010,10 +1057,13 @@ end
         @test isnothing(cdinfo(ti[19], ti)) # missing `values` field
         @test isnothing(cdinfo(ti[20], ti)) # values pointee not in pytypes
         @test isnothing(cdinfo(ti[21], ti)) # keys isn't a pointer-to-struct at all
+        @test isnothing(cdinfo(ti[22], ti)) # missing `owned` field entirely
+        @test isnothing(cdinfo(ti[23], ti)) # `owned` present but not Int32
 
         # Field order may be any permutation.
         permuted = StructDesc(
-            "CDict{Float64}", 24, 8, FieldDesc[
+            "CDict{Float64}", 32, 8, FieldDesc[
+                FieldDesc("owned", 1, 24),
                 FieldDesc("values", 13, 16),
                 FieldDesc("length", 2, 0),
                 FieldDesc("keys", 11, 8),
@@ -1314,6 +1364,16 @@ end
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
+            # Explicit ownership: `from_list` always builds a caller-owned
+            # (owned=0) value — it never allocated the buffer it borrows.
+            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
+            @test occursin("owned=0)", bindings)
+            # A `.free()` escape hatch for callers who bypass the façade:
+            # frees iff owned, then clears the flag — idempotent.
+            @test occursin("def free(self):", bindings)
+            @test occursin("if self.owned == 1:", bindings)
+            @test occursin("self.owned = 0", bindings)
+
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
 
@@ -1328,6 +1388,9 @@ end
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
+            # The owning-return free call is gated on the RETURNED value's
+            # own `owned` field, never assumed from call direction alone.
+            @test occursin("if _result.owned == 1:", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
@@ -1380,6 +1443,15 @@ end
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
+            # Explicit ownership: `from_dict` always builds a caller-owned
+            # (owned=0) value, and a `.free()` escape hatch frees iff owned
+            # then clears the flag — idempotent.
+            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
+            @test occursin("owned=0)", bindings)
+            @test occursin("def free(self):", bindings)
+            @test occursin("if self.owned == 1:", bindings)
+            @test occursin("self.owned = 0", bindings)
+
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
 
@@ -1391,6 +1463,9 @@ end
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
+            # The owning-return free calls are gated on the RETURNED
+            # value's own `owned` field, never assumed from call direction.
+            @test occursin("if _result.owned == 1:", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
 
@@ -1449,8 +1524,9 @@ end
             @test occursin(
                 "def give_dict_i32():\n    _result = _lowlevel.give_dict_i32()\n" *
                     "    _out = _result.as_dict()\n" *
-                    "    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
-                    "    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
+                    "    if _result.owned == 1:\n" *
+                    "        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
+                    "        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
                     "    return _out", facade
             )
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
@@ -1569,9 +1645,21 @@ end
 
             bindings_path = joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
-            # No jlw_free* entrypoints in this fixture at all — nothing to
-            # bind, nothing to exclude.
-            @test !occursin("jlw_free", bindings)
+            # No jlw_free* entrypoints in this fixture's `functions` list at
+            # all, so nothing gets bound on `_lib` (argtypes/restype) for
+            # them. `CStrArray.free()` is still emitted unconditionally on
+            # the class (the bypass escape hatch is not gated on release-
+            # symbol presence) — its body references `_lib.jlw_free_strings`
+            # textually, but no `_lib.jlw_free_strings.(argtypes|restype)`
+            # line exists, so calling `.free()` here would raise an
+            # AttributeError at runtime, same as any other undeclared
+            # ctypes.CDLL symbol.
+            @test !occursin("_lib.jlw_free_strings.argtypes", bindings)
+            @test !occursin("_lib.jlw_free_strings.restype", bindings)
+            @test !occursin("_lib.jlw_free.argtypes", bindings)
+            @test !occursin("_lib.jlw_free.restype", bindings)
+            @test occursin("def free(self):", bindings)
+            @test occursin("_lib.jlw_free_strings(self.data, self.length)", bindings)
             @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
             @test occursin("_lib.give_strs.restype = CStrArray", bindings)
 

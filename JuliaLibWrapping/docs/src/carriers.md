@@ -34,32 +34,64 @@ All three carriers are plain `isbits`-when-possible structs with a fixed C
 layout. Field order matches declaration order; the compiler inserts padding
 only where alignment requires it (see `COpt` below).
 
-![Field layout of the three carriers: CStrArray (length at offset 0, data at offset 8); CDict (length at offset 0, keys at offset 8, values at offset 16); COpt (has_value at offset 0, four bytes of padding, value at offset 8).](assets/carrier-layouts.svg)
+![Field layout of the three carriers: CStrArray (length at offset 0, data at offset 8, owned at offset 16); CDict (length at offset 0, keys at offset 8, values at offset 16, owned at offset 24); COpt (has_value at offset 0, four bytes of padding, value at offset 8).](assets/carrier-layouts.svg)
 
 > Diagram source: [`docs/src/assets/carrier-layouts.mmd`](assets/carrier-layouts.mmd);
 > regenerate with `mmdc -i carrier-layouts.mmd -o carrier-layouts.svg -b transparent`.
 
 ## Ownership contract
 
-Two patterns cover every direction data can cross the ABI boundary, following
-the same "borrow-in stays universal; ownership enters only on variable-size
-returns" split used by libraries like libgit2 and `sqlite3_free`:
+**The data says who owns it.** `CStrArray` and `CDict` each carry an explicit
+`owned::Int32` field — `0` means caller-owned/borrowed, `1` means allocated by
+Julia's own-out constructor — and every consumer, on both sides of the
+boundary, reads that field rather than inferring ownership from which
+direction the value happened to cross. There is no partial ownership: the
+flag covers the whole struct as a single unit (for `CStrArray`, `data` and
+every per-string buffer it points to; for `CDict`, `keys` and `values`
+together). Julia never retains a reference to an `owned = 1` buffer once it
+hands it across the boundary.
 
-- **Arguments are always borrowed.** The generated Python helper allocates
-  the carrier via `ctypes` and keeps a reference alive on the returned
-  object (`obj._buffer`, the same keepalive pattern `CArray.from_numpy` and
-  `CString.from_str` already use). The Julia-side conversion (`Base.Dict`,
-  `Base.Vector{String}`, …) copies the data into a fresh native Julia value
-  and never frees the caller's buffers. Python's own garbage collector frees
-  the `ctypes` buffer once nothing references it.
-- **Variable-size returns own their storage.** When a Julia function returns
-  a `CStrArray` or `CDict`, Julia `Libc.malloc`s a dense copy of the data. The
-  generated Python wrapper converts that malloc'd buffer into idiomatic
-  Python objects (`list[str]` / `dict`) and then releases the Julia-owned
-  memory immediately, through the wrapped library's own exported release
-  entrypoints — see [`@export_release_entrypoints`](@ref) below.
-- **`COpt` is by-value.** It carries no pointer and needs no ownership
-  handling in either direction — see [`COpt{T}`](@ref).
+This replaces inferring ownership from call direction ("arguments are always
+borrowed, returns always own") with a value that survives being passed
+through unchanged. A function that returns one of its own `CStrArray`/`CDict`
+arguments — a legitimate pattern, e.g. a validate-and-pass-through helper —
+returns a value whose `owned` field is still `0`, exactly as the caller built
+it; nothing downstream frees it. `CArray` is unaffected by this — it carries
+no ownership field at all and remains **always caller-owned** (the semantic
+equivalent of `owned = 0`), matching its existing non-owning, no-allocation
+contract.
+
+Two patterns still cover the common cases, following the same "borrow-in
+stays universal; ownership enters only on variable-size returns" split used
+by libraries like libgit2 and `sqlite3_free` — but the flag, not the pattern,
+is what a consumer actually checks:
+
+- **Arguments are borrowed (`owned = 0`).** The generated Python helper
+  builds the carrier via `ctypes`, sets `owned=0` explicitly, and keeps a
+  reference alive on the returned object (`obj._buffer`, the same keepalive
+  pattern `CArray.from_numpy` and `CString.from_str` already use). The
+  Julia-side conversion (`Base.Dict`, `Base.Vector{String}`, …) copies the
+  data into a fresh native Julia value and never frees the caller's
+  buffers — regardless of what `owned` says, since borrow-in never
+  branches on it at all. Python's own garbage collector frees the `ctypes`
+  buffer once nothing references it.
+- **Variable-size own-out returns set `owned = 1`.** When a Julia function
+  returns a freshly built `CStrArray` or `CDict` (via `CStrArray(::Vector{String})`
+  / `CDict(::Dict{String,V})`), Julia `Libc.malloc`s a dense copy of the data
+  and the constructor sets `owned = 1`. The generated Python wrapper converts
+  the buffer into idiomatic Python objects (`list[str]` / `dict`) and then,
+  **iff `_result.owned == 1`**, releases the Julia-owned memory through the
+  wrapped library's own exported release entrypoints — see
+  [`@export_release_entrypoints`](@ref) below. A pass-through return (`owned
+  = 0`) is converted the same way but never freed.
+- **`COpt` is by-value.** It carries no pointer and no ownership field —
+  needs no ownership handling in either direction — see [`COpt{T}`](@ref).
+
+For callers who bypass the façade and talk to `_lowlevel` directly, both
+`CStrArray` and `CDict`'s generated `ctypes.Structure` classes carry a
+`.free()` method: it releases the buffer(s) iff `self.owned == 1`, then sets
+`owned` back to `0`, so a second call — or a call on a value that was never
+owned — is a no-op.
 
 ![Sequence diagram: borrow-in has Python allocate, Julia copy, and Python's GC free; free-out has Julia malloc, Python convert to native objects, then call jlw_free_strings exactly once.](assets/ownership-seq.svg)
 
@@ -78,6 +110,7 @@ the rest of this design deliberately avoids.
 struct CStrArray
     length::Int64
     data::Ptr{CString}     # each element a length-prefixed CString
+    owned::Int32            # 0 = caller-owned/borrowed; 1 = allocated by the own-out constructor
 end
 ```
 
@@ -87,12 +120,16 @@ end
 
 - **Borrow-in** (`Base.Vector{String}(a::CStrArray)`): copies the strings out
   into a fresh `Vector{String}`; never frees `a.data` or the per-string
-  buffers. The Python side builds the carrier with `CStrArray.from_list`,
-  which keeps `(bufs, arr)` alive on `obj._buffer`.
+  buffers, regardless of `a.owned`. The Python side builds the carrier with
+  `CStrArray.from_list`, which sets `owned=0` explicitly and keeps `(bufs,
+  arr)` alive on `obj._buffer`.
 - **Own-out** (`CStrArray(v::Vector{String})`): `Libc.malloc`s the `CString`
-  array and each per-string buffer. The generated Python wrapper reads the
-  result with `.as_list()`, then releases the buffers with
-  `_lowlevel._lib.jlw_free_strings(result.data, result.length)`.
+  array and each per-string buffer, and sets `owned = 1`. The generated
+  Python wrapper reads the result with `.as_list()`, then, **iff
+  `result.owned == 1`**, releases the buffers with
+  `_lowlevel._lib.jlw_free_strings(result.data, result.length)`. A returned
+  value with `owned = 0` (e.g. a pass-through of a borrowed argument) is
+  converted the same way but never freed.
 
 Each element's own length is `CString`'s `Int32`, so a single string over
 ~2 GiB fails loud with an `InexactError` rather than silently truncating.
@@ -108,6 +145,7 @@ struct CDict{V}
     length::Int64
     keys::Ptr{CString}
     values::Ptr{V}
+    owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by the own-out constructor
 end
 ```
 
@@ -124,13 +162,16 @@ call site rather than compiling something unsound. Each key's own length is
 
 - **Borrow-in** (`Base.Dict{String,V}(d::CDict{V})`): copies keys and values
   out into a fresh `Dict`; never frees `d.keys`, the per-key buffers, or
-  `d.values`. The Python side builds the carrier with `CDict.from_dict`.
+  `d.values`, regardless of `d.owned`. The Python side builds the carrier
+  with `CDict.from_dict`, which sets `owned=0` explicitly.
 - **Own-out** (`CDict(d::Dict{String,V})`): `Libc.malloc`s the key `CString`
   array, each per-key buffer, **and** the value array — two separate
-  allocations. The generated Python wrapper reads the result with
-  `.as_dict()`, then releases **both**: the keys via
-  `_lowlevel._lib.jlw_free_strings(result.keys, result.length)` and the
-  values via `_lowlevel._lib.jlw_free(ctypes.cast(result.values, ctypes.c_void_p))`.
+  allocations — and sets `owned = 1`. The generated Python wrapper reads the
+  result with `.as_dict()`, then, **iff `result.owned == 1`**, releases
+  **both**: the keys via `_lowlevel._lib.jlw_free_strings(result.keys,
+  result.length)` and the values via
+  `_lowlevel._lib.jlw_free(ctypes.cast(result.values, ctypes.c_void_p))`. A
+  returned value with `owned = 0` is converted the same way but never freed.
 
 ```@docs
 CDict
@@ -221,12 +262,17 @@ Python's `ctypes` allocator, never through a different wrapped library's
   Per-`CDLL`-handle lookup is exactly what keeps two wrapped libraries from
   colliding: malloc and free stay within the one library that performed the
   allocation.
-- **Freeing twice, or freeing a borrowed pointer, corrupts the heap.** The
-  generated façade code calls the release entrypoint exactly once, right
-  after converting the owning carrier to native Python objects (see the
-  sequence diagram above). Hand-written code that bypasses the façade and
-  talks to `_lowlevel` directly must preserve that same "convert once, free
-  once" ordering.
+- **Freeing twice, or freeing a borrowed pointer, corrupts the heap.** This
+  is exactly the double-free the `owned` field exists to prevent: a function
+  that returns one of its own `CStrArray`/`CDict` arguments unchanged
+  (pass-through) hands back a value with `owned = 0`, and the generated
+  façade code — gated on `_result.owned == 1` — never calls the release
+  entrypoint on it. When it *is* owned, the façade calls the release
+  entrypoint exactly once, right after converting the carrier to native
+  Python objects (see the sequence diagram above). Hand-written code that
+  bypasses the façade and talks to `_lowlevel` directly must preserve that
+  same "convert once, check `owned`, free at most once" ordering — or use
+  the carrier's own `.free()` method, which already does.
 
 ## Scope note: carriers are ctypes-target-side
 

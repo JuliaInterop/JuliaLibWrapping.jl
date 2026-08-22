@@ -29,8 +29,9 @@ def take_dict_i32(d):
 def give_dict_i32():
     _result = _lowlevel.give_dict_i32()
     _out = _result.as_dict()
-    _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)
-    _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))
+    if _result.owned == 1:
+        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)
+        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))
     return _out
 
 __all__ = ["Nothing", "CString", "CDict_Int32", "take_dict_i32", "give_dict_i32"]

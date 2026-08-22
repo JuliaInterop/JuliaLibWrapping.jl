@@ -97,6 +97,7 @@ class CStrArray(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(CString)),
+        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -106,7 +107,7 @@ class CStrArray(ctypes.Structure):
         bufs = [s.encode("utf-8") for s in items]
         arr = (CString * len(bufs))(
             *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)))
+        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)), owned=0)
         obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern
         return obj
 
@@ -116,6 +117,16 @@ class CStrArray(ctypes.Structure):
             e = self.data[i]
             out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
         return out
+
+    def free(self):
+        """Free the Julia-allocated buffer iff this object owns it (owned is 1).
+
+        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
+        no-op. For callers who bypass the façade's convert-then-free wrapper and
+        talk to `_lowlevel` directly."""
+        if self.owned == 1:
+            _lib.jlw_free_strings(self.data, self.length)
+            self.owned = 0
 
 _lib.take_strs.argtypes = [CStrArray]
 _lib.take_strs.restype = ctypes.c_int64

@@ -1,17 +1,19 @@
 flowchart LR
-    subgraph CStrArray["CStrArray — 16 bytes"]
+    subgraph CStrArray["CStrArray — 24 bytes"]
         direction TB
-        CSA0["offset 0  ·  length : Int64"]
-        CSA8["offset 8  ·  data : Ptr{CString}"]
-        CSA0 --> CSA8
+        CSA0["offset 0   ·  length : Int64"]
+        CSA8["offset 8   ·  data : Ptr{CString}"]
+        CSA16["offset 16  ·  owned : Int32 (0=borrowed, 1=owned)"]
+        CSA0 --> CSA8 --> CSA16
     end
 
-    subgraph CDict["CDict{V} — 24 bytes"]
+    subgraph CDict["CDict{V} — 32 bytes"]
         direction TB
         CD0["offset 0   ·  length : Int64"]
         CD8["offset 8   ·  keys : Ptr{CString}"]
         CD16["offset 16  ·  values : Ptr{V}"]
-        CD0 --> CD8 --> CD16
+        CD24["offset 24  ·  owned : Int32 (0=borrowed, 1=owned)"]
+        CD0 --> CD8 --> CD16 --> CD24
     end
 
     subgraph COpt["COpt{T} — 16 bytes (T = Float64)"]
@@ -24,9 +26,11 @@ flowchart LR
 
     style CSA0 fill:#e3f2fd,stroke:#1565c0,color:#0d2440
     style CSA8 fill:#e3f2fd,stroke:#1565c0,color:#0d2440
+    style CSA16 fill:#e3f2fd,stroke:#1565c0,color:#0d2440
     style CD0 fill:#fff3e0,stroke:#e65100,color:#0d2440
     style CD8 fill:#fff3e0,stroke:#e65100,color:#0d2440
     style CD16 fill:#fff3e0,stroke:#e65100,color:#0d2440
+    style CD24 fill:#fff3e0,stroke:#e65100,color:#0d2440
     style CO0 fill:#f3e5f5,stroke:#6a1b9a,color:#0d2440
     style COp fill:#eeeeee,stroke:#757575,color:#424242
     style CO8 fill:#f3e5f5,stroke:#6a1b9a,color:#0d2440
