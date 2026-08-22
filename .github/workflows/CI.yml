@@ -15,6 +15,7 @@ jobs:
   test:
     name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
     timeout-minutes: 60
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
@@ -41,6 +42,18 @@ jobs:
             coverage_dirs: JuliaLibWrapping/src,JuliaLibWrapping/ext
           - package: JLWInterop
             coverage_dirs: JLWInterop/src
+          # JuliaLibWrapping's compat floor (1.13) has no stable release yet, so
+          # setup-julia cannot resolve `min` today. Keep the cell so it starts
+          # testing 1.13.0 automatically once it ships; soft-fail until then.
+          - package: JuliaLibWrapping
+            version: 'min'
+            experimental: true
+          # juliac --trim is currently broken on Julia nightly (verifier
+          # errors in Base, e.g. unresolved HashState/IOContext calls);
+          # keep the signal visible without failing the workflow.
+          - package: JuliaLibWrapping
+            version: 'nightly'
+            experimental: true
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3

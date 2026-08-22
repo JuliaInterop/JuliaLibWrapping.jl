@@ -8,6 +8,7 @@ export parse_abi_info, read_abi_info, write_wrapper, build_library, standard_bui
 export AbstractTarget, CTarget, PythonTarget, ABIInfo
 
 include("abi_import.jl")
+include("recognizers.jl")
 
 """
     AbstractTarget

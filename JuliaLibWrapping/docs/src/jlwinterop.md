@@ -121,3 +121,12 @@ owning Julia `String`.
 ```@docs
 CString
 ```
+
+## `CStrArray`, `CDict{V}`, `COpt{T}` — variable-size and optional data
+
+Three more carriers cover data `CArray`/`CString` cannot: an array of
+strings, a string-keyed dictionary, and an optional scalar. Unlike the
+non-owning types above, a Julia function that *returns* one of the first two
+must allocate — see [L1 carriers: `CStrArray`, `CDict`, `COpt`](@ref) for the
+struct layouts, the borrow-in/own-out ownership contract, and the
+`@export_release_entrypoints` requirement for owning returns.
