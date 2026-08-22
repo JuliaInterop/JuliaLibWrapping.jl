@@ -39,19 +39,17 @@ jobs:
           - windows-latest
         arch:
           - x64
-        exclude:
-          # JuliaLibWrapping's compat floor is julia = "1.13", which has no
-          # stable release yet, so setup-julia cannot resolve `min` for it.
-          # Re-enable this cell once 1.13.0 final ships. (Not OS-specific:
-          # this excludes the combination on every OS in the matrix, since
-          # the entry names no `os`/`arch` key.)
-          - package: JuliaLibWrapping
-            version: 'min'
         include:
           - package: JuliaLibWrapping
             coverage_dirs: JuliaLibWrapping/src,JuliaLibWrapping/ext
           - package: JLWInterop
             coverage_dirs: JLWInterop/src
+          # JuliaLibWrapping's compat floor (1.13) has no stable release yet, so
+          # setup-julia cannot resolve `min` today. Keep the cell so it starts
+          # testing 1.13.0 automatically once it ships; soft-fail until then.
+          - package: JuliaLibWrapping
+            version: 'min'
+            experimental: true
           # juliac --trim is currently broken on Julia nightly (verifier
           # errors in Base, e.g. unresolved HashState/IOContext calls);
           # keep the signal visible without failing the workflow.
