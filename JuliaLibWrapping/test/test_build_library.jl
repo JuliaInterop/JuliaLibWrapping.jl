@@ -200,7 +200,7 @@ using Test
                 lowlevel = joinpath(out, "abi_stress_py", "_lowlevel.py")
                 @test isfile(lowlevel)
                 python3 = _find_python()
-                if python3 !== nothing # noidiom: matches sibling testsets' style
+                if !isnothing(python3)
                     @test _ast_parse_ok(python3, lowlevel)
                 end
             end
@@ -218,7 +218,7 @@ using Test
         ext === nothing && error("JLW_TEST_BUNDLE set but JuliaC.jl is not loaded")
         VERSION >= v"1.13.0-rc1" || error("JLW_TEST_BUNDLE set but julia < 1.13")
         python3 = _find_python()
-        python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH") # noidiom: matches sibling testsets' style
+        isnothing(python3) && error("JLW_TEST_BUNDLE set but python3 not on PATH")
         # The generated _lowlevel.py imports numpy (CVector helpers).
         # Report the missing dependency before attempting the import.
         has_numpy = success(

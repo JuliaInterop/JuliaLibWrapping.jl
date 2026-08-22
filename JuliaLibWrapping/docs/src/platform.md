@@ -79,8 +79,9 @@ package handles each case differently depending on layout:
 
 - **Flat layout** (no bundle — a bare `.dll` shipped beside the package,
   requiring a system Julia). `_lowlevel.py` gains a `_find_julia_bin()`
-  function, ported from ParselTongue's `runtime=:system` wheel loader:
-  `JULIA_BINDIR` env var, then `JULIA_PREFIX`, then `shutil.which("julia")`
+  function that locates a system Julia the same way a `runtime=:system`
+  wheel loader does: `JULIA_BINDIR` env var, then `JULIA_PREFIX`, then
+  `shutil.which("julia")`
   followed by asking that `julia` binary for its own `Sys.BINDIR` via a
   subprocess. If a Julia install is located, its `bin/` directory is added
   to the DLL search path (`add_dll_directory` or the `PATH` fallback)
