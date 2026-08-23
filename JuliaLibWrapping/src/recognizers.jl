@@ -3,7 +3,7 @@
 # Each function below decides whether a `StructDesc`/`MethodDesc` matches one
 # of JLWInterop's carrier conventions (CArray, CString, CStrArray, CDict,
 # COpt, JLWStatus) by inspecting `ABIInfo`/`TypeDesc` structure alone. None of
-# them import or hardcode a target language's type-name vocabulary; a few
+# them import or hardcode a target language's type-name table; a few
 # take a caller-supplied name table (e.g. `numpy_dtypes`, `pytypes` from
 # `python.jl`) as an explicit argument so a future non-Python target can
 # supply its own without editing this file.
@@ -50,7 +50,7 @@ was swept, not just these two:**
 
 Gated on BOTH the name AND zero fields — matching the
 [`is_jlwstatus_struct`](@ref)/[`cstrarray_struct_info`](@ref) family's
-name-plus-shape convention — so a genuine user struct that happens to be
+name-plus-shape convention, so a user struct that happens to be
 named `Nothing` but carries real fields is never swallowed by this check.
 
 Target-independent: operates on `ABIInfo`/`StructDesc` only.
@@ -71,7 +71,7 @@ end
 Shared "scan fields, match by name" step behind [`cstrarray_struct_info`](@ref),
 [`cdict_struct_info`](@ref), and [`copt_struct_info`](@ref): each recognizer's
 name-prefix gate and type-specific per-field checks stay in the recognizer
-itself, but the mechanical part — walking `desc.fields`, matching each one
+itself, but the shared part—walking `desc.fields` and matching each one
 against `names` by name, and rejecting on a field-count or missing-name
 mismatch — is identical across all three and lives here once.
 

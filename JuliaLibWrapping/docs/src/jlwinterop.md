@@ -8,20 +8,20 @@ CurrentModule = JLWInterop
 JLWInterop
 ```
 
-## Ownership and layout discipline
+## Ownership and layout
 
-Every type in this package holds a raw pointer and **does not own**
-the underlying storage. The caller that allocated the buffer is
-responsible for keeping it alive for the duration of any call that
-sees it, and for freeing it afterward. In exchange, every type is
-`isbits` (when the element type is), is `juliac --trim`-friendly,
-and crosses a `@ccallable` boundary without heap allocation.
+The package defines fixed-layout types for passing values across a C ABI.
+Borrowed values do not own their underlying storage; the caller must keep the
+storage alive for the duration of the call. Types that support owning returns
+record ownership in an `owned` field. The types are `isbits` when their element
+types are, work with `juliac --trim`, and cross a `@ccallable` boundary without
+allocating a Julia object.
 
 The [JuliaLibWrapping](@ref) Python emitter recognizes these types
 **structurally** — by struct name plus field shape — so an author
-who copy-pastes a compatible definition into their own library gets
-the same wrapper behavior. Depending on `JLWInterop` is the way to
-keep the definitions from drifting across libraries.
+who copies a compatible definition into their own library gets the same
+wrapper behavior. Using the definitions from `JLWInterop` keeps their layouts
+consistent across libraries.
 
 ## `JLWStatus` — in-band error reporting
 
@@ -93,7 +93,7 @@ generated `ctypes.Structure` class carries a `.free()` method: it releases
 `data` iff `self.owned == 1`, then sets `owned` back to `0`, so a second
 call — or a call on a value that was never owned — is a no-op.
 
-Unlike `CStrArray`/`CDict`, whose façade degrades to a mechanical
+Unlike `CStrArray`/`CDict`, whose façade falls back to a direct
 re-export at build time when release entrypoints are missing, a library
 that returns an owned `CArray` without exporting them still gets a full
 auto-wrapped return — the failure surfaces only at runtime, as `.free()`

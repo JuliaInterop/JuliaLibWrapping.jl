@@ -27,8 +27,8 @@ point to `prod(dims)` contiguous elements of `T`.
 
 # Ownership contract
 
-Ownership is carried **explicitly in the data**, via the `owned` field —
-never inferred from which direction a value happens to cross the boundary.
+The `owned` field records ownership explicitly; call direction does not
+determine ownership.
 `owned = 0` means caller-owned/borrowed: `CArray` neither allocates, copies,
 frees, nor keeps the storage alive; the caller must keep the buffer alive and
 ensure it is writable before mutation. `owned = 1` means Julia's own-out
@@ -39,8 +39,7 @@ allocation as a whole. Julia never retains a reference to an `owned = 1`
 buffer once it has handed it across the boundary.
 
 - Every existing constructor below (the tuple-form and scalar-form ones)
-  builds a **borrowed** (`owned = 0`) view over caller-supplied storage —
-  today's semantics, unchanged.
+  builds a **borrowed** (`owned = 0`) view over caller-supplied storage.
 - `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
   column-major copy of `A` and sets `owned = 1`.
 
@@ -147,7 +146,7 @@ CArray{T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
 """
     CArray(A::AbstractArray{T,N}) where {T,N}
 
-Own-out: `Libc.malloc`s a dense column-major copy of `A` and returns a
+Allocates a dense column-major copy of `A` with `Libc.malloc` and returns a
 [`CArray{T,N}`](@ref) with `owned = 1`. The consumer is responsible for
 releasing the buffer exactly once, via `Libc.free(a.data)` (or, at a
 `@ccallable` boundary, `jlw_free` from [`@export_release_entrypoints`](@ref)).
@@ -327,8 +326,8 @@ end
 Owning-or-borrowed C-ABI descriptor for an array of UTF-8 strings: `length`
 elements at `data`, each a length-prefixed [`CString`](@ref) (16 bytes, not
 NUL-terminated; embedded NUL bytes are allowed). Each element's own length is
-`CString`'s `Int32`, so a single string over ~2 GiB fails loud with an
-`InexactError` in the own-out constructor rather than silently truncating.
+`CString`'s `Int32`, so a single string over ~2 GiB throws an `InexactError`
+in the own-out constructor rather than being truncated.
 
 # Ownership contract
 
@@ -429,8 +428,8 @@ as a parallel array of `V` at `values`. `V` is restricted to
 [`CDICT_VALUE_TYPES`](@ref); the allowlist is enforced structurally — the
 per-`V` conversion methods below are the only ones generated, so a
 disallowed `V` fails as a `MethodError` at the call site. Each key's own
-length is `CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
-`InexactError` in the own-out constructor rather than silently truncating.
+length is `CString`'s `Int32`, so a single key over ~2 GiB throws an
+`InexactError` in the own-out constructor rather than being truncated.
 
 # Ownership contract
 

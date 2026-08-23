@@ -14,7 +14,8 @@ This repository contains two packages:
   tool; see its [README](JuliaLibWrapping/README.md) and the
   [documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/).
 
-- **[`JLWInterop/`](JLWInterop/)** — a small, dependency-free package defining
+- **[`JLWInterop/`](JLWInterop/)** — a dependency-free package defining
   shared ABI types such as `CArray`, `CString`, and `JLWStatus`. Compiled
   libraries use these types, and the generated Python wrappers recognize their
-  layouts. It is a `juliac --trim`-friendly runtime dependency of compiled libraries.
+  layouts. Compiled libraries can use it as a runtime dependency with
+  `juliac --trim`.

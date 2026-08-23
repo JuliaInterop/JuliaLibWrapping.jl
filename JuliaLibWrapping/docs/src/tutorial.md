@@ -176,7 +176,7 @@ After a successful build, `out/` contains:
     ├── pyproject.toml      # Python package metadata
     └── ols_py/
         ├── __init__.py
-        ├── _lowlevel.py    # mechanical ctypes bindings (regenerated every build)
+        ├── _lowlevel.py    # generated ctypes bindings (regenerated every build)
         ├── _facade.py      # public API (created once; user-editable)
         └── bundle/         # juliac --bundle tree: libjulia, stdlibs, BLAS, …
 
@@ -248,8 +248,8 @@ In contrast with `predict`, `fit` is not automatically wrapped: it returns a
 `FitResult`, and JuliaLibWrapping declines to make choices about what that
 should look like from the Python perspective. The starter façade re-exports it
 from `_lowlevel` with a `TODO: hand-wrap` comment naming the obstacle. You edit
-`_facade.py` to provide the wrapper you want. The mechanical layer still raises
-`JLWError` on a non-zero status, so a sklearn-flavored hand wrap is just:
+`_facade.py` to provide the wrapper you want. The generated low-level layer
+still raises `JLWError` on a non-zero status, so a scikit-learn-style wrapper is:
 
 ```python
 # in ols_py/_facade.py, replacing the auto-generated TODO line

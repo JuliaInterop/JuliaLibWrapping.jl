@@ -54,8 +54,8 @@ using Test
     end
 
     @testset "backend selection" begin
-        # Without JuliaC loaded, the default (:auto) backend must fail-fast
-        # with an actionable message pointing the user at JuliaC.
+        # Without JuliaC loaded, the default (:auto) backend must report that
+        # JuliaC needs to be loaded.
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
         proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
@@ -101,7 +101,7 @@ using Test
         proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
 
         # bundle = true with a PythonTarget lacking bundle_subdir must
-        # fail-fast: silently writing into the package would leave the
+        # fail immediately: writing into the package would leave the
         # generated loader looking in the wrong place.
         err = try
             build_library(entry,
@@ -121,7 +121,7 @@ using Test
         # Drive the full pipeline against examples/abi_stress. The compile
         # step is expensive (~minutes), so this is gated on having a
         # usable juliac available. On CI it's a hard error if the
-        # prerequisites are present but the build fails, mirroring the
+        # prerequisites are present but the build fails, matching the
         # python3 pattern elsewhere.
         has_julia = Sys.which("julia") !== nothing
         has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
@@ -201,8 +201,8 @@ using Test
             @test !isempty(salted)
             @test !any(startswith.(salted, "libjulia"))
 
-            # The real test: can Python import the package and call a
-            # function? `out` is added to PYTHONPATH so `abi_stress_py`
+            # Verify that Python can import the package. `out` is added to
+            # PYTHONPATH so `abi_stress_py`
             # is importable without `pip install`.
             cmd = addenv(`$python3 -c "import abi_stress_py; print('ok')"`,
                          "PYTHONPATH" => out)

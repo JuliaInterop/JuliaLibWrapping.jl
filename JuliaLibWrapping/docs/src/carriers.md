@@ -7,7 +7,7 @@ CurrentModule = JLWInterop
 This page documents the **Layer-1 shared carriers** added to `JLWInterop` for
 variable-size and optional data: an array of strings, a string-keyed
 dictionary, and an optional scalar. They sit alongside the
-`CArray`/`CString`/`JLWStatus` vocabulary described in [JLWInterop](@ref) and
+`CArray`/`CString`/`JLWStatus` types described in [JLWInterop](@ref) and
 follow the same recognition convention — the
 [JuliaLibWrapping](@ref) Python emitter matches a struct **by name plus field
 shape**, not by package identity, so a copy-pasted compatible definition
@@ -15,11 +15,11 @@ still gets the generated helpers. `CArray` shares this page's `owned`-field
 ownership contract too (see below); its full ownership prose lives on the
 [JLWInterop](@ref) page alongside its other layout details.
 
-## Where they sit in the layer plan
+## Architecture
 
 JuliaLibWrapping's design is layered: `juliac` compiles and emits a pure
 C-ABI description with no semantic metadata; `JLWInterop` is the shared
-vocabulary of carrier types that give that metadata meaning; a future
+set of carrier types that give that metadata meaning; a future
 annotation layer will let users opt into richer bindings; and each target
 language's emitter (Python today, MATLAB via
 [Mexicah](https://github.com/JuliaInterop/Mexicah.jl)) consumes the same L1
@@ -43,8 +43,8 @@ only where alignment requires it (see `COpt` below).
 
 ## Ownership contract
 
-**The data says who owns it.** `CStrArray`, `CDict`, and `CArray` each carry
-an explicit `owned::Int32` field — `0` means caller-owned/borrowed, `1` means
+`CStrArray`, `CDict`, and `CArray` each carry an explicit `owned::Int32`
+field: `0` means caller-owned/borrowed, and `1` means
 allocated by Julia's own-out constructor — and every consumer, on both sides
 of the boundary, reads that field rather than inferring ownership from which
 direction the value happened to cross. There is no partial ownership: the
@@ -64,10 +64,8 @@ storage) likewise always set `owned = 0` — today's, pre-flag semantics,
 unchanged; only the new `CArray(::AbstractArray)` own-out constructor sets
 `owned = 1`. See [`CArray`](@ref) for the full contract.
 
-Two patterns still cover the common cases, following the same "borrow-in
-stays universal; ownership enters only on variable-size returns" split used
-by libraries like libgit2 and `sqlite3_free` — but the flag, not the pattern,
-is what a consumer actually checks:
+Two patterns cover the common cases. Consumers still determine ownership
+from the flag:
 
 - **Arguments are borrowed (`owned = 0`).** The generated Python helper
   builds the carrier via `ctypes`, sets `owned=0` explicitly, and keeps a
@@ -105,11 +103,10 @@ always a no-op.
 > Diagram source: [`docs/src/assets/ownership-seq.mmd`](assets/ownership-seq.mmd);
 > regenerate with `mmdc -i ownership-seq.mmd -o ownership-seq.svg -b transparent`.
 
-Rejected alternative, for the record: a caller-allocated two-call protocol
-(ask for the size, allocate, call again to fill) was considered and rejected
-— an arbitrary user callee cannot safely run twice without duplicating side
-effects, and caching the first call's result would need registry state that
-the rest of this design deliberately avoids.
+A caller-allocated two-call protocol (query the size, allocate, then call
+again to fill the buffer) is not supported. Calling an arbitrary function
+twice could duplicate side effects, while caching the first result would
+require additional registry state.
 
 ## `CStrArray` — an array of strings
 
@@ -139,7 +136,7 @@ end
   converted the same way but never freed.
 
 Each element's own length is `CString`'s `Int32`, so a single string over
-~2 GiB fails loud with an `InexactError` rather than silently truncating.
+~2 GiB throws an `InexactError` rather than being truncated.
 
 ```@docs
 CStrArray
@@ -164,8 +161,8 @@ end
 ([`CDICT_VALUE_TYPES`](@ref)) — the per-`V` conversion methods are generated
 only for those types, so an unsupported `V` fails as a `MethodError` at the
 call site rather than compiling something unsound. Each key's own length is
-`CString`'s `Int32`, so a single key over ~2 GiB fails loud with an
-`InexactError` rather than silently truncating.
+`CString`'s `Int32`, so a single key over ~2 GiB throws an `InexactError`
+rather than being truncated.
 
 - **Borrow-in** (`Base.Dict{String,V}(d::CDict{V})`): copies keys and values
   out into a fresh `Dict`; never frees `d.keys`, the per-key buffers, or
@@ -229,8 +226,8 @@ that the generated Python façade calls to release Julia-malloc'd buffers (see
 ABI JSON exactly like any other `@ccallable`-annotated function, so no extra
 emitter-side plumbing is needed to make them visible.
 
-Without it, the ABI JSON carries no ownership metadata at all — this is a
-fundamental limitation of a pure C-ABI description, not a bug — so
+Without it, the ABI JSON carries no ownership metadata, because a C ABI
+description does not record allocation policy. Consequently,
 [`_release_symbols_present`](@ref JuliaLibWrapping._release_symbols_present)
 cannot find `jlw_free`/`jlw_free_strings` among the library's exported
 symbols. Rather than emit a façade call to a symbol that does not exist, the
