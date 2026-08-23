@@ -183,6 +183,45 @@ const numpy_dtypes = Dict{String, String}(
 )
 
 """
+    scalar_payload_types :: Dict{String, String}
+
+The allowlist of Julia scalar primitive types accepted as a `CDict{V}` value
+or `COpt{T}` payload — Int8..Int64, UInt8..UInt64, Float32, Float64, Bool —
+matching `JLWInterop.CDICT_VALUE_TYPES` exactly (`CDict`/`COpt`'s payload is
+inline in the carrier struct/array, so they share one scalar contract; `Bool`
+is `ctypes.c_bool`, a real scalar here, even though it is intentionally
+absent from [`numpy_dtypes`](@ref) for the unrelated reason that numpy has no
+single-byte boolean `ctypes` array element convention this emitter wraps).
+
+This is a **restriction of [`pytypes`](@ref)**, not a separate vocabulary:
+`pytypes` also maps several primitive names that are unsuitable as a
+`CDict`/`COpt` payload even though they are valid elsewhere (an argument, a
+return, a pointee) — `"Cvoid" => "None"` is not a legal `ctypes.Structure`
+field type (`None` cannot appear in `_fields_`); `Cstring`/`Cwstring` are
+pointer-backed nominal types needing their own lifetime management, not a
+value CDict/COpt's inline-scalar convention can hold; `RawFD` and the
+platform-aliased C ints (`Cint`, `Cshort`, …) are not part of
+`CDICT_VALUE_TYPES` either. Using `pytypes` for this purpose would silently
+accept `CDict{Cvoid}`/`COpt{Cvoid}` fixtures that cannot actually round-trip.
+
+Used by [`cdict_struct_info`](@ref)/[`copt_struct_info`](@ref)/
+[`_facade_classify_return`](@ref) instead of `pytypes`.
+"""
+const scalar_payload_types = Dict{String, String}(
+    "Int8" => "ctypes.c_int8",
+    "Int16" => "ctypes.c_int16",
+    "Int32" => "ctypes.c_int32",
+    "Int64" => "ctypes.c_int64",
+    "UInt8" => "ctypes.c_uint8",
+    "UInt16" => "ctypes.c_uint16",
+    "UInt32" => "ctypes.c_uint32",
+    "UInt64" => "ctypes.c_uint64",
+    "Float32" => "ctypes.c_float",
+    "Float64" => "ctypes.c_double",
+    "Bool" => "ctypes.c_bool",
+)
+
+"""
     _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
 
 Return the mangled Python `ctypes.Structure` class name for the
@@ -779,8 +818,8 @@ function _write_bindings(
                 println(f, "    ]")
             end
             cainfo = carray_struct_info(type, typeinfo, numpy_dtypes, pytypes)
-            cdinfo = cdict_struct_info(type, typeinfo, pytypes)
-            coinfo = copt_struct_info(type, typeinfo, pytypes)
+            cdinfo = cdict_struct_info(type, typeinfo, scalar_payload_types)
+            coinfo = copt_struct_info(type, typeinfo, scalar_payload_types)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo, release_present)
@@ -914,9 +953,9 @@ function _facade_classify_arg(
             return (kind = :cstring, classname = typedict[arg.type])
         elseif cstrarray_struct_info(t, typeinfo)
             return (kind = :cstrarray, classname = typedict[arg.type])
-        elseif !isnothing(cdict_struct_info(t, typeinfo, pytypes))
+        elseif !isnothing(cdict_struct_info(t, typeinfo, scalar_payload_types))
             return (kind = :cdict, classname = typedict[arg.type])
-        elseif !isnothing(copt_struct_info(t, typeinfo, pytypes))
+        elseif !isnothing(copt_struct_info(t, typeinfo, scalar_payload_types))
             return (kind = :copt, classname = typedict[arg.type])
         else
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
@@ -988,13 +1027,13 @@ function _facade_classify_return(
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(cdict_struct_info(rt, typeinfo, pytypes))
+        elseif !isnothing(cdict_struct_info(rt, typeinfo, scalar_payload_types))
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cdict_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(copt_struct_info(rt, typeinfo, pytypes))
+        elseif !isnothing(copt_struct_info(rt, typeinfo, scalar_payload_types))
             return (kind = :copt_unwrap, classname = typedict[method.return_type])
         elseif !isnothing(jlwstatus_access_path(method, typeinfo, sanitize_python_argname))
             return (

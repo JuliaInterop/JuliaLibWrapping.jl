@@ -807,10 +807,10 @@ end
         # with `length` (primitive integer), `keys` (Ptr{CString} — same
         # shape as CStrArray's `data`, recognized via `cstring_struct_info`
         # applied to the pointee), `values` (Ptr{<primitive in
-        # pytypes>}), and `owned` (an Int32 explicit-ownership
+        # scalar_payload_types>}), and `owned` (an Int32 explicit-ownership
         # discriminant) fields. The name is only the first gate; the full
         # 4-field shape and the keys pointee's own shape must also match.
-        cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo, JuliaLibWrapping.pytypes)
+        cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo, JuliaLibWrapping.scalar_payload_types)
         abi = read_abi_info("bindinginfo_cdict.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -926,6 +926,22 @@ end
                     FieldDesc("owned", 2, 24),  # Int64, not Int32
                 ]
             ),
+            24 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 1),
+            25 => PointerDesc("Ptr{Cvoid}", 24),
+            26 => StructDesc(
+                # `values` points to `Cvoid` — present in `pytypes` (maps to
+                # Python `None`, valid for a restype but not a ctypes struct
+                # field) but absent from `scalar_payload_types`. Regression
+                # case for the scalar-only payload restriction: this must be
+                # rejected even though the OLD pytypes-gated check would
+                # have accepted it.
+                "CDictCvoidValue", 32, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 25, 16),
+                    FieldDesc("owned", 1, 24),
+                ]
+            ),
         )
         @test !isnothing(cdinfo(ti[15], ti))
         @test isnothing(cdinfo(ti[16], ti)) # wrong name prefix
@@ -936,6 +952,8 @@ end
         @test isnothing(cdinfo(ti[21], ti)) # keys isn't a pointer-to-struct at all
         @test isnothing(cdinfo(ti[22], ti)) # missing `owned` field entirely
         @test isnothing(cdinfo(ti[23], ti)) # `owned` present but not Int32
+        @test isnothing(cdinfo(ti[26], ti)) # CDict{Cvoid}: not a scalar payload type
+        @test !isnothing(JuliaLibWrapping.cdict_struct_info(ti[26], ti, JuliaLibWrapping.pytypes)) # ...though pytypes alone WOULD have accepted it
 
         # Field order may be any permutation.
         permuted = StructDesc(
@@ -952,8 +970,8 @@ end
     @testset "copt_struct_info" begin
         # Structural recognition of the COpt{T} shape: a struct named COpt
         # with `has_value` (Int32 primitive) and `value` (any primitive in
-        # `pytypes`) fields.
-        coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo, JuliaLibWrapping.pytypes)
+        # `scalar_payload_types`) fields.
+        coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo, JuliaLibWrapping.scalar_payload_types)
         abi = read_abi_info("bindinginfo_copt.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -1008,6 +1026,17 @@ end
                     FieldDesc("extra", 3, 8),
                 ]
             ),
+            11 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 1),
+            12 => StructDesc(
+                # `value` is `Cvoid` — present in `pytypes` (maps to Python
+                # `None`) but absent from `scalar_payload_types`. Same
+                # regression case as `CDictCvoidValue` above, for COpt{Nothing}
+                # (`Nothing`/`Cvoid` are the same Julia type).
+                "COptCvoidValue", 16, 8, FieldDesc[
+                    FieldDesc("has_value", 1, 0),
+                    FieldDesc("value", 11, 8),
+                ]
+            ),
         )
         @test !isnothing(coinfo(ti[5], ti))
         @test isnothing(coinfo(ti[6], ti)) # wrong name prefix
@@ -1015,6 +1044,8 @@ end
         @test isnothing(coinfo(ti[8], ti)) # wrong field names
         @test isnothing(coinfo(ti[9], ti)) # value pointee not in pytypes
         @test isnothing(coinfo(ti[10], ti)) # too many fields
+        @test isnothing(coinfo(ti[12], ti)) # COpt{Nothing}: not a scalar payload type
+        @test !isnothing(JuliaLibWrapping.copt_struct_info(ti[12], ti, JuliaLibWrapping.pytypes)) # ...though pytypes alone WOULD have accepted it
 
         # Field order may be either way.
         flipped = StructDesc(

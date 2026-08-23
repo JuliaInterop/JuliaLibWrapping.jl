@@ -54,6 +54,12 @@ name-plus-shape convention — so a genuine user struct that happens to be
 named `Nothing` but carries real fields is never swallowed by this check.
 
 Target-independent: operates on `ABIInfo`/`StructDesc` only.
+
+This whole function is a workaround for juliac emitting `::Cvoid`/`Ptr{Cvoid}`
+as this zero-field `Nothing` struct instead of a proper void/primitive
+marker; an upstream fix is in progress
+(JuliaLang/JuliaC.jl#178, julia#62860 — targeting a 1.13 backport) and this
+predicate (and its call sites) can be removed once that ships.
 """
 function _is_void_struct(desc::StructDesc)
     return desc.name == "Nothing" && isempty(desc.fields)
@@ -245,8 +251,10 @@ rather than silently mis-wrapped.
 
 `scalar_types` is a caller-supplied `Dict{String,String}` mapping a Julia
 primitive type name to the target language's expression for it (e.g.
-`pytypes` in `python.jl`) — passed in explicitly so this recognizer does not
-hardcode any target's type vocabulary.
+`scalar_payload_types` in `python.jl` — a restriction of `pytypes` to genuine
+scalars, since not every primitive `pytypes` maps is a valid `CDict`/`COpt`
+payload) — passed in explicitly so this recognizer does not hardcode any
+target's type vocabulary.
 
 Target-independent: operates on `ABIInfo`/`StructDesc`/`TypeDesc` plus the
 caller-supplied `scalar_types` table.
@@ -291,8 +299,10 @@ entrypoint is ever needed for it. Recognition is by name + shape (see
 
 `scalar_types` is a caller-supplied `Dict{String,String}` mapping a Julia
 primitive type name to the target language's expression for it (e.g.
-`pytypes` in `python.jl`) — passed in explicitly so this recognizer does not
-hardcode any target's type vocabulary.
+`scalar_payload_types` in `python.jl` — a restriction of `pytypes` to genuine
+scalars, since not every primitive `pytypes` maps is a valid `CDict`/`COpt`
+payload) — passed in explicitly so this recognizer does not hardcode any
+target's type vocabulary.
 
 Target-independent: operates on `ABIInfo`/`StructDesc`/`TypeDesc` plus the
 caller-supplied `scalar_types` table.
