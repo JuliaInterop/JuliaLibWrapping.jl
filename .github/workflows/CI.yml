@@ -65,6 +65,14 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
         with:
           project: ${{ matrix.package }}
+      # The `ols` and `boundary` example smoke tests import numpy.
+      - uses: actions/setup-python@v5
+        if: matrix.package == 'JuliaLibWrapping'
+        with:
+          python-version: '3.x'
+      - name: Install numpy
+        if: matrix.package == 'JuliaLibWrapping'
+        run: python3 -m pip install numpy
       - uses: julia-actions/julia-runtest@v1
         with:
           project: ${{ matrix.package }}
