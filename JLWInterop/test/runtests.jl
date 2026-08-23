@@ -230,48 +230,90 @@ using Test
 
     @testset "CArray layout" begin
         # The compiled ABI relies on `dims::NTuple{N,Int32}` followed by
-        # `data::Ptr{T}`. Downstream C and Python emitters generate the
-        # corresponding ctypes.Structure / C struct from this layout.
-        @test fieldnames(CArray) == (:dims, :data)
+        # `data::Ptr{T}` followed by `owned::Int32`. Downstream C and Python
+        # emitters generate the corresponding ctypes.Structure / C struct
+        # from this layout. Offsets verified by a Julia probe of
+        # `fieldoffset`/`sizeof`, not assumed — see the round-2 report.
+        @test fieldnames(CArray) == (:dims, :data, :owned)
 
         @test fieldtype(CVector{Float64}, :dims) === NTuple{1, Int32}
         @test fieldtype(CVector{Float64}, :data) === Ptr{Float64}
+        @test fieldtype(CVector{Float64}, :owned) === Int32
         @test isbitstype(CVector{Float64})
-        @test fieldoffset(CVector{Float64}, 1) == 0
+        @test iszero(fieldoffset(CVector{Float64}, 1))
         # One Int32 (4 bytes) pads out to pointer alignment (8 bytes).
         @test fieldoffset(CVector{Float64}, 2) == 8
+        @test fieldoffset(CVector{Float64}, 3) == 16
+        @test sizeof(CVector{Float64}) == 24
 
         @test fieldtype(CMatrix{Float64}, :dims) === NTuple{2, Int32}
         @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
+        @test fieldtype(CMatrix{Float64}, :owned) === Int32
         @test isbitstype(CMatrix{Float64})
-        @test fieldoffset(CMatrix{Float64}, 1) == 0
+        @test iszero(fieldoffset(CMatrix{Float64}, 1))
         # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
         @test fieldoffset(CMatrix{Float64}, 2) == 8
+        @test fieldoffset(CMatrix{Float64}, 3) == 16
+        @test sizeof(CMatrix{Float64}) == 24
 
         @test fieldtype(CArray{Float64, 3}, :dims) === NTuple{3, Int32}
+        @test fieldtype(CArray{Float64, 3}, :owned) === Int32
         @test isbitstype(CArray{Float64, 3})
-        @test fieldoffset(CArray{Float64, 3}, 1) == 0
+        @test iszero(fieldoffset(CArray{Float64, 3}, 1))
         # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
         @test fieldoffset(CArray{Float64, 3}, 2) == 16
+        @test fieldoffset(CArray{Float64, 3}, 3) == 24
+        @test sizeof(CArray{Float64, 3}) == 32
     end
 
     @testset "CArray constructors" begin
         # Tuple-form general constructor accepts any Integer eltype and
-        # coerces to Int32.
+        # coerces to Int32. All borrowed-view constructors set owned = 0 —
+        # today's semantics, unchanged.
         a = CArray{Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
         @test a isa CMatrix{Float64}
         @test a.dims === (Int32(2), Int32(3))
+        @test a.owned === Int32(0)
 
         a2 = CArray{Float64, 2}((2, 3), Ptr{Float64}(0))
         @test a2.dims === (Int32(2), Int32(3))
+        @test a2.owned === Int32(0)
 
         # Scalar-form shortcuts for 1-D and 2-D.
         v = CVector{Float64}(Int32(4), Ptr{Float64}(0))
         @test v.dims === (Int32(4),)
         @test v.data === Ptr{Float64}(0)
+        @test v.owned === Int32(0)
 
         m = CMatrix{Float64}(2, 3, Ptr{Float64}(0))
         @test m.dims === (Int32(2), Int32(3))
+        @test m.owned === Int32(0)
+    end
+
+    @testset "CArray owned flag" begin
+        # Own-out constructor mallocs a dense column-major copy and sets
+        # owned=1; the source array is untouched and may be discarded.
+        src = [1.0 2.0; 3.0 4.0]  # 2x2, column-major
+        a = CArray(src)
+        @test fieldtype(CArray, :owned) === Int32
+        @test a.owned === Int32(1)
+        @test a.dims === (Int32(2), Int32(2))
+        @test collect(a) == src
+        Libc.free(a.data)
+
+        # 1-D own-out.
+        v = CArray([10.0, 20.0, 30.0])
+        @test v.owned === Int32(1)
+        @test collect(v) == [10.0, 20.0, 30.0]
+        Libc.free(v.data)
+
+        # A hand-built borrowed (owned=0) CArray round-trips identically —
+        # getindex/setindex! never branch on the flag.
+        buf = Float64[5.0, 6.0]
+        GC.@preserve buf begin
+            borrowed = CArray{Float64, 1}((Int32(2),), pointer(buf), Int32(0))
+            @test collect(borrowed) == [5.0, 6.0]
+        end
     end
 
     @testset "CStrArray round-trip" begin

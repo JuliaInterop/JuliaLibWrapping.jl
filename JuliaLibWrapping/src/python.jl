@@ -331,10 +331,17 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     return nothing
 end
 
-function _write_carray_helpers(f::IO, cainfo)
+function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
     # `cainfo` is the return of `carray_struct_info`. Helpers are emitted as
-    # methods on the surrounding ctypes.Structure subclass; the `dims` and
-    # `data` field names are guaranteed by the recognizer.
+    # methods on the surrounding ctypes.Structure subclass; the `dims`,
+    # `data`, and `owned` field names are guaranteed by the recognizer.
+    # `from_numpy` always builds a caller-owned (`owned=0`) view over the
+    # passed-in numpy array — it never allocates. `as_numpy` is unchanged: it
+    # always returns a zero-copy view regardless of `owned`; the façade's
+    # `:carray_unwrap` handling is what copies before freeing when `owned ==
+    # 1` (see `_emit_facade_autowrapper`) — a view here must never outlive
+    # the buffer it aliases. `release_present` — see the identical parameter
+    # on `_write_cstrarray_helpers`.
     ctype = cainfo.pointee_ctype
     dtype = cainfo.dtype
     ndim = cainfo.ndim
@@ -375,12 +382,13 @@ function _write_carray_helpers(f::IO, cainfo)
     println(f, "        if arr.dtype != expected_dtype:")
     println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
     println(f, "        obj = cls(dims=(ctypes.c_int32 * ", ndim, ")(*arr.shape),")
-    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
+    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")),")
+    println(f, "                  owned=0)")
     println(f, "        obj._buffer = arr")
     println(f, "        return obj")
     println(f, "")
     println(f, "    def as_numpy(self):")
-    return if ndim == 1
+    if ndim == 1
         println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))")
     else
@@ -392,6 +400,23 @@ function _write_carray_helpers(f::IO, cainfo)
         println(f, "        # `.T` reverses all axes, yielding a view with the natural Fortran-order")
         println(f, "        # shape and strides.")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
+    end
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffer iff this object owns it (owned is 1).")
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    if release_present
+        println(f, "        if self.owned == 1:")
+        println(f, "            _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))")
+        return println(f, "            self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
     end
 end
 
@@ -746,7 +771,7 @@ function _write_bindings(
             coinfo = copt_struct_info(type, typeinfo, pytypes)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
-                _write_carray_helpers(f, cainfo)
+                _write_carray_helpers(f, cainfo, release_present)
             elseif cstring_struct_info(type, typeinfo)
                 # Emit CString conversion helpers.
                 _write_cstring_helpers(f)
@@ -898,7 +923,16 @@ Classify a method's return for façade auto-wrapping. `release_present` is
 [`_release_symbols_present`](@ref)'s verdict for the surrounding library.
 The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
-- `(kind=:carray_unwrap, classname=…)` — return `_result.as_numpy()`
+- `(kind=:carray_unwrap, classname=…)` — `_result.owned` is `0`: return
+  `_result.as_numpy()` (zero-copy view), matching `CArray`'s historical
+  always-borrowed behavior. `_result.owned` is `1`: copy into a fresh numpy
+  array (`np.array(_result.as_numpy(), copy=True)`) FIRST, then free `data`
+  via `jlw_free` — never hand back a view over memory about to be freed.
+  Not gated on `release_present` (unlike `:cstrarray_unwrap`/
+  `:cdict_unwrap` below): a plain, always-borrowed `CArray` return — by far
+  the common case, predating the `owned` flag — must keep auto-wrapping even
+  when the library never calls `@export_release_entrypoints`, since the free
+  branch above is never reached when the value is borrowed.
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
 - `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
   free the `data` buffer via `jlw_free_strings` iff `_result.owned` is `1`
@@ -1059,8 +1093,20 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
     elseif ret.kind === :carray_unwrap
+        # `data` may be Julia-allocated (own-out convention, `owned == 1`) or
+        # a borrowed/pass-through view (`owned == 0`, the historical
+        # default): for `owned == 0`, `as_numpy()` is a zero-copy view,
+        # exactly as before. For `owned == 1` the buffer is about to be
+        # freed, so it is copied into a fresh numpy array FIRST — handing
+        # back a view over memory we are about to free would leave a
+        # dangling array.
         println(f, "    _result = ", call)
-        println(f, "    return _result.as_numpy()")
+        println(f, "    if _result.owned == 1:")
+        println(f, "        _out = np.array(_result.as_numpy(), copy=True)")
+        println(f, "        _lowlevel._lib.jlw_free(ctypes.cast(_result.data, ctypes.c_void_p))")
+        println(f, "    else:")
+        println(f, "        _out = _result.as_numpy()")
+        println(f, "    return _out")
     elseif ret.kind === :cstring_unwrap
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
@@ -1113,10 +1159,11 @@ function _write_facade_stub(
     release_present = _release_symbols_present(abi_info)
     plans = [_facade_plan(m, typeinfo, typedict, release_present) for m in entrypoints]
     needs_np = any(p -> p.uses_numpy, plans)
-    # `:cdict_unwrap`'s release call casts `_result.values` via
-    # `ctypes.cast(...)` directly in facade.py (see
-    # `_emit_facade_autowrapper`), so `ctypes` must be imported there too.
-    needs_ctypes = any(p -> p.ret.kind === :cdict_unwrap, plans)
+    # `:cdict_unwrap`'s and `:carray_unwrap`'s release calls cast
+    # `_result.values`/`_result.data` via `ctypes.cast(...)` directly in
+    # facade.py (see `_emit_facade_autowrapper`), so `ctypes` must be
+    # imported there too.
+    needs_ctypes = any(p -> p.ret.kind in (:cdict_unwrap, :carray_unwrap), plans)
     has_struct_exports = !isempty(struct_names) || needs_jlwerror
 
     println(f, "\"\"\"", dest.package_name, " idiomatic façade.")

@@ -6,12 +6,14 @@ CurrentModule = JLWInterop
 
 This page documents the **Layer-1 shared carriers** added to `JLWInterop` for
 variable-size and optional data: an array of strings, a string-keyed
-dictionary, and an optional scalar. They sit alongside the non-owning
+dictionary, and an optional scalar. They sit alongside the
 `CArray`/`CString`/`JLWStatus` vocabulary described in [JLWInterop](@ref) and
 follow the same recognition convention — the
 [JuliaLibWrapping](@ref) Python emitter matches a struct **by name plus field
 shape**, not by package identity, so a copy-pasted compatible definition
-still gets the generated helpers.
+still gets the generated helpers. `CArray` shares this page's `owned`-field
+ownership contract too (see below); its full ownership prose lives on the
+[JLWInterop](@ref) page alongside its other layout details.
 
 ## Where they sit in the layer plan
 
@@ -41,25 +43,26 @@ only where alignment requires it (see `COpt` below).
 
 ## Ownership contract
 
-**The data says who owns it.** `CStrArray` and `CDict` each carry an explicit
-`owned::Int32` field — `0` means caller-owned/borrowed, `1` means allocated by
-Julia's own-out constructor — and every consumer, on both sides of the
-boundary, reads that field rather than inferring ownership from which
+**The data says who owns it.** `CStrArray`, `CDict`, and `CArray` each carry
+an explicit `owned::Int32` field — `0` means caller-owned/borrowed, `1` means
+allocated by Julia's own-out constructor — and every consumer, on both sides
+of the boundary, reads that field rather than inferring ownership from which
 direction the value happened to cross. There is no partial ownership: the
 flag covers the whole struct as a single unit (for `CStrArray`, `data` and
 every per-string buffer it points to; for `CDict`, `keys` and `values`
-together). Julia never retains a reference to an `owned = 1` buffer once it
-hands it across the boundary.
+together; for `CArray`, the single `data` allocation). Julia never retains a
+reference to an `owned = 1` buffer once it hands it across the boundary.
 
 This replaces inferring ownership from call direction ("arguments are always
 borrowed, returns always own") with a value that survives being passed
 through unchanged. A function that returns one of its own `CStrArray`/`CDict`
 arguments — a legitimate pattern, e.g. a validate-and-pass-through helper —
 returns a value whose `owned` field is still `0`, exactly as the caller built
-it; nothing downstream frees it. `CArray` is unaffected by this — it carries
-no ownership field at all and remains **always caller-owned** (the semantic
-equivalent of `owned = 0`), matching its existing non-owning, no-allocation
-contract.
+it; nothing downstream frees it. `CArray`'s default constructors (the
+tuple-form and scalar-form ones used to build a view over caller-supplied
+storage) likewise always set `owned = 0` — today's, pre-flag semantics,
+unchanged; only the new `CArray(::AbstractArray)` own-out constructor sets
+`owned = 1`. See [`CArray`](@ref) for the full contract.
 
 Two patterns still cover the common cases, following the same "borrow-in
 stays universal; ownership enters only on variable-size returns" split used

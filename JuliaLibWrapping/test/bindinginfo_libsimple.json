@@ -105,11 +105,12 @@
       "id": 9,
       "kind": "struct",
       "name": "CVector{Float32}",
-      "size": 16,
+      "size": 24,
       "alignment": 8,
       "fields": [
         { "name": "dims", "type_id": 13, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 10, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 10, "offset": 8, "isptr": false, "isfieldatomic": false },
+        { "name": "owned", "type_id": 4, "offset": 16, "isptr": false, "isfieldatomic": false }
       ]
     },
     {

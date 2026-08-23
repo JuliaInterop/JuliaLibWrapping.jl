@@ -318,16 +318,21 @@ end
 
 Recognize the JLWInterop `CArray{T,N}` shape (which subsumes `CVector{T} =
 CArray{T,1}` and `CMatrix{T} = CArray{T,2}`): a struct whose name starts
-with `"CArray"`, `"CVector"`, or `"CMatrix"`, with exactly two fields
+with `"CArray"`, `"CVector"`, or `"CMatrix"`, with exactly three fields
 named `dims` (a fixed-size array of `N` integers, i.e. an `ArrayDesc`
-of a signed/unsigned integer primitive in `numeric_types`) and `data`
-(a pointer to a primitive numeric type also in `numeric_types`). Field order
-may be either `dims, data` or `data, dims`. Returns
-`(; pointee_name, pointee_ctype, dtype, ndim)` on a match (with `ndim` set
-to the `dims` array's `count`), otherwise `nothing`.
+of a signed/unsigned integer primitive in `numeric_types`), `data`
+(a pointer to a primitive numeric type also in `numeric_types`), and
+`owned` (an `Int32` explicit-ownership discriminant — see the "Ownership
+contract" section of `CArray`'s docstring: `0` = caller-owned/borrowed, `1`
+= allocated by the own-out constructor `CArray(::AbstractArray)`). Field
+order may be any permutation. Returns `(; pointee_name, pointee_ctype,
+dtype, ndim)` on a match (with `ndim` set to the `dims` array's `count`),
+otherwise `nothing`.
 
 Like [`is_jlwstatus_struct`](@ref), recognition is by name + shape so
-authors who copy-paste a compatible definition still get the behavior.
+authors who copy-paste a compatible definition still get the behavior; the
+`owned` field is required so a struct predating the ownership flag is
+correctly rejected rather than silently mis-wrapped.
 
 `numeric_types` gates which primitive names count as array-element-eligible
 and supplies the returned `dtype` string (e.g. `numpy_dtypes` in
@@ -347,28 +352,21 @@ function carray_struct_info(
         startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
             startswith(desc.name, "CMatrix")
     ) || return nothing
-    length(desc.fields) == 2 || return nothing
-    dims_field = nothing
-    data_field = nothing
-    for field in desc.fields
-        if field.name == "dims"
-            dims_field = field
-        elseif field.name == "data"
-            data_field = field
-        end
-    end
-    (isnothing(dims_field) || isnothing(data_field)) && return nothing
-    dims_type = typeinfo[dims_field.type]
+    m = _match_fields(desc, ("dims", "data", "owned"))
+    isnothing(m) && return nothing
+    dims_type = typeinfo[m.dims.type]
     dims_type isa ArrayDesc || return nothing
     dims_eltype = typeinfo[dims_type.element_type]
     dims_eltype isa PrimitiveTypeDesc || return nothing
     (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
     dims_eltype.name in keys(numeric_types) || return nothing
-    data_type = typeinfo[data_field.type]
+    data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
     pointee.name in keys(numeric_types) || return nothing
+    owned_type = typeinfo[m.owned.type]
+    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
     return (;
         pointee_name = pointee.name,
         pointee_ctype = scalar_types[pointee.name],

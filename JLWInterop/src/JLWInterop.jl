@@ -22,9 +22,27 @@ const JLW_MESSAGE_BYTES = 256
 """
     CArray{T,N}
 
-Non-owning, column-major N-D buffer descriptor for `@ccallable` boundaries.
-`data` must point to `prod(dims)` contiguous elements of `T`.
-The caller must keep the buffer alive and ensure it is writable before mutation.
+Column-major N-D buffer descriptor for `@ccallable` boundaries. `data` must
+point to `prod(dims)` contiguous elements of `T`.
+
+# Ownership contract
+
+Ownership is carried **explicitly in the data**, via the `owned` field —
+never inferred from which direction a value happens to cross the boundary.
+`owned = 0` means caller-owned/borrowed: `CArray` neither allocates, copies,
+frees, nor keeps the storage alive; the caller must keep the buffer alive and
+ensure it is writable before mutation. `owned = 1` means Julia's own-out
+constructor allocated it: it must be released exactly once (`Libc.free`, or
+`jlw_free` from [`@export_release_entrypoints`](@ref) at a `@ccallable`
+boundary). There is no partial ownership — the flag covers the single `data`
+allocation as a whole. Julia never retains a reference to an `owned = 1`
+buffer once it has handed it across the boundary.
+
+- Every existing constructor below (the tuple-form and scalar-form ones)
+  builds a **borrowed** (`owned = 0`) view over caller-supplied storage —
+  today's semantics, unchanged.
+- `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
+  column-major copy of `A` and sets `owned = 1`.
 
 # Example
 
@@ -38,9 +56,9 @@ end
 
 # Extended help
 
-`T` should be an `isbits` type. The descriptor does not allocate, copy, free,
-or keep its storage alive; callers must ensure the buffer remains valid and is
-writable when using `setindex!`.
+`T` should be an `isbits` type. The borrowed-view constructors do not
+allocate, copy, free, or keep the storage alive; callers must ensure the
+buffer remains valid and is writable when using `setindex!`.
 
 The 1-D and 2-D specializations have familiar aliases:
 
@@ -95,6 +113,7 @@ for the duration of the call, and that the slots are writable when
 struct CArray{T, N} <: AbstractArray{T, N}
     dims::NTuple{N, Int32}
     data::Ptr{T}
+    owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by CArray(::AbstractArray)
 end
 
 """
@@ -111,15 +130,49 @@ Alias for `CArray{T,2}`, laid out in column-major order. See [`CArray`](@ref).
 """
 const CMatrix{T} = CArray{T, 2}
 
-# Infer `N` from the dimensions.
+# Infer `N` from the dimensions; borrowed (owned = 0).
 CArray{T}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
     CArray{T, N}(dims, data)
 
-# Scalar constructors for the 1-D and 2-D aliases.
+# 2-arg convenience constructor: borrowed (owned = 0) — the pre-`owned` shape.
+CArray{T, N}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
+    CArray{T, N}(dims, data, Int32(0))
+
+# Scalar constructors for the 1-D and 2-D aliases; borrowed (owned = 0).
 CArray{T, 1}(n::Integer, data::Ptr{T}) where {T} =
     CArray{T, 1}((n,), data)
 CArray{T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
     CArray{T, 2}((rows, cols), data)
+
+"""
+    CArray(A::AbstractArray{T,N}) where {T,N}
+
+Own-out: `Libc.malloc`s a dense column-major copy of `A` and returns a
+[`CArray{T,N}`](@ref) with `owned = 1`. The consumer is responsible for
+releasing the buffer exactly once, via `Libc.free(a.data)` (or, at a
+`@ccallable` boundary, `jlw_free` from [`@export_release_entrypoints`](@ref)).
+Julia never retains a reference to the buffer once it has handed it across
+the boundary.
+
+# Example
+
+```julia
+using JLWInterop
+
+a = CArray([1.0 2.0; 3.0 4.0])
+a.owned == Int32(1)
+collect(a) == [1.0 2.0; 3.0 4.0]
+Libc.free(a.data)
+```
+"""
+function CArray(A::AbstractArray{T, N}) where {T, N}
+    dense = Array{T, N}(undef, size(A))
+    copyto!(dense, A)
+    n = length(dense)
+    data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
+    GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
+    return CArray{T, N}(size(A), data, Int32(1))
+end
 
 Base.size(a::CArray) = Int.(a.dims)
 Base.IndexStyle(::Type{<:CArray}) = IndexLinear()
@@ -490,8 +543,9 @@ unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
     @export_release_entrypoints
 
 Emit the two C-callable release functions a wrapped library must export when it
-returns owning carriers (`CStrArray`, `CDict`): `jlw_free` frees one malloc'd
-block; `jlw_free_strings` frees `n` `CString`-element strings and their array.
+returns owning carriers (`CArray`, `CStrArray`, `CDict`): `jlw_free` frees one
+malloc'd block (also what releases an own-out [`CArray`](@ref)'s `data`);
+`jlw_free_strings` frees `n` `CString`-element strings and their array.
 Generated wrappers call them exactly once per returned value, via the
 library's own handle. Place at top level of the entry module.
 """

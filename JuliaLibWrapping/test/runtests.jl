@@ -55,17 +55,20 @@ end
         @test tdesc.size == 32
         tdesc = typeinfo[findtype(typeinfo, "CVector{Float32}")]
         @test tdesc.name == "CVector{Float32}"
-        @test length(tdesc.fields) == 2
+        @test length(tdesc.fields) == 3
         @test tdesc.fields[1].name == "dims"
         dims_desc = typeinfo[tdesc.fields[1].type]
         @test dims_desc isa ArrayDesc
         @test dims_desc.count == 1
         @test typeinfo[dims_desc.element_type].name == "Int32"
-        @test tdesc.fields[1].offset == 0
+        @test iszero(tdesc.fields[1].offset)
         @test tdesc.fields[2].name == "data"
         @test typeinfo[tdesc.fields[2].type].name == "Ptr{Float32}"
         @test tdesc.fields[2].offset == 8
-        @test tdesc.size == 16
+        @test tdesc.fields[3].name == "owned"
+        @test typeinfo[tdesc.fields[3].type].name == "Int32"
+        @test tdesc.fields[3].offset == 16
+        @test tdesc.size == 24
         tdesc = typeinfo[findtype(typeinfo, "MyTwoVec")]
         @test tdesc.name == "MyTwoVec"
         @test length(tdesc.fields) == 2
@@ -483,8 +486,9 @@ end
         # Structural recognition of the CArray{T,N} shape: a struct named
         # CArray/CVector/CMatrix (since `CVector = CArray{_,1}` and
         # `CMatrix = CArray{_,2}` may print under either name) with `dims`
-        # (NTuple{N,Int32} → ArrayDesc) and `data` (Ptr{T}) fields, for
-        # primitive numeric T recognized by `numpy_dtypes`.
+        # (NTuple{N,Int32} → ArrayDesc), `data` (Ptr{T}), and `owned`
+        # (Int32 explicit-ownership discriminant) fields, for primitive
+        # numeric T recognized by `numpy_dtypes`.
         cainfo(desc, typeinfo) = JuliaLibWrapping.carray_struct_info(desc, typeinfo, JuliaLibWrapping.numpy_dtypes, JuliaLibWrapping.pytypes)
 
         # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
@@ -522,7 +526,8 @@ end
         @test info3.ndim == 3
 
         # Hand-built rejections: wrong name, wrong field names, non-integer
-        # dims element, non-numpy pointee, dims-as-primitive (not array).
+        # dims element, non-numpy pointee, dims-as-primitive (not array),
+        # missing owned, owned present but wrong type.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
         primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
@@ -534,61 +539,83 @@ end
             1 => primint, 2 => primflt, 3 => ptr_to_flt,
             4 => arr_int32_1, 5 => arr_flt_1,
             6 => StructDesc(
-                "CVector{Float32}", 16, 8, FieldDesc[
+                "CVector{Float32}", 24, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             7 => primbool,
             8 => arr_bool_1,
             9 => StructDesc(
-                "NotACArray", 16, 8, FieldDesc[
+                "NotACArray", 24, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             10 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
             11 => StructDesc(
-                "CVectorBadNames", 16, 8, FieldDesc[
+                "CVectorBadNames", 24, 8, FieldDesc[
                     FieldDesc("len", 4, 0),
                     FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             12 => StructDesc(
-                "CVectorFloatDims", 16, 8, FieldDesc[
+                "CVectorFloatDims", 24, 8, FieldDesc[
                     FieldDesc("dims", 5, 0),  # NTuple{1,Float32} — not Int*
                     FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             13 => StructDesc(
-                "CVectorPrimDims", 16, 8, FieldDesc[
+                "CVectorPrimDims", 24, 8, FieldDesc[
                     FieldDesc("dims", 1, 0),  # primitive Int32, not ArrayDesc
                     FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
                 ]
             ),
             14 => StructDesc(
-                "CVectorBoolDims", 16, 8, FieldDesc[
+                "CVectorBoolDims", 24, 8, FieldDesc[
                     FieldDesc("dims", 8, 0),  # Bool element — in numpy_dtypes but not Int/UInt
+                    FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 1, 16),
+                ]
+            ),
+            15 => StructDesc(
+                "CVectorNoOwned", 16, 8, FieldDesc[
+                    FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
                 ]
             ),
+            16 => StructDesc(
+                "CVectorOwnedWrongType", 24, 8, FieldDesc[
+                    FieldDesc("dims", 4, 0),
+                    FieldDesc("data", 3, 8),
+                    FieldDesc("owned", 2, 16),  # Float32, not Int32
+                ]
+            ),
         )
-        @test cainfo(ti[6], ti) !== nothing
-        @test cainfo(ti[9], ti) === nothing   # wrong name prefix
-        @test cainfo(ti[10], ti) === nothing  # empty
-        @test cainfo(ti[11], ti) === nothing  # wrong field names
-        @test cainfo(ti[12], ti) === nothing  # non-integer dims element
-        @test cainfo(ti[13], ti) === nothing  # dims is primitive, not ArrayDesc
-        @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected
+        @test cainfo(ti[6], ti) !== nothing  # noidiom
+        @test cainfo(ti[9], ti) === nothing   # wrong name prefix # noidiom
+        @test cainfo(ti[10], ti) === nothing  # empty # noidiom
+        @test cainfo(ti[11], ti) === nothing  # wrong field names # noidiom
+        @test cainfo(ti[12], ti) === nothing  # non-integer dims element # noidiom
+        @test cainfo(ti[13], ti) === nothing  # dims is primitive, not ArrayDesc # noidiom
+        @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected # noidiom
+        @test cainfo(ti[15], ti) === nothing  # owned missing entirely # noidiom
+        @test cainfo(ti[16], ti) === nothing  # owned present but not Int32 # noidiom
 
-        # Field order may be either way.
+        # Field order may be any permutation.
         flipped = StructDesc(
-            "CVector{Float32}", 16, 8, FieldDesc[
-                FieldDesc("data", 3, 0),
-                FieldDesc("dims", 4, 8),
+            "CVector{Float32}", 24, 8, FieldDesc[
+                FieldDesc("owned", 1, 16),
+                FieldDesc("data", 3, 8),
+                FieldDesc("dims", 4, 0),
             ]
         )
-        @test cainfo(flipped, ti) !== nothing
+        @test cainfo(flipped, ti) !== nothing  # noidiom
     end
 
     @testset "cstring_struct_info" begin
