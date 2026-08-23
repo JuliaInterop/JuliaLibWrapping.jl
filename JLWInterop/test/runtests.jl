@@ -47,10 +47,10 @@ using Test
     @testset "CArray aliases" begin
         # CVector and CMatrix must be aliases for CArray specializations, matching
         # `Vector{T} = Array{T,1}` and `Matrix{T} = Array{T,2}` in Base.
-        @test CVector{Float64} === CArray{Float64,1}
-        @test CMatrix{Float64} === CArray{Float64,2}
-        @test CVector === CArray{T,1} where {T}
-        @test CMatrix === CArray{T,2} where {T}
+        @test CVector{Float64} === CArray{Float64, 1}
+        @test CMatrix{Float64} === CArray{Float64, 2}
+        @test CVector === CArray{T, 1} where {T}
+        @test CMatrix === CArray{T, 2} where {T}
     end
 
     @testset "CVector AbstractVector interface" begin
@@ -194,9 +194,9 @@ using Test
         # 2 × 3 × 4 = 24 elements in column-major layout.
         buf = collect(1.0:24.0)
         GC.@preserve buf begin
-            a = CArray{Float64,3}((2, 3, 4), pointer(buf))
+            a = CArray{Float64, 3}((2, 3, 4), pointer(buf))
 
-            @test a isa AbstractArray{Float64,3}
+            @test a isa AbstractArray{Float64, 3}
             @test IndexStyle(typeof(a)) === IndexLinear()
             @test size(a) === (2, 3, 4)
             @test ndims(a) === 3
@@ -230,47 +230,165 @@ using Test
 
     @testset "CArray layout" begin
         # The compiled ABI relies on `dims::NTuple{N,Int32}` followed by
-        # `data::Ptr{T}`. Downstream C and Python emitters generate the
-        # corresponding ctypes.Structure / C struct from this layout.
-        @test fieldnames(CArray) == (:dims, :data)
+        # `data::Ptr{T}` followed by `owned::Int32`. Downstream C and Python
+        # emitters generate the corresponding ctypes.Structure / C struct
+        # from this layout. Offsets verified by a Julia probe of
+        # `fieldoffset`/`sizeof`, not assumed — see the round-2 report.
+        @test fieldnames(CArray) == (:dims, :data, :owned)
 
         @test fieldtype(CVector{Float64}, :dims) === NTuple{1, Int32}
         @test fieldtype(CVector{Float64}, :data) === Ptr{Float64}
+        @test fieldtype(CVector{Float64}, :owned) === Int32
         @test isbitstype(CVector{Float64})
-        @test fieldoffset(CVector{Float64}, 1) == 0
+        @test iszero(fieldoffset(CVector{Float64}, 1))
         # One Int32 (4 bytes) pads out to pointer alignment (8 bytes).
         @test fieldoffset(CVector{Float64}, 2) == 8
+        @test fieldoffset(CVector{Float64}, 3) == 16
+        @test sizeof(CVector{Float64}) == 24
 
         @test fieldtype(CMatrix{Float64}, :dims) === NTuple{2, Int32}
         @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
+        @test fieldtype(CMatrix{Float64}, :owned) === Int32
         @test isbitstype(CMatrix{Float64})
-        @test fieldoffset(CMatrix{Float64}, 1) == 0
+        @test iszero(fieldoffset(CMatrix{Float64}, 1))
         # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
         @test fieldoffset(CMatrix{Float64}, 2) == 8
+        @test fieldoffset(CMatrix{Float64}, 3) == 16
+        @test sizeof(CMatrix{Float64}) == 24
 
-        @test fieldtype(CArray{Float64,3}, :dims) === NTuple{3, Int32}
-        @test isbitstype(CArray{Float64,3})
-        @test fieldoffset(CArray{Float64,3}, 1) == 0
+        @test fieldtype(CArray{Float64, 3}, :dims) === NTuple{3, Int32}
+        @test fieldtype(CArray{Float64, 3}, :owned) === Int32
+        @test isbitstype(CArray{Float64, 3})
+        @test iszero(fieldoffset(CArray{Float64, 3}, 1))
         # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
-        @test fieldoffset(CArray{Float64,3}, 2) == 16
+        @test fieldoffset(CArray{Float64, 3}, 2) == 16
+        @test fieldoffset(CArray{Float64, 3}, 3) == 24
+        @test sizeof(CArray{Float64, 3}) == 32
     end
 
     @testset "CArray constructors" begin
         # Tuple-form general constructor accepts any Integer eltype and
-        # coerces to Int32.
+        # coerces to Int32. All borrowed-view constructors set owned = 0 —
+        # today's semantics, unchanged.
         a = CArray{Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
         @test a isa CMatrix{Float64}
         @test a.dims === (Int32(2), Int32(3))
+        @test a.owned === Int32(0)
 
-        a2 = CArray{Float64,2}((2, 3), Ptr{Float64}(0))
+        a2 = CArray{Float64, 2}((2, 3), Ptr{Float64}(0))
         @test a2.dims === (Int32(2), Int32(3))
+        @test a2.owned === Int32(0)
 
         # Scalar-form shortcuts for 1-D and 2-D.
         v = CVector{Float64}(Int32(4), Ptr{Float64}(0))
         @test v.dims === (Int32(4),)
         @test v.data === Ptr{Float64}(0)
+        @test v.owned === Int32(0)
 
         m = CMatrix{Float64}(2, 3, Ptr{Float64}(0))
         @test m.dims === (Int32(2), Int32(3))
+        @test m.owned === Int32(0)
+    end
+
+    @testset "CArray owned flag" begin
+        # Own-out constructor mallocs a dense column-major copy and sets
+        # owned=1; the source array is untouched and may be discarded.
+        src = [1.0 2.0; 3.0 4.0]  # 2x2, column-major
+        a = CArray(src)
+        @test fieldtype(CArray, :owned) === Int32
+        @test a.owned === Int32(1)
+        @test a.dims === (Int32(2), Int32(2))
+        @test collect(a) == src
+        Libc.free(a.data)
+
+        # 1-D own-out.
+        v = CArray([10.0, 20.0, 30.0])
+        @test v.owned === Int32(1)
+        @test collect(v) == [10.0, 20.0, 30.0]
+        Libc.free(v.data)
+
+        # A hand-built borrowed (owned=0) CArray round-trips identically —
+        # getindex/setindex! never branch on the flag.
+        buf = Float64[5.0, 6.0]
+        GC.@preserve buf begin
+            borrowed = CArray{Float64, 1}((Int32(2),), pointer(buf), Int32(0))
+            @test collect(borrowed) == [5.0, 6.0]
+        end
+    end
+
+    @testset "CStrArray round-trip" begin
+        v = ["hello", "wörld", "", "a\0b"]   # incl. UTF-8, empty, and embedded NUL
+        a = CStrArray(v)
+        @test a.length == 4
+        @test fieldtype(CStrArray, :data) === Ptr{CString}
+        @test unsafe_load(a.data, 3).data != C_NULL   # empty string still mallocs a real, freeable pointer
+        @test Vector{String}(a) == v
+        JLWInterop._free_strings(a.data, a.length)   # tests own the free
+        @test Vector{String}(CStrArray(String[])) == String[]
+    end
+
+    @testset "CStrArray owned flag" begin
+        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        a = CStrArray(["x", "y"])
+        @test fieldtype(CStrArray, :owned) === Int32
+        @test a.owned === Int32(1)
+        @test Vector{String}(a) == ["x", "y"]   # borrow-in ignores owned, copies regardless
+        JLWInterop._free_strings(a.data, a.length)
+
+        # A hand-built borrowed (owned=0) CStrArray round-trips identically —
+        # borrow-in never frees and never branches on the flag.
+        a2 = CStrArray(["p", "q"])
+        borrowed = CStrArray(a2.length, a2.data, Int32(0))
+        @test Vector{String}(borrowed) == ["p", "q"]
+        JLWInterop._free_strings(a2.data, a2.length)
+    end
+
+    @testset "CDict round-trip and allowlist" begin
+        d = Dict("a" => 1.5, "b" => -2.0, "c\0d" => 3.0, "" => 4.0)
+        c = CDict(d)
+        @test c.length == 4
+        @test fieldtype(CDict{Float64}, :keys) === Ptr{CString}
+        empty_idx = findfirst(i -> iszero(unsafe_load(c.keys, i).length), 1:c.length)
+        @test unsafe_load(c.keys, empty_idx).data != C_NULL   # empty key still mallocs a real, freeable pointer
+        @test Dict{String, Float64}(c) == d
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
+        @test_throws MethodError CDict(Dict("x" => 1.0im))   # ComplexF64 not allowlisted
+    end
+
+    @testset "CDict owned flag" begin
+        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        c = CDict(Dict("a" => 1.5))
+        @test fieldtype(CDict{Float64}, :owned) === Int32
+        @test c.owned === Int32(1)
+        @test Dict{String, Float64}(c) == Dict("a" => 1.5)   # borrow-in ignores owned, copies regardless
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
+
+        # A hand-built borrowed (owned=0) CDict round-trips identically.
+        c2 = CDict(Dict("b" => 2.5))
+        borrowed = CDict{Float64}(c2.length, c2.keys, c2.values, Int32(0))
+        @test Dict{String, Float64}(borrowed) == Dict("b" => 2.5)
+        JLWInterop._free_strings(c2.keys, c2.length)
+        Libc.free(c2.values)
+    end
+
+    @testset "COpt" begin
+        @test unwrap(COpt(3.5)) === 3.5
+        o = COpt{Float64}(nothing)
+        @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
+        @test isnothing(unwrap(o))
+    end
+
+    @testset "release entrypoints" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
+        # Functions exist and run on malloc'd data without crashing:
+        a = CStrArray(["x", "y"])
+        Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
+        p = Libc.malloc(16)
+        Core.eval(m, :(jlw_free($p)))
+        @test true
     end
 end

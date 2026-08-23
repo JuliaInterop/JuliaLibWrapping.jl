@@ -6,8 +6,8 @@ import pathlib
 import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libsimple"
-_LIBRARY_ENV_VAR = "LIBSIMPLE_LIBRARY"
+_LIBRARY_BASENAME = "libcarrayowned"
+_LIBRARY_ENV_VAR = "CARRAY_OWNED_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -54,20 +54,50 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-# Forward declarations for recursive types
-class CTree_Float64(ctypes.Structure):
-    pass
+class Nothing(ctypes.Structure):
+    _fields_ = []
 
-class MyTwoVec(ctypes.Structure):
+class CString(ctypes.Structure):
     _fields_ = [
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
+        ("length", ctypes.c_int32),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 
-class CVector_Float32(ctypes.Structure):
+    @classmethod
+    def from_str(cls, s):
+        """Return a CString whose buffer holds the UTF-8 encoding of `s`.
+
+        Allocates a fresh ctypes buffer and copies the bytes into it; the
+        returned object holds a reference to that buffer, so the caller
+        must keep it alive for the duration of any C call that uses it."""
+        if not isinstance(s, str):
+            raise TypeError(f"expected str, got {type(s).__name__}")
+        return cls.from_bytes(s.encode("utf-8"))
+
+    @classmethod
+    def from_bytes(cls, b):
+        """Return a CString whose buffer holds a copy of the bytes `b`."""
+        if not isinstance(b, (bytes, bytearray)):
+            raise TypeError(f"expected bytes-like, got {type(b).__name__}")
+        n = len(b)
+        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()
+        obj = cls(length=n,
+                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
+        obj._buffer = buf
+        return obj
+
+    def as_bytes(self):
+        """Return a copy of the underlying bytes as a Python `bytes` object."""
+        return ctypes.string_at(self.data, self.length)
+
+    def as_str(self):
+        """Return the underlying bytes decoded as UTF-8."""
+        return self.as_bytes().decode("utf-8")
+
+class CVector_Float64(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int32 * 1)),
-        ("data", ctypes.POINTER(ctypes.c_float)),
+        ("data", ctypes.POINTER(ctypes.c_double)),
         ("owned", ctypes.c_int32),
     ]
 
@@ -83,11 +113,11 @@ class CVector_Float32(ctypes.Structure):
             raise ValueError(f"expected 1-D array, got {arr.ndim}-D")
         if not (arr.flags.c_contiguous or arr.flags.f_contiguous):
             raise ValueError("array must be contiguous")
-        expected_dtype = np.dtype("float32")
+        expected_dtype = np.dtype("float64")
         if arr.dtype != expected_dtype:
-            raise ValueError(f"expected dtype float32, got {arr.dtype}")
+            raise ValueError(f"expected dtype float64, got {arr.dtype}")
         obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
-                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                   owned=0)
         obj._buffer = arr
         return obj
@@ -104,36 +134,17 @@ class CVector_Float32(ctypes.Structure):
         talk to `_lowlevel` directly."""
         if self.owned != 1:
             return
-        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self.owned = 0
 
-class CVectorPair_Float32(ctypes.Structure):
-    _fields_ = [
-        ("from_", CVector_Float32),
-        ("to", CVector_Float32),
-    ]
+_lib.give_vec.argtypes = []
+_lib.give_vec.restype = CVector_Float64
+def give_vec():
+    return _lib.give_vec()
 
-class CVector_CTree_Float64(ctypes.Structure):
-    _fields_ = [
-        ("dims", (ctypes.c_int32 * 1)),
-        ("data", ctypes.POINTER(CTree_Float64)),
-    ]
+_lib.jlw_free.argtypes = [ctypes.c_void_p]
+_lib.jlw_free.restype = None
 
-CTree_Float64._fields_ = [
-    ("children", CVector_CTree_Float64),
-]
-
-_lib.tree_size.argtypes = [CTree_Float64]
-_lib.tree_size.restype = ctypes.c_int64
-def tree_size(tree):
-    return _lib.tree_size(tree)
-
-_lib.copyto_and_sum.argtypes = [CVectorPair_Float32]
-_lib.copyto_and_sum.restype = ctypes.c_float
-def copyto_and_sum(fromto):
-    return _lib.copyto_and_sum(fromto)
-
-_lib.countsame.argtypes = [ctypes.POINTER(MyTwoVec), ctypes.c_int32]
-_lib.countsame.restype = ctypes.c_int32
-def countsame(list, n):
-    return _lib.countsame(list, n)
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
+_lib.jlw_free_strings.restype = None
 

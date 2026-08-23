@@ -61,12 +61,44 @@ JLW_MESSAGE_BYTES
 
 ## `CArray{T,N}` — N-D numeric buffer (column-major)
 
-`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T})`, laid out
-in **column-major** order — the same convention as `Array{T,N}` and
-Fortran, not C. The caller owns the storage; `CArray` borrows. For
-primitive numeric `T`, the Python emitter generates
-`from_numpy` / `as_numpy` helpers so a Python caller can pass a
+`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T}, owned::Int32)`, laid
+out in **column-major** order — the same convention as `Array{T,N}` and
+Fortran, not C. For primitive numeric `T`, the Python emitter generates
+`from_numpy` / `as_numpy` / `free` helpers so a Python caller can pass a
 `numpy.ndarray` directly without copying.
+
+### `CArray` ownership contract
+
+Like `CStrArray`/`CDict` (see [L1 carriers: `CStrArray`, `CDict`, `COpt`](@ref)),
+ownership is carried **explicitly in the data**, via `owned`: `0` means
+caller-owned/borrowed, `1` means allocated by Julia's own-out constructor.
+There is no partial ownership — the flag covers the single `data` allocation.
+
+- Every constructor that takes a raw `Ptr{T}` (the tuple-form and
+  scalar-form constructors below) builds a **borrowed** view: `CArray`
+  neither allocates, copies, frees, nor keeps the storage alive, and sets
+  `owned = 0` — today's, pre-flag semantics, unchanged. The caller must keep
+  the buffer alive for the duration of any call that sees it, and ensure it
+  is writable before `setindex!`.
+- `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
+  column-major copy of `A` and sets `owned = 1`. The generated Python
+  wrapper's `as_numpy()` always returns a zero-copy view; for an owning
+  return, the façade copies that view into a fresh numpy array *before*
+  releasing the Julia-allocated buffer via `jlw_free` (see
+  [`@export_release_entrypoints`](@ref)) — never handing back a view over
+  memory that is about to be freed.
+
+For callers who bypass the façade and talk to `_lowlevel` directly, the
+generated `ctypes.Structure` class carries a `.free()` method: it releases
+`data` iff `self.owned == 1`, then sets `owned` back to `0`, so a second
+call — or a call on a value that was never owned — is a no-op.
+
+Unlike `CStrArray`/`CDict`, whose façade degrades to a mechanical
+re-export at build time when release entrypoints are missing, a library
+that returns an owned `CArray` without exporting them still gets a full
+auto-wrapped return — the failure surfaces only at runtime, as `.free()`
+raising `RuntimeError`, because gating `CArray` returns at build time
+would demote every existing borrowed-`CArray` library.
 
 The 1-D and 2-D specializations have familiar aliases:
 
@@ -121,3 +153,12 @@ owning Julia `String`.
 ```@docs
 CString
 ```
+
+## `CStrArray`, `CDict{V}`, `COpt{T}` — variable-size and optional data
+
+Three more carriers cover data `CArray`/`CString` cannot: an array of
+strings, a string-keyed dictionary, and an optional scalar. Unlike the
+non-owning types above, a Julia function that *returns* one of the first two
+must allocate — see [L1 carriers: `CStrArray`, `CDict`, `COpt`](@ref) for the
+struct layouts, the borrow-in/own-out ownership contract, and the
+`@export_release_entrypoints` requirement for owning returns.
