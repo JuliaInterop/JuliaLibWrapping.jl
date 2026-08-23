@@ -4,11 +4,8 @@ CurrentModule = JuliaLibWrapping
 
 # Tutorial: wrap an OLS regression library
 
-This tutorial covers the complete pipeline: write a small Julia
-library, run [`build_library`](@ref) to compile it and emit wrappers,
-`pip install` the generated package, and call it from Python. The
-worked example lives in `examples/ols/` and stays buildable as the
-package evolves.
+This tutorial builds `examples/ols/`, installs its generated Python package,
+and calls it with NumPy arrays.
 
 The subject is ordinary least squares (OLS) regression, which exercises several
 [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
@@ -23,10 +20,8 @@ types:
 | `JLWStatus` (direct)       | return of `predict`                  |
 | `JLWStatus` (embedded)     | `FitResult.status` field             |
 
-`CMatrix` and `CVector` are specific cases of `CArray`, the multi-dimensional
-array type in JLWInterop.
-
-The algorithm uses `X \ y` from Julia's `LinearAlgebra` standard library.
+`CMatrix` and `CVector` are aliases for `CArray` specializations. The example
+uses `X \ y` from `LinearAlgebra`.
 
 ## 1. The Julia source
 
@@ -61,8 +56,7 @@ Base.@ccallable function summary_report(result::FitResult,
                                          buf::CString)::JLWStatus
 ```
 
-!!! tip
-    To see the full source code, check the `examples/ols/src` directory.
+See `examples/ols/src/ols.jl` for the complete implementation.
 
 `coeffs_buf` and `out` are *caller-allocated* buffers: the library
 writes into them but does not own them. This is generally true for
@@ -93,7 +87,7 @@ JLWInterop = "0.1"
 julia = "1.13"
 ```
 
-Two details matter:
+Requirements:
 
 - ABI export requires Julia 1.13 or later.
 
@@ -129,8 +123,7 @@ JuliaLibWrapping = "0.1"
 julia = "1.13"
 ```
 
-Run the remaining commands from the directory containing both environments,
-such as `examples/ols`.
+Run the remaining commands from `examples/ols`.
 
 Instantiate each environment from your shell:
 
@@ -199,10 +192,8 @@ pip install numpy
 pip install -e ./out
 ```
 
-The leading `./` matters: `pip install out` would treat `out` as a
-package name and fetch an unrelated project from PyPI. The `-e`
-(editable) flag installs the package in place, so the `_facade.py`
-edits you make in the next section take effect without reinstalling.
+The `./` selects a local path. `-e` makes later `_facade.py` edits available
+without reinstalling.
 
 The bundled `libjulia` and stdlibs live inside the wheel; the loader
 in `_lowlevel.py` searches `bundle/lib/` first so the baked-in
@@ -211,7 +202,7 @@ required.
 
 ## 5. Call it from Python
 
-### Verifying that the basics work
+### Verify the generated wrapper
 
 First call `predict`, which is generated automatically because the emitter
 recognizes all of its argument and return types. The second call uses invalid
@@ -234,15 +225,15 @@ except JLWError as e:
     print(e.code, e.message)   # 1, "coeffs length must match X cols"
 ```
 
-Run this in a Python shell in the activated environment. The expected `out`
-value is `array([2.04, 4.02, 6.  , 7.98, 9.96])`, followed by the error message.
+The expected `out` is `array([2.04, 4.02, 6., 7.98, 9.96])`, followed by the
+error message.
 
 `np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
 row-major view rather than silently transposing. You can edit the wrapper to
 accept a different interface.
 
-### Making edits to the wrapper
+### Edit the façade
 
 In contrast with `predict`, `fit` is not automatically wrapped: it returns a
 `FitResult`, and JuliaLibWrapping declines to make choices about what that

@@ -1146,12 +1146,7 @@ end
             @test field_type == "Nothing"
         end
 
-        # ARRAY ELEMENT typed as the bare Nothing struct (an ABI encoding
-        # of the unrealizable `NTuple{N,Cvoid}`) — KNOWN UNHANDLED, pinned
-        # rather than silently assumed safe. If juliac is ever observed to
-        # emit this shape for a real carrier, this assertion is the trip
-        # wire that forces a look, not a silent `(Nothing * N)` array of
-        # zero-size structs shipped to users.
+        # Bare Nothing array elements retain the generated struct type.
         let typedict = Dict{Int, String}()
             typeinfo = OrderedDict{Int, TypeDesc}(
                 1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
@@ -1161,12 +1156,7 @@ end
             @test arr_type == "(Nothing * 3)"
         end
 
-        # RETURN position via a Ptr{Nothing} (not a bare Nothing struct) —
-        # `_write_bindings`'s round-1 ternary falls through to
-        # `mangle_python!` for any non-StructDesc return, which is exactly
-        # this PointerDesc case; confirms it resolves through the same
-        # fixed branch as an argument would, with no separate handling
-        # needed at the `_write_bindings` call site.
+        # Ptr{Nothing} returns use the normal pointer mapping.
         let typedict = Dict{Int, String}()
             typeinfo = OrderedDict{Int, TypeDesc}(
                 1 => StructDesc("Nothing", 0, 1, FieldDesc[]),

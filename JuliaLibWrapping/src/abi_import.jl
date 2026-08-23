@@ -130,12 +130,12 @@ function build_type_graph(typedescs::OrderedDict{Int, TypeDesc};
             if pointer_filter(id)
                 add_edge!(g, desc.pointee_type, id)
             else
-                # pointee types don't affect data layout (no edges to add)
+                # Pointee types do not affect pointer layout.
             end
         elseif desc isa ArrayDesc
             add_edge!(g, desc.element_type, id)
         elseif desc isa PrimitiveTypeDesc
-            # dependency is tracked from the `struct` side
+            # Struct fields record primitive dependencies.
         end
     end
     return g
@@ -148,8 +148,7 @@ Sort `typedescs` by type dependency (for example, type A containing type B in a
 field), so that each descriptor appears after its dependencies. The sort modifies
 `typedescs` in place.
 
-Returns indices of all types that could not be sorted (due to recursive types, e.g.
-a linked list in C). In C, these are the definitions that must be forward-declared.
+Return the type IDs that require C forward declarations because of recursion.
 """
 function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
     # Identify recursive parts of the graph, which require forward declarations.
@@ -183,12 +182,11 @@ function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
         for field in desc.fields
             dep = field.type
             while typedescs[dep] isa PointerDesc
-                # 'dereference' any pointer type
+                # Follow pointer chains.
                 dep = (typedescs[dep]::PointerDesc).pointee_type
             end
             order_to_emit[id] ≥ order_to_emit[dep] && continue
-            # this struct refers (through 1 or more pointers) to a type that will
-            # be emitted after it, so that type must be forward-declared.
+            # Forward-declare dependencies emitted later.
             push!(forwarddecls, dep)
         end
     end
@@ -201,12 +199,9 @@ end
 
 # Fields
 
-- `typeinfo::OrderedDict{Int, TypeDesc}`: A map from `type_id` to
-  `type_descriptor`, sorted by declaration order.
-- `forward_declared::BitSet`: Indexes into `types`, indicates which
-   types must be forward-declared for C.
-- `entrypoints::Vector{MethodDesc}`: A vector of exposed functions
-   from the imported ABI.
+- `typeinfo`: type descriptors in declaration order.
+- `forward_declared`: type IDs requiring C forward declarations.
+- `entrypoints`: exported functions.
 """
 struct ABIInfo
     typeinfo::OrderedDict{Int, TypeDesc}
@@ -245,14 +240,14 @@ is the dictionary returned by `JSON.parsefile` (or `JSON.parse`) on such a file.
 See [`read_abi_info`](@ref) for the file-based convenience.
 """
 function parse_abi_info(parsed::AbstractDict)
-    # Extract all the type descriptors
+    # Extract type descriptors.
     typedescs = OrderedDict{Int, TypeDesc}()
     for type in parsed["types"]
         id = Int(type["id"]::Integer)
         typedescs[id] = from_json(TypeDesc, type)
     end
 
-    # Then collect the methods
+    # Collect entrypoints.
     entrypoints = MethodDesc[]
     for method in parsed["functions"]
         push!(entrypoints, from_json(MethodDesc, method))

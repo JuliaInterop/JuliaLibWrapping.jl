@@ -417,16 +417,9 @@ function _emit_free_method(
 end
 
 function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
-    # `cainfo` is the return of `carray_struct_info`. Helpers are emitted as
-    # methods on the surrounding ctypes.Structure subclass; the `dims`,
-    # `data`, and `owned` field names are guaranteed by the recognizer.
-    # `from_numpy` always builds a caller-owned (`owned=0`) view over the
-    # passed-in numpy array — it never allocates. `as_numpy` is unchanged: it
-    # always returns a zero-copy view regardless of `owned`; the façade's
-    # `:carray_unwrap` handling is what copies before freeing when `owned ==
-    # 1` (see `_emit_facade_autowrapper`) — a view here must never outlive
-    # the buffer it aliases. `release_present` — see the identical parameter
-    # on `_write_cstrarray_helpers`.
+    # Emit methods on the recognized CArray ctypes class. `from_numpy`
+    # borrows; `as_numpy` returns a view; the façade copies owning returns
+    # before freeing them.
     ctype = cainfo.pointee_ctype
     dtype = cainfo.dtype
     ndim = cainfo.ndim
@@ -494,10 +487,7 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
 end
 
 function _write_cstring_helpers(f::IO)
-    # CString shape — see `cstring_struct_info`. The `length` and `data`
-    # field names are guaranteed by the recognizer, and the pointee is
-    # UInt8 / ctypes.c_uint8. Unlike CArray this emits no
-    # numpy dependency; helpers use only `ctypes`.
+    # CString helpers use ctypes only.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_str(cls, s):")
@@ -567,19 +557,8 @@ function _emit_cstring_array(
 end
 
 function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, release_present::Bool)
-    # CStrArray shape — see `cstrarray_struct_info`. The `length`, `data`,
-    # and `owned` field names are guaranteed by the recognizer, and `data`
-    # is always Ptr{CString} / ctypes.POINTER(<cstring_classname>). Like
-    # CString this emits no numpy dependency; helpers use only `ctypes`.
-    # `data` is Julia-allocated memory when `owned` is 1 (own-out
-    # convention), so unlike CString's helpers there is no `as_bytes`/
-    # from-buffer split — the caller-facing vocabulary is `list[str]` in
-    # and out. `from_list` always builds a caller-owned (`owned=0`) value:
-    # the object never allocated it and must never free it. `release_present`
-    # is `_release_symbols_present`'s verdict for the surrounding library —
-    # `.free()` stays present either way (stable API shape), but raises a
-    # clear `RuntimeError` instead of a bare `AttributeError` when the
-    # library never exported `jlw_free_strings`.
+    # `from_list` borrows ctypes buffers. `.free()` releases only owning
+    # values and reports a missing release entrypoint clearly.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_list(cls, items):")
@@ -607,14 +586,7 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, rele
 end
 
 function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
-    # CDict{V} shape — see `cdict_struct_info`. The `length`, `keys`,
-    # `values`, and `owned` field names are guaranteed by the recognizer;
-    # `keys` is always Ptr{CString} (like CStrArray's `data`), `values` is
-    # Ptr{<value_ctype>}. Like CStrArray this emits no numpy dependency;
-    # `values` is `d.values()` boxed into a fresh ctypes array on the way
-    # in, and read back element-by-element on the way out. `from_dict`
-    # always builds a caller-owned (`owned=0`) value. `release_present` — see
-    # the identical parameter on `_write_cstrarray_helpers`.
+    # `from_dict` borrows ctypes key and value buffers.
     ctype = cdinfo.value_ctype
     println(f, "")
     println(f, "    @classmethod")
@@ -646,10 +618,7 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, 
 end
 
 function _write_copt_helpers(f::IO, coinfo)
-    # COpt{T} shape — see `copt_struct_info`. The `has_value`/`value` field
-    # names are guaranteed by the recognizer. COpt is by-value (no pointer
-    # fields), so unlike the other vocabulary helpers there is no
-    # `_buffer` keepalive and no free-on-release concern.
+    # COpt is by-value and needs neither a keepalive nor release logic.
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_optional(cls, x):")
@@ -677,9 +646,7 @@ function _write_bindings(
     )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
-    # Threaded into `_write_cstrarray_helpers`/`_write_cdict_helpers` so their
-    # `.free()` method can raise a clear error instead of a bare
-    # AttributeError when the library never exported the release entrypoints.
+    # Carrier `.free()` methods use this to diagnose missing entrypoints.
     release_present = _release_symbols_present(abi_info)
 
     println(f, "\"\"\"Auto-generated by JuliaLibWrapping. Do not edit by hand.\"\"\"")
@@ -846,35 +813,15 @@ function _write_bindings(
     for method in entrypoints
         argexprs = String[mangle_python!(typedict, a.type, typeinfo) for a in method.args]
         return_desc = typeinfo[method.return_type]
-        # A bare `::Cvoid` return arrives here as a zero-field `Nothing`
-        # StructDesc (see `_is_void_struct`), not a `PrimitiveTypeDesc` — so
-        # it must be intercepted BEFORE `mangle_python!`, which (correctly,
-        # for every OTHER use of this same struct type_id — e.g. its `class
-        # Nothing(ctypes.Structure): _fields_ = []` definition, still
-        # emitted by the pre-mangle pass below for use as a struct-pointer
-        # pointee elsewhere) mangles it to the real `Nothing` class name.
-        # `restype` needs the Python singleton `None` instead — ctypes
-        # cannot build a call interface for a zero-size struct return
-        # (`ffi_prep_cif failed`). Using `typedict` here would either hit
-        # the already-memoized class name (wrong) or, if overwritten,
-        # corrupt every other reference to this type_id (also wrong) — so
-        # this bypasses `mangle_python!`/`typedict` entirely for this one
-        # call site rather than touching the shared memoized mapping. (A
-        # `Ptr{Nothing}` *pointer* return, unlike a bare `Nothing` struct
-        # return, would fall through to `mangle_python!` below and is
-        # handled there — see `_is_void_struct`'s `PointerDesc`-branch use.)
+        # ctypes represents a bare Cvoid return as `None`, not the generated
+        # zero-field `Nothing` class used in other type positions.
         rt = return_desc isa StructDesc && _is_void_struct(return_desc) ?
             "None" : mangle_python!(typedict, method.return_type, typeinfo)
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)
 
         if method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS
-            # The release entrypoints (`jlw_free`/`jlw_free_strings`) are
-            # internal plumbing an owning-return façade wrapper calls
-            # directly via `_lowlevel._lib.<symbol>(...)` — bind argtypes/
-            # restype above so that call works, but emit no module-level
-            # `def` wrapper for them (see `_write_facade_stub`, which
-            # correspondingly excludes them from the façade and `__all__`).
+            # Release entrypoints are bound on `_lib`, not exposed publicly.
             println(f)
             continue
         end
@@ -976,7 +923,7 @@ The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
 - `(kind=:carray_unwrap, classname=…)` — inside a `try`: when borrowed
   (`_result.owned` is `0`), return `_result.as_numpy()` (zero-copy view),
-  matching `CArray`'s historical always-borrowed behavior; when owned
+  preserving zero-copy behavior; when owned
   (`_result.owned` is `1`), copy into a fresh numpy array
   (`np.array(_result.as_numpy(), copy=True)`) FIRST — never hand back a view
   over memory about to be freed. A `finally` then calls `_result.free()`
@@ -1148,15 +1095,8 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
     elseif ret.kind === :carray_unwrap
-        # `data` may be Julia-allocated (own-out convention, `owned == 1`) or
-        # a borrowed/pass-through view (`owned == 0`, the historical
-        # default): for `owned == 0`, `as_numpy()` is a zero-copy view,
-        # exactly as before. For `owned == 1` the buffer is about to be
-        # freed, so it is copied into a fresh numpy array FIRST — handing
-        # back a view over memory we are about to free would leave a
-        # dangling array. `.free()` (in `finally`) is idempotent and a
-        # no-op when `owned == 0`, so this is correct for the borrowed case
-        # too — see `_emit_free_method`.
+        # Borrowed results return a zero-copy view. Owning results are copied
+        # before the carrier is freed in `finally`.
         println(f, "    _result = ", call)
         println(f, "    try:")
         println(f, "        if _result.owned == 1:")

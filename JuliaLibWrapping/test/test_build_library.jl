@@ -29,8 +29,7 @@ using Test
             @test occursin("Foo", err.msg)
         end
 
-        # Absolute path is accepted (validator returns silently). We can't run a
-        # full build without juliac, so just exercise the validator directly.
+        # Absolute paths are accepted.
         mktempdir() do proj
             open(joinpath(proj, "Project.toml"), "w") do io
                 write(io, """
@@ -54,8 +53,7 @@ using Test
     end
 
     @testset "backend selection" begin
-        # Without JuliaC loaded, the default (:auto) backend must report that
-        # JuliaC needs to be loaded.
+        # The default backend requires JuliaC.
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
         proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
@@ -118,11 +116,7 @@ using Test
     end
 
     @testset "end-to-end" begin
-        # Drive the full pipeline against examples/abi_stress. The compile
-        # step is expensive (~minutes), so this is gated on having a
-        # usable juliac available. On CI it's a hard error if the
-        # prerequisites are present but the build fails, matching the
-        # python3 pattern elsewhere.
+        # Run the expensive integration test only when juliac is available.
         has_julia = Sys.which("julia") !== nothing
         has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
         juliac_ok = has_julia && VERSION >= v"1.13.0-rc1" && has_cc
@@ -159,11 +153,7 @@ using Test
     end
 
     @testset "end-to-end with bundle" begin
-        # Opt-in: the bundle build copies libjulia + stdlibs + artifacts
-        # and is multi-hundred-MB, so we don't run it in default CI. Set
-        # JLW_TEST_BUNDLE=true to exercise it locally; the test then runs
-        # `python3 -c 'import abi_stress_py'` against the generated
-        # package as the real "does the wheel work?" check.
+        # Bundle tests are opt-in because they copy hundreds of MB.
         get(ENV, "JLW_TEST_BUNDLE", "false") == "true" || (@info "Skipping bundle e2e test (set JLW_TEST_BUNDLE=true to run)"; return)
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
         ext === nothing && error("JLW_TEST_BUNDLE set but JuliaC.jl is not loaded")
@@ -201,9 +191,7 @@ using Test
             @test !isempty(salted)
             @test !any(startswith.(salted, "libjulia"))
 
-            # Verify that Python can import the package. `out` is added to
-            # PYTHONPATH so `abi_stress_py`
-            # is importable without `pip install`.
+            # Import directly from `out`, without installing.
             cmd = addenv(`$python3 -c "import abi_stress_py; print('ok')"`,
                          "PYTHONPATH" => out)
             @test success(run(pipeline(cmd; stderr=stderr, stdout=stdout); wait=true))

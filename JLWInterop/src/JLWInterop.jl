@@ -22,26 +22,16 @@ const JLW_MESSAGE_BYTES = 256
 """
     CArray{T,N}
 
-Column-major N-D buffer descriptor for `@ccallable` boundaries. `data` must
-point to `prod(dims)` contiguous elements of `T`.
+Column-major N-D buffer for `@ccallable` boundaries. `data` points to
+`prod(dims)` contiguous elements of `T`.
 
 # Ownership contract
 
-The `owned` field records ownership explicitly; call direction does not
-determine ownership.
-`owned = 0` means caller-owned/borrowed: `CArray` neither allocates, copies,
-frees, nor keeps the storage alive; the caller must keep the buffer alive and
-ensure it is writable before mutation. `owned = 1` means Julia's own-out
-constructor allocated it: it must be released exactly once (`Libc.free`, or
-`jlw_free` from [`@export_release_entrypoints`](@ref) at a `@ccallable`
-boundary). There is no partial ownership — the flag covers the single `data`
-allocation as a whole. Julia never retains a reference to an `owned = 1`
-buffer once it has handed it across the boundary.
-
-- Every existing constructor below (the tuple-form and scalar-form ones)
-  builds a **borrowed** (`owned = 0`) view over caller-supplied storage.
-- `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
-  column-major copy of `A` and sets `owned = 1`.
+`owned == 0` denotes borrowed storage; the caller must keep it alive and make
+it writable before mutation. `owned == 1` denotes storage allocated by
+`CArray(::AbstractArray)`; release it once with `Libc.free` or the `jlw_free`
+entrypoint emitted by [`@export_release_entrypoints`](@ref). Constructors that
+accept a pointer create borrowed arrays.
 
 # Example
 
@@ -55,59 +45,13 @@ end
 
 # Extended help
 
-`T` should be an `isbits` type. The borrowed-view constructors do not
-allocate, copy, free, or keep the storage alive; callers must ensure the
-buffer remains valid and is writable when using `setindex!`.
+`T` should be an `isbits` type. `CArray` implements the `AbstractArray`
+interface with linear indexing, including bounds-checked access and mutation.
+The aliases [`CVector`](@ref) and [`CMatrix`](@ref) cover one and two
+dimensions.
 
-The 1-D and 2-D specializations have familiar aliases:
-
-```julia
-const CVector{T} = CArray{T,1}
-const CMatrix{T} = CArray{T,2}
-```
-
-Use it to expose a numeric buffer at a `@ccallable` boundary instead of
-a `Vector`/`Matrix`/`Array` (which are not C-ABI compatible). The
-JuliaLibWrapping Python emitter recognizes `CArray{T,N}` for primitive
-numeric `T` and generates `from_numpy` / `as_numpy` helpers on the
-corresponding `ctypes.Structure`. For `N ≥ 2` the storage is column-major,
-so `from_numpy` requires a Fortran-contiguous `numpy.ndarray` and rejects
-the default row-major layout: callers passing a default numpy array must
-write `np.asfortranarray(arr)` (or equivalent) first. This is deliberate —
-silently treating a row-major array as column-major would reinterpret the
-data without warning.
-
-`CArray{T,N} <: AbstractArray{T,N}` and implements `size`, bounds-checked
-`getindex`, and `setindex!` via `unsafe_load` / `unsafe_store!` on `data`,
-with `IndexLinear()` style over the column-major storage. `CArray` supports
-iteration, broadcasting, `sum`, views, `LinearAlgebra` routines, and functions
-that accept an `AbstractArray{T,N}` without allocating the array descriptor.
-`setindex!` is defined unconditionally, so callers must only
-invoke it on buffers they know to be writable.
-
-# Additional examples
-
-```julia
-using JLWInterop
-
-Base.@ccallable function trace_cmatrix(m::CMatrix{Float64})::Float64
-    n = min(size(m, 1), size(m, 2))
-    s = 0.0
-    @inbounds for i in 1:n
-        s += m[i, i]
-    end
-    return s
-end
-
-Base.@ccallable function sum3d(a::CArray{Float64,3})::Float64
-    return sum(a)
-end
-```
-
-The caller (in Julia, Python, or C) is responsible for ensuring `a.data`
-points to at least `prod(a.dims)` valid `T` slots, in column-major order,
-for the duration of the call, and that the slots are writable when
-`setindex!` is used.
+Binding targets can map this layout to native N-D array types without changing
+the ABI. They must preserve column-major dimension and stride semantics.
 """
 struct CArray{T, N} <: AbstractArray{T, N}
     dims::NTuple{N, Int32}
@@ -133,7 +77,7 @@ const CMatrix{T} = CArray{T, 2}
 CArray{T}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
     CArray{T, N}(dims, data)
 
-# 2-arg convenience constructor: borrowed (owned = 0) — the pre-`owned` shape.
+# Two-argument borrowed constructor.
 CArray{T, N}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
     CArray{T, N}(dims, data, Int32(0))
 
@@ -146,12 +90,8 @@ CArray{T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
 """
     CArray(A::AbstractArray{T,N}) where {T,N}
 
-Allocates a dense column-major copy of `A` with `Libc.malloc` and returns a
-[`CArray{T,N}`](@ref) with `owned = 1`. The consumer is responsible for
-releasing the buffer exactly once, via `Libc.free(a.data)` (or, at a
-`@ccallable` boundary, `jlw_free` from [`@export_release_entrypoints`](@ref)).
-Julia never retains a reference to the buffer once it has handed it across
-the boundary.
+Allocate a dense column-major copy of `A`. The result has `owned == 1`; the
+consumer must release `data` once with `Libc.free` or the exported `jlw_free`.
 
 # Example
 
@@ -210,11 +150,9 @@ Unlike `Base.Cstring`, `CString` is length-prefixed rather than NUL-terminated.
 It does not allocate, copy, free, or keep its storage alive.
 
 Use it to expose a string value at a `@ccallable` boundary instead of a
-`String` (which is not C-ABI compatible) or a `Cstring` (which forces
-null-termination and forbids embedded NULs). The JuliaLibWrapping Python
-emitter recognizes `CString` by name + shape and emits `from_str` /
-`as_str` (UTF-8) plus `from_bytes` / `as_bytes` (raw) helpers on the
-corresponding `ctypes.Structure`.
+`String` (which is not C-ABI compatible) or a `Cstring` (which requires
+NUL termination and forbids embedded NULs). Binding targets can map its
+name and layout to native string and byte-sequence types.
 
 `CString <: AbstractString` with `ncodeunits`, `codeunit`, and a fast
 byte-level `cmp`; Base derives UTF-8 iteration, `length` (character
@@ -223,9 +161,7 @@ count vs. `ncodeunits` byte count), equality, `print`, regex matching,
 `String(s)` to copy the bytes out into a fresh heap-allocated Julia
 `String` when you need ownership.
 
-The caller (in Julia, Python, or C) is responsible for ensuring `s.data`
-points to at least `s.length` valid UTF-8 bytes for the duration of the
-call.
+The caller must keep `s.data` valid for the duration of the call.
 """
 struct CString <: AbstractString
     length::Int32
@@ -323,32 +259,14 @@ end
 """
     CStrArray
 
-Owning-or-borrowed C-ABI descriptor for an array of UTF-8 strings: `length`
-elements at `data`, each a length-prefixed [`CString`](@ref) (16 bytes, not
-NUL-terminated; embedded NUL bytes are allowed). Each element's own length is
-`CString`'s `Int32`, so a single string over ~2 GiB throws an `InexactError`
-in the own-out constructor rather than being truncated.
+Array of length-prefixed UTF-8 [`CString`](@ref)s for C ABI boundaries.
 
 # Ownership contract
 
-Ownership is carried **explicitly in the data**, via the `owned` field —
-never inferred from which direction a value happens to cross the boundary.
-`owned = 0` means caller-owned/borrowed: nothing here frees it. `owned = 1`
-means Julia's own-out constructor allocated it: it must be released exactly
-once. There is no partial ownership — the flag covers the whole struct
-(`data` and every per-string buffer it points to) as a single unit.
-
-- `Base.Vector{String}(a::CStrArray)` **borrows**: it copies the strings out
-  into a fresh Julia `Vector{String}` and never frees `a.data` or any of the
-  per-string buffers, regardless of `a.owned`. The caller retains ownership.
-- `CStrArray(v::Vector{String})` **owns out**: it `Libc.malloc`s the `CString`
-  array and each per-string buffer, and sets `owned` to `1`. The consumer is
-  responsible for releasing them exactly once, via
-  [`JLWInterop._free_strings`](@ref) (or, at a `@ccallable` boundary,
-  `jlw_free_strings` from [`@export_release_entrypoints`](@ref)).
-- Julia never retains a reference to an `owned = 1` buffer once it has
-  handed it across the boundary — the whole point of the flag is that the
-  receiving side can tell, from the value alone, whether it must free.
+`owned == 0` denotes borrowed storage. `owned == 1` denotes storage allocated
+by `CStrArray(::Vector{String})`; release it once with `_free_strings` or the
+`jlw_free_strings` entrypoint. Converting to `Vector{String}` copies without
+freeing the source.
 
 # Example
 
@@ -367,7 +285,7 @@ struct CStrArray
     owned::Int32            # 0 = caller-owned/borrowed; 1 = allocated by CStrArray(::Vector{String})
 end
 
-# Borrow-in: copy out, never free (the caller owns the buffers, regardless of `owned`).
+# Copy without freeing the source.
 function Base.Vector{String}(a::CStrArray)
     v = Vector{String}(undef, a.length)
     for i in 1:a.length
@@ -376,7 +294,7 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Own-out: malloc'd copy, owned=1; consumer releases via jlw_free_strings.
+# Allocate an owning copy.
 function CStrArray(v::Vector{String})
     n = length(v)
     data = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
@@ -409,10 +327,8 @@ end
 """
     CDICT_VALUE_TYPES
 
-The `V` types [`CDict{V}`](@ref) supports. Per-`V` methods are generated only
-for these types (a closed, trim-safe allowlist), so `CDict(::Dict{String,V})`
-for any other `V` throws `MethodError` rather than silently miscompiling or
-requiring dynamic dispatch.
+Supported value types for [`CDict{V}`](@ref). The closed list permits concrete,
+trim-safe conversion methods; other value types throw `MethodError`.
 """
 const CDICT_VALUE_TYPES = (
     Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
@@ -422,37 +338,16 @@ const CDICT_VALUE_TYPES = (
 """
     CDict{V}
 
-Owning-or-borrowed C-ABI descriptor for a `Dict{String,V}`: `length`
-key/value pairs, keys as length-prefixed [`CString`](@ref)s at `keys`, values
-as a parallel array of `V` at `values`. `V` is restricted to
-[`CDICT_VALUE_TYPES`](@ref); the allowlist is enforced structurally — the
-per-`V` conversion methods below are the only ones generated, so a
-disallowed `V` fails as a `MethodError` at the call site. Each key's own
-length is `CString`'s `Int32`, so a single key over ~2 GiB throws an
-`InexactError` in the own-out constructor rather than being truncated.
+String-keyed dictionary for C ABI boundaries. Keys are length-prefixed
+[`CString`](@ref)s and values are a parallel array of a type in
+[`CDICT_VALUE_TYPES`](@ref).
 
 # Ownership contract
 
-Ownership is carried **explicitly in the data**, via the `owned` field —
-never inferred from which direction a value happens to cross the boundary.
-`owned = 0` means caller-owned/borrowed: nothing here frees it. `owned = 1`
-means Julia's own-out constructor allocated it: it must be released exactly
-once. There is no partial ownership — the flag covers the whole struct
-(`keys` and `values`, and every per-key buffer `keys` points to) as a single
-unit.
-
-- `Base.Dict{String,V}(d::CDict{V})` **borrows**: it copies keys and values
-  out into a fresh Julia `Dict` and never frees `d.keys`, the per-key
-  buffers, or `d.values`, regardless of `d.owned`. The caller retains
-  ownership.
-- `CDict(d::Dict{String,V})` **owns out**: it `Libc.malloc`s the key
-  `CString` array, each per-key buffer, and the value array, and sets
-  `owned` to `1`. The consumer must release them exactly once: the keys via
-  [`JLWInterop._free_strings`](@ref) (or `jlw_free_strings` from
-  [`@export_release_entrypoints`](@ref)) and `values` via `Libc.free` (or
-  `jlw_free`).
-- Julia never retains a reference to an `owned = 1` buffer once it has
-  handed it across the boundary.
+`owned == 0` denotes borrowed storage. `owned == 1` denotes storage allocated
+by `CDict(::Dict)`: release `keys` with `_free_strings` and `values` with
+`Libc.free`, or use the corresponding exported entrypoints. Converting to a
+`Dict` copies without freeing the source.
 
 # Example
 
@@ -473,8 +368,7 @@ struct CDict{V}
     owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by CDict(::Dict{String,V})
 end
 
-# The loop IS the allowlist: per-V concrete methods keep trim-safety and reject
-# unsupported V with a MethodError at the call site.
+# Concrete methods keep conversion trim-safe and reject unsupported values.
 for V in CDICT_VALUE_TYPES
     @eval begin
         function Base.Dict{String, $V}(d::CDict{$V})
@@ -506,10 +400,8 @@ end
 """
     COpt{T}
 
-C-ABI descriptor for `Union{T,Nothing}`: a discriminant `has_value` (present
-= 1, absent = 0) alongside an inline `value::T`, always present (but
-meaningless / zero-filled in the absent branch) so the struct stays
-`isbits` and needs no allocation or ownership handling in either direction.
+C-ABI representation of `Union{T,Nothing}`. `has_value` is `1` when the inline
+`value` is present and `0` when it is absent. Absent values are zero-filled.
 
 Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled);
 read back with [`unwrap`](@ref).
@@ -533,20 +425,16 @@ COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps th
 """
     unwrap(o::COpt{T}) -> Union{T,Nothing}
 
-Read a [`COpt{T}`](@ref) back into a native `Union{T,Nothing}`: `nothing`
-in the absent branch, otherwise `o.value`.
+Convert a [`COpt{T}`](@ref) to `Union{T,Nothing}`.
 """
 unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
 
 """
     @export_release_entrypoints
 
-Emit the two C-callable release functions a wrapped library must export when it
-returns owning carriers (`CArray`, `CStrArray`, `CDict`): `jlw_free` frees one
-malloc'd block (also what releases an own-out [`CArray`](@ref)'s `data`);
-`jlw_free_strings` frees `n` `CString`-element strings and their array.
-Generated wrappers call them exactly once per returned value, via the
-library's own handle. Place at top level of the entry module.
+At module top level, emit the release functions required by owning carrier
+returns. `jlw_free` frees one allocation; `jlw_free_strings` frees an array of
+`CString`s and their buffers.
 """
 macro export_release_entrypoints()
     return esc(

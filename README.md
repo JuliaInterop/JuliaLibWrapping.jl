@@ -16,6 +16,6 @@ This repository contains two packages:
 
 - **[`JLWInterop/`](JLWInterop/)** — a dependency-free package defining
   shared ABI types such as `CArray`, `CString`, and `JLWStatus`. Compiled
-  libraries use these types, and the generated Python wrappers recognize their
-  layouts. Compiled libraries can use it as a runtime dependency with
+  libraries use these types, and binding targets can recognize their layouts.
+  Compiled libraries can use it as a runtime dependency with
   `juliac --trim`.
