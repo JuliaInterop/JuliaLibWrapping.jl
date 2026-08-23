@@ -93,6 +93,13 @@ generated `ctypes.Structure` class carries a `.free()` method: it releases
 `data` iff `self.owned == 1`, then sets `owned` back to `0`, so a second
 call — or a call on a value that was never owned — is a no-op.
 
+Unlike `CStrArray`/`CDict`, whose façade degrades to a mechanical
+re-export at build time when release entrypoints are missing, a library
+that returns an owned `CArray` without exporting them still gets a full
+auto-wrapped return — the failure surfaces only at runtime, as `.free()`
+raising `RuntimeError`, because gating `CArray` returns at build time
+would demote every existing borrowed-`CArray` library.
+
 The 1-D and 2-D specializations have familiar aliases:
 
 ```julia
