@@ -80,6 +80,13 @@ Privatization applies to the bundle, so `privatize = true` with
 `bundle = false` is an error rather than a silent no-op. Pass
 `privatize = false` alongside `bundle = true` to opt out.
 
+On a Windows build host, `privatize = true` is downgraded to `false` with a
+warning rather than silently mislabeling the package: JuliaC does not yet
+implement libjulia SONAME salting on Windows, so a bundle built there never
+actually carries a privatized runtime, and labeling it `privatized = true`
+would suppress the generated package's "another wrapped package may already
+be loaded" `RuntimeWarning` for a hazard that is, on Windows, still live.
+
 # CPU target
 
 `cpu_target` sets the multi-microarchitecture target for the compiled
@@ -89,20 +96,22 @@ library, using the same syntax as the `--cpu-target` `julia` flag or the
 to `JULIA_CPU_TARGET` if it is set in the environment, or otherwise to the
 host CPU.
 """
-function build_library(entry::AbstractString,
-                       targets::AbstractVector{<:AbstractTarget};
-                       project::AbstractString = dirname(entry),
-                       libname::AbstractString,
-                       libdir::AbstractString = pwd(),
-                       abi_path::AbstractString = joinpath(libdir, libname * ".abi.json"),
-                       trim::Union{Nothing,Symbol} = :safe,
-                       compile_ccallable::Bool = true,
-                       backend::Symbol = :auto,
-                       verbose::Bool = false,
-                       bundle::Bool = false,
-                       bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
-                       privatize::Bool = bundle,
-                       cpu_target::Union{Nothing,AbstractString} = nothing)
+function build_library(
+        entry::AbstractString,
+        targets::AbstractVector{<:AbstractTarget};
+        project::AbstractString = dirname(entry),
+        libname::AbstractString,
+        libdir::AbstractString = pwd(),
+        abi_path::AbstractString = joinpath(libdir, libname * ".abi.json"),
+        trim::Union{Nothing, Symbol} = :safe,
+        compile_ccallable::Bool = true,
+        backend::Symbol = :auto,
+        verbose::Bool = false,
+        bundle::Bool = false,
+        bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
+        privatize::Bool = bundle,
+        cpu_target::Union{Nothing, AbstractString} = nothing
+    )
     isfile(entry) || isdir(entry) ||
         throw(ArgumentError("entry not found: $entry"))
     isdir(project) ||
@@ -113,17 +122,23 @@ function build_library(entry::AbstractString,
     backend ∈ (:auto, :juliac) ||
         throw(ArgumentError("backend must be :auto or :juliac; got :$backend"))
     if privatize && !bundle
-        throw(ArgumentError(
-            "privatize = true requires bundle = true: privatization salts the " *
-            "bundled libjulia, and a build without a bundle has none to salt."))
+        throw(
+            ArgumentError(
+                "privatize = true requires bundle = true: privatization salts the " *
+                    "bundled libjulia, and a build without a bundle has none to salt."
+            )
+        )
     end
     if bundle
         for t in targets
             t isa PythonTarget || continue
-            t.bundle_subdir === nothing && throw(ArgumentError(
-                "PythonTarget for package \"$(t.package_name)\" needs `bundle_subdir = \"bundle\"` " *
-                "(or some other subdir name) when `build_library` is called with `bundle = true`; " *
-                "the bundle tree is copied into that subdirectory of the package."))
+            t.bundle_subdir === nothing && throw(
+                ArgumentError(
+                    "PythonTarget for package \"$(t.package_name)\" needs `bundle_subdir = \"bundle\"` " *
+                        "(or some other subdir name) when `build_library` is called with `bundle = true`; " *
+                        "the bundle tree is copied into that subdirectory of the package."
+                )
+            )
         end
     end
 
@@ -136,10 +151,12 @@ function build_library(entry::AbstractString,
     ext === nothing &&
         throw(ArgumentError("JuliaC.jl is required — run `using JuliaC` before calling `build_library`."))
 
-    ext._build_library_juliac(entry; project, libname, libdir, abi_path,
-                              trim, compile_ccallable, verbose,
-                              bundle, bundle_dir = (bundle ? bundle_dir : nothing),
-                              privatize, cpu_target)
+    ext._build_library_juliac(
+        entry; project, libname, libdir, abi_path,
+        trim, compile_ccallable, verbose,
+        bundle, bundle_dir = (bundle ? bundle_dir : nothing),
+        privatize, cpu_target
+    )
 
     isfile(abi_path) ||
         error("juliac completed but no ABI JSON was written to $abi_path")
@@ -160,22 +177,44 @@ function build_library(entry::AbstractString,
         target_outputs[i] = (target = typeof(t), dir = t.dir)
     end
 
-    return (; library = library_path, abi_path, abi_info, target_outputs,
-            backend = :juliac, bundle_dir = bundle ? bundle_dir : nothing)
+    return (;
+        library = library_path, abi_path, abi_info, target_outputs,
+        backend = :juliac, bundle_dir = bundle ? bundle_dir : nothing,
+    )
 end
 
 # Record whether the bundle was privatized so the generated Python can warn
-# when another non-privatized package is already loaded.
-_apply_privatization(t::AbstractTarget, ::Bool) = t
-function _apply_privatization(t::PythonTarget, privatize::Bool)
+# when another non-privatized package is already loaded. `_iswindows` is
+# injectable (default `Sys.iswindows()`) so a test on any host can force the
+# Windows no-op-privatization branch below.
+_apply_privatization(t::AbstractTarget, ::Bool; _iswindows::Bool = Sys.iswindows()) = t
+function _apply_privatization(t::PythonTarget, privatize::Bool; _iswindows::Bool = Sys.iswindows())
+    if privatize && _iswindows
+        # JuliaC's bundle privatization (SONAME-salting libjulia /
+        # libjulia-internal) is not implemented on Windows, so the bundle
+        # this build produces never actually carries a private runtime.
+        # Labeling the package `privatized = true` anyway would silently
+        # suppress its "another wrapped package may already be loaded"
+        # RuntimeWarning for a hazard that, on Windows, is still live —
+        # downgrade instead of mislabeling.
+        @warn "JuliaLibWrapping: `privatize = true` has no effect on a Windows build host " *
+            "(JuliaC does not yet implement libjulia SONAME salting there); the generated " *
+            "package for \"$(t.package_name)\" is labeled `privatized = false`."
+        privatize = false
+    end
     t.privatized == privatize && return t
-    t.privatized && throw(ArgumentError(
-        "PythonTarget for package \"$(t.package_name)\" was constructed with " *
-        "`privatized = true`, but `build_library` was called with `privatize = false`. " *
-        "The generated package would claim a private libjulia it does not have."))
-    return PythonTarget(t.dir, t.package_name, t.library_basename;
-                        bundle_subdir = t.bundle_subdir, version = t.version,
-                        privatized = true)
+    t.privatized && throw(
+        ArgumentError(
+            "PythonTarget for package \"$(t.package_name)\" was constructed with " *
+                "`privatized = true`, but `build_library` was called with `privatize = false`. " *
+                "The generated package would claim a private libjulia it does not have."
+        )
+    )
+    return PythonTarget(
+        t.dir, t.package_name, t.library_basename;
+        bundle_subdir = t.bundle_subdir, version = t.version,
+        privatized = true
+    )
 end
 
 # Copy the bundle before emitting Python sources.
@@ -223,24 +262,30 @@ directories (e.g. a transient project materialized with absolute
 Python package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
 outside this convention, call `build_library` directly.
 """
-function standard_build(dir::AbstractString = pwd();
-                        libname::AbstractString,
-                        project::AbstractString = dir,
-                        out::AbstractString = joinpath(dir, "out"),
-                        entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
-                        python_package::AbstractString = libname * "_py",
-                        bundle::Bool = true,
-                        version::AbstractString = _DEFAULT_PACKAGE_VERSION,
-                        kwargs...)
+function standard_build(
+        dir::AbstractString = pwd();
+        libname::AbstractString,
+        project::AbstractString = dir,
+        out::AbstractString = joinpath(dir, "out"),
+        entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
+        python_package::AbstractString = libname * "_py",
+        bundle::Bool = true,
+        version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+        kwargs...
+    )
     targets = AbstractTarget[
         CTarget(out, libname),
-        PythonTarget(out, python_package, libname;
-                     bundle_subdir = bundle ? "bundle" : nothing,
-                     version),
+        PythonTarget(
+            out, python_package, libname;
+            bundle_subdir = bundle ? "bundle" : nothing,
+            version
+        ),
     ]
-    return build_library(entry, targets;
-                         project, libname, libdir = out, bundle,
-                         kwargs...)
+    return build_library(
+        entry, targets;
+        project, libname, libdir = out, bundle,
+        kwargs...
+    )
 end
 
 function _validate_sources_absolute(project::AbstractString)
@@ -255,12 +300,15 @@ function _validate_sources_absolute(project::AbstractString)
         haskey(spec, "path") || continue
         p = spec["path"]
         if !isabspath(p)
-            throw(ArgumentError(
-                """[sources] entry "$name" has relative path "$p" in $pf.
-                juliac copies the project into a temporary directory before compiling,
-                so relative [sources] paths cannot be resolved. Use an absolute path
-                (e.g. `path = $(repr(abspath(joinpath(project, p))))`) or `Pkg.develop`
-                the dependency."""))
+            throw(
+                ArgumentError(
+                    """[sources] entry "$name" has relative path "$p" in $pf.
+                    juliac copies the project into a temporary directory before compiling,
+                    so relative [sources] paths cannot be resolved. Use an absolute path
+                    (e.g. `path = $(repr(abspath(joinpath(project, p))))`) or `Pkg.develop`
+                    the dependency."""
+                )
+            )
         end
     end
     return

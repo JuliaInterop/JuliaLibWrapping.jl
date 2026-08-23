@@ -8,6 +8,7 @@ export parse_abi_info, read_abi_info, write_wrapper, build_library, standard_bui
 export AbstractTarget, CTarget, PythonTarget, ABIInfo
 
 include("abi_import.jl")
+include("platform.jl")
 include("recognizers.jl")
 
 """
@@ -21,7 +22,9 @@ files.
 
 Ships today: [`CTarget`](@ref) for a C header, [`PythonTarget`](@ref)
 for a Python `ctypes` package. New languages are added by defining a
-subtype and a `write_wrapper` method for it.
+subtype and a `write_wrapper` method for it. Every target's `write_wrapper`
+should consume host-platform facts (`_current_os_kernel`, `bundle_libdir`;
+see `platform.jl`) from shared module scope rather than re-deriving them.
 """
 abstract type AbstractTarget end
 
