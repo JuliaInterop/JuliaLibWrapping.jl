@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant Py as Python (ctypes)
+    participant Jl as Julia lib (.so)
+
+    rect rgb(227, 242, 253)
+    note over Py,Jl: borrow-in — arguments (always borrowed)
+    Py->>Py: allocate carrier via ctypes<br/>(keepalive on obj._buffer)
+    Py->>Jl: call entrypoint(carrier)
+    Jl->>Jl: from_c copies into a native Julia value
+    Jl-->>Py: return
+    Py->>Py: Python GC frees the ctypes buffer
+    end
+
+    rect rgb(232, 245, 233)
+    note over Py,Jl: free-out — variable-size returns (CStrArray, CDict)
+    Py->>Jl: call entrypoint(...)
+    Jl->>Jl: Libc.malloc a dense copy<br/>(owning CStrArray / CDict)
+    Jl-->>Py: return owning carrier
+    Py->>Py: convert to Python natives<br/>(list[str] / dict)
+    Py->>Jl: jlw_free_strings(data, length) — exactly once
+    end
