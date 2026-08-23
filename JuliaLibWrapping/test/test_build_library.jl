@@ -3,6 +3,25 @@
 using JuliaLibWrapping
 using JuliaC
 using Test
+using TOML: TOML
+
+# `juliac` requires every `[sources]` path in the entry project to be
+# absolute, and the examples deliberately ship without one so their
+# `Project.toml` carries no machine-specific path. Materialize a transient
+# project that points `JLWInterop` at the in-tree checkout.
+function example_project(exdir)
+    toml = TOML.parsefile(joinpath(exdir, "Project.toml"))
+    sources = get(toml, "sources", Dict{String, Any}())
+    sources["JLWInterop"] = Dict(
+        "path" => abspath(joinpath(@__DIR__, "..", "..", "JLWInterop"))
+    )
+    toml["sources"] = sources
+    tmp = mktempdir()
+    open(joinpath(tmp, "Project.toml"), "w") do io
+        TOML.print(io, toml; sorted = true)
+    end
+    return tmp
+end
 
 @testset "build_library" begin
     @testset "validate [sources] paths" begin
@@ -158,6 +177,56 @@ using Test
         end
     end
 
+    @testset "examples: run smoke.py" begin
+        # The `ols` and `boundary` examples ship Python smoke tests that call
+        # into the generated wrappers for real. Build each library and run its
+        # smoke test, which is the only coverage that exercises the emitted
+        # helpers (numpy conversions, ownership handling) at runtime rather
+        # than just parsing them.
+        has_julia = Sys.which("julia") !== nothing
+        has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
+        juliac_ok = has_julia && VERSION >= v"1.13.0-rc1" && has_cc
+        if !juliac_ok
+            @info "Skipping example smoke tests" has_julia has_cc VERSION
+        else
+            python3 = Sys.which("python3")
+            # The smoke tests and the generated CArray helpers both need numpy.
+            has_numpy = python3 !== nothing &&
+                success(pipeline(`$python3 -c "import numpy"`; stderr = devnull))
+            if !has_numpy
+                haskey(ENV, "CI") && error(
+                    "python3 with numpy is required on CI to run the example smoke tests"
+                )
+                @info "Skipping example smoke tests (no python3 with numpy)"
+            else
+                for name in ("ols", "boundary")
+                    exdir = joinpath(@__DIR__, "..", "examples", name)
+                    entry = joinpath(exdir, "src", name * ".jl")
+                    mktempdir() do out
+                        result = build_library(entry,
+                            [PythonTarget(out, name * "_py", name)];
+                            project = example_project(exdir), libname = name,
+                            libdir = out, cpu_target = "generic")
+                        @test isfile(result.library)
+
+                        # `out` on PYTHONPATH makes the generated package
+                        # importable without installing it; the env override
+                        # the loader consults points at the freshly built
+                        # library rather than one beside the package.
+                        cmd = addenv(
+                            `$python3 $(joinpath(exdir, "test", "smoke.py"))`,
+                            "PYTHONPATH" => out,
+                            uppercase(name * "_py") * "_LIBRARY" => result.library,
+                        )
+                        @test success(pipeline(
+                            cmd; stdout = stdout, stderr = stderr
+                        ))
+                    end
+                end
+            end
+        end
+    end
+
     @testset "end-to-end with bundle" begin
         # Opt-in: the bundle build copies libjulia + stdlibs + artifacts
         # and is multi-hundred-MB, so we don't run it in default CI. Set
@@ -172,8 +241,7 @@ using Test
         python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH")
         # The generated _lowlevel.py imports numpy (CVector helpers).
         # Report the missing dependency before attempting the import.
-        has_numpy = success(run(pipeline(`$python3 -c "import numpy"`;
-                                        stderr=devnull, stdout=devnull); wait=true))
+        has_numpy = success(pipeline(`$python3 -c "import numpy"`; stderr=devnull))
         has_numpy || error("JLW_TEST_BUNDLE set but `python3 -c 'import numpy'` failed; install numpy in this python")
 
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
