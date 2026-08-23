@@ -3,10 +3,11 @@ import ctypes
 import os
 import sys
 import pathlib
+import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcdict"
-_LIBRARY_ENV_VAR = "CDICT_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcarrayowned"
+_LIBRARY_ENV_VAR = "CARRAY_OWNED_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -93,56 +94,53 @@ class CString(ctypes.Structure):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
 
-class CDict_Float64(ctypes.Structure):
+class CVector_Float64(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int64),
-        ("keys", ctypes.POINTER(CString)),
-        ("values", ctypes.POINTER(ctypes.c_double)),
+        ("dims", (ctypes.c_int32 * 1)),
+        ("data", ctypes.POINTER(ctypes.c_double)),
         ("owned", ctypes.c_int32),
     ]
 
     @classmethod
-    def from_dict(cls, d):
-        keys = [k.encode("utf-8") for k in d.keys()]
-        karr = (CString * len(keys))(
-            *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
-        varr = (ctypes.c_double * len(keys))(*d.values())
-        obj = cls(length=len(keys),
-                  keys=ctypes.cast(karr, ctypes.POINTER(CString)),
-                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_double)),
+    def from_numpy(cls, arr):
+        """Return a CArray view of the 1-D numpy array `arr`.
+
+        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no
+        silent reinterpretation). The returned object holds a reference to `arr`,
+        so the caller must keep it alive for the duration of any C call that uses
+        the buffer."""
+        if arr.ndim != 1:
+            raise ValueError(f"expected 1-D array, got {arr.ndim}-D")
+        if not (arr.flags.c_contiguous or arr.flags.f_contiguous):
+            raise ValueError("array must be contiguous")
+        expected_dtype = np.dtype("float64")
+        if arr.dtype != expected_dtype:
+            raise ValueError(f"expected dtype float64, got {arr.dtype}")
+        obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                   owned=0)
-        obj._buffer = (keys, karr, varr)
+        obj._buffer = arr
         return obj
 
-    def as_dict(self):
-        out = {}
-        for i in range(self.length):
-            e = self.keys[i]
-            k = ctypes.string_at(e.data, e.length).decode("utf-8")
-            out[k] = self.values[i]
-        return out
+    def as_numpy(self):
+        """Return a 1-D numpy view of the underlying buffer (no copy)."""
+        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
 
     def free(self):
-        """Free the Julia-allocated buffers iff this object owns them (owned is 1).
+        """Free the Julia-allocated buffer iff this object owns it (owned is 1).
 
         Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
         no-op. For callers who bypass the façade's convert-then-free wrapper and
         talk to `_lowlevel` directly."""
         if self.owned != 1:
             return
-        _lib.jlw_free_strings(self.keys, self.length)
-        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.owned = 0
 
-_lib.take_dict.argtypes = [CDict_Float64]
-_lib.take_dict.restype = ctypes.c_int64
-def take_dict(d):
-    return _lib.take_dict(d)
-
-_lib.give_dict.argtypes = []
-_lib.give_dict.restype = CDict_Float64
-def give_dict():
-    return _lib.give_dict()
+_lib.give_vec.argtypes = []
+_lib.give_vec.restype = CVector_Float64
+def give_vec():
+    return _lib.give_vec()
 
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None

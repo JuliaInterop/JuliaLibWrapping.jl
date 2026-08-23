@@ -1247,9 +1247,10 @@ end
             @test occursin("(\"owned\", ctypes.c_int32)", bindings)
             @test occursin("owned=0)", bindings)
             # A `.free()` escape hatch for callers who bypass the façade:
-            # frees iff owned, then clears the flag — idempotent.
+            # a genuine no-op at owned=0, frees iff owned=1 then clears the
+            # flag — idempotent (`_emit_free_method`'s shared shape).
             @test occursin("def free(self):", bindings)
-            @test occursin("if self.owned == 1:", bindings)
+            @test occursin("if self.owned != 1:\n            return", bindings)
             @test occursin("self.owned = 0", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
@@ -1259,16 +1260,18 @@ end
             # never re-exported from the façade (no TODO line, no bare
             # re-export) and never listed in `__all__`, regardless of what
             # their own (raw-pointer) argument shape would otherwise
-            # classify to. The internal call inside give_strs's own
-            # auto-wrapper body (`_lowlevel._lib.jlw_free_strings(...)`)
-            # is legitimate and stays (see the golden compare below).
+            # classify to.
             facade = read(joinpath(path, "cstrarray_demo", "_facade.py"), String)
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            # The owning-return free call is gated on the RETURNED value's
-            # own `owned` field, never assumed from call direction alone.
-            @test occursin("if _result.owned == 1:", facade)
+            # The owning-return result is freed via `.free()` in a
+            # `try`/`finally` — idempotent, so correct for the pass-through
+            # (owned=0) case too, with no manual `owned` check in the façade
+            # itself (that lives inside `.free()`).
+            @test occursin("try:\n        _out = _result.as_list()\n    finally:\n        _result.free()", facade)
+            @test !occursin("if _result.owned", facade)
+            @test !occursin("_lowlevel._lib.jlw_free", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
@@ -1324,28 +1327,32 @@ end
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
             # Explicit ownership: `from_dict` always builds a caller-owned
-            # (owned=0) value, and a `.free()` escape hatch frees iff owned
-            # then clears the flag — idempotent.
+            # (owned=0) value, and a `.free()` escape hatch is a genuine
+            # no-op at owned=0, frees iff owned=1 then clears the flag —
+            # idempotent (`_emit_free_method`'s shared shape).
             @test occursin("(\"owned\", ctypes.c_int32)", bindings)
             @test occursin("owned=0)", bindings)
             @test occursin("def free(self):", bindings)
-            @test occursin("if self.owned == 1:", bindings)
+            @test occursin("if self.owned != 1:\n            return", bindings)
             @test occursin("self.owned = 0", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
 
             # jlw_free/jlw_free_strings are release-entrypoint internals —
-            # never re-exported and never listed in `__all__`. The
-            # internal calls inside give_dict's own auto-wrapper body
-            # are legitimate and stay (see the golden compare below).
+            # never re-exported and never listed in `__all__`.
             facade = read(joinpath(path, "cdict_demo", "_facade.py"), String)
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            # The owning-return free calls are gated on the RETURNED
-            # value's own `owned` field, never assumed from call direction.
-            @test occursin("if _result.owned == 1:", facade)
+            # The owning-return result is freed via `.free()` in a
+            # `try`/`finally` — idempotent, so correct for the pass-through
+            # (owned=0) case too, with no manual `owned` check or `ctypes`
+            # import in the façade itself.
+            @test occursin("try:\n        _out = _result.as_dict()\n    finally:\n        _result.free()", facade)
+            @test !occursin("if _result.owned", facade)
+            @test !occursin("_lowlevel._lib.jlw_free", facade)
+            @test !occursin("import ctypes", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
 
@@ -1405,11 +1412,8 @@ end
             facade = read(joinpath(path, "cdict_int32_demo", "_facade.py"), String)
             @test occursin(
                 "def give_dict_i32():\n    _result = _lowlevel.give_dict_i32()\n" *
-                    "    _out = _result.as_dict()\n" *
-                    "    if _result.owned == 1:\n" *
-                    "        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)\n" *
-                    "        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))\n" *
-                    "    return _out", facade
+                    "    try:\n        _out = _result.as_dict()\n" *
+                    "    finally:\n        _result.free()\n    return _out", facade
             )
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
             @test facade == golden_facade
@@ -1684,6 +1688,58 @@ end
 
             python3 = Sys.which("python3")
             if python3 !== nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CArray owned-return vocabulary" begin
+        # Exercises the owning-return (`owned == 1`) façade path for CArray:
+        # carray3/cmatrix/libsimple only ever cover borrowed CArray arguments,
+        # so this dedicated fixture (one no-arg function returning a fresh
+        # CVector{Float64}, plus the macro-emitted release entrypoints) is
+        # what actually drives `:carray_unwrap` through `write_wrapper`.
+        abi = read_abi_info("bindinginfo_carray_owned.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "carray_owned_demo", "libcarrayowned")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "carray_owned_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            # `.free()` is a genuine no-op at owned=0, regardless of
+            # release_present — the shared `_emit_free_method` shape.
+            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
+            @test occursin("owned=0)", bindings)  # from_numpy always borrows
+            @test occursin("        if self.owned != 1:\n            return", bindings)
+            @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_carray_owned_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Façade auto-wrap: copy-then-free via try/finally + .free().
+            facade = read(joinpath(path, "carray_owned_demo", "_facade.py"), String)
+            @test occursin(
+                "def give_vec():\n    _result = _lowlevel.give_vec()\n" *
+                    "    try:\n        if _result.owned == 1:\n" *
+                    "            _out = np.array(_result.as_numpy(), copy=True)\n" *
+                    "        else:\n            _out = _result.as_numpy()\n" *
+                    "    finally:\n        _result.free()\n    return _out",
+                facade
+            )
+            # No manual free call bypassing `.free()`, and no `ctypes` import
+            # (the façade no longer touches `ctypes.*` directly).
+            @test !occursin("_lowlevel._lib.jlw_free", facade)
+            @test !occursin("import ctypes", facade)
+
+            golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")

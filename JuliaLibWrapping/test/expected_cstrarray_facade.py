@@ -27,9 +27,10 @@ def take_strs(a):
 
 def give_strs():
     _result = _lowlevel.give_strs()
-    _out = _result.as_list()
-    if _result.owned == 1:
-        _lowlevel._lib.jlw_free_strings(_result.data, _result.length)
+    try:
+        _out = _result.as_list()
+    finally:
+        _result.free()
     return _out
 
 __all__ = ["Nothing", "CString", "CStrArray", "take_strs", "give_strs"]

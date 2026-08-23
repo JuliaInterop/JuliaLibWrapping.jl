@@ -331,6 +331,52 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     return nothing
 end
 
+"""
+    _emit_free_method(f, buffers_desc, pronoun, free_lines, release_present)
+
+Emit the shared `.free()` method body used by `CArray`/`CStrArray`/`CDict`'s
+generated `ctypes.Structure` classes. Idempotent and a genuine no-op when
+`self.owned` is `0` — regardless of `release_present` — since a value that
+was never owned needs no release capability to safely no-op; only escalates
+to a `RuntimeError` when actually asked to release an owned (`owned == 1`)
+buffer the library gave no way to release. This is also what makes it safe
+for the façade to call unconditionally from a `finally` block (see
+`_emit_facade_autowrapper`): a pass-through/borrowed result's `.free()` call
+never raises.
+
+`buffers_desc`/`pronoun` fill in "buffer"/"it" or "buffers"/"them" in the
+docstring; `free_lines` are the release-call statements (already indented to
+8 spaces) emitted only when `release_present`.
+"""
+function _emit_free_method(
+        f::IO, buffers_desc::AbstractString, pronoun::AbstractString,
+        free_lines::Vector{String}, release_present::Bool
+    )
+    println(f, "")
+    println(f, "    def free(self):")
+    println(
+        f, "        \"\"\"Free the Julia-allocated ", buffers_desc,
+        " iff this object owns ", pronoun, " (owned is 1)."
+    )
+    println(f, "")
+    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
+    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
+    println(f, "        talk to `_lowlevel` directly.\"\"\"")
+    println(f, "        if self.owned != 1:")
+    println(f, "            return")
+    if release_present
+        for line in free_lines
+            println(f, line)
+        end
+        return println(f, "        self.owned = 0")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
+end
+
 function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
     # `cainfo` is the return of `carray_struct_info`. Helpers are emitted as
     # methods on the surrounding ctypes.Structure subclass; the `dims`,
@@ -401,23 +447,11 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
         println(f, "        # shape and strides.")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
     end
-    println(f, "")
-    println(f, "    def free(self):")
-    println(f, "        \"\"\"Free the Julia-allocated buffer iff this object owns it (owned is 1).")
-    println(f, "")
-    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
-    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
-    println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    if release_present
-        println(f, "        if self.owned == 1:")
-        println(f, "            _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))")
-        return println(f, "            self.owned = 0")
-    else
-        return println(
-            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
-            "add JLWInterop.@export_release_entrypoints to the library\")"
-        )
-    end
+    return _emit_free_method(
+        f, "buffer", "it",
+        ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
+        release_present
+    )
 end
 
 function _write_cstring_helpers(f::IO)
@@ -526,23 +560,11 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, rele
     println(f, "            e = self.data[i]")
     println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
     println(f, "        return out")
-    println(f, "")
-    println(f, "    def free(self):")
-    println(f, "        \"\"\"Free the Julia-allocated buffer iff this object owns it (owned is 1).")
-    println(f, "")
-    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
-    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
-    println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    if release_present
-        println(f, "        if self.owned == 1:")
-        println(f, "            _lib.jlw_free_strings(self.data, self.length)")
-        return println(f, "            self.owned = 0")
-    else
-        return println(
-            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
-            "add JLWInterop.@export_release_entrypoints to the library\")"
-        )
-    end
+    return _emit_free_method(
+        f, "buffer", "it",
+        ["        _lib.jlw_free_strings(self.data, self.length)"],
+        release_present
+    )
 end
 
 function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
@@ -574,24 +596,14 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, 
     println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
     println(f, "            out[k] = self.values[i]")
     println(f, "        return out")
-    println(f, "")
-    println(f, "    def free(self):")
-    println(f, "        \"\"\"Free the Julia-allocated buffers iff this object owns them (owned is 1).")
-    println(f, "")
-    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
-    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
-    println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    if release_present
-        println(f, "        if self.owned == 1:")
-        println(f, "            _lib.jlw_free_strings(self.keys, self.length)")
-        println(f, "            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))")
-        return println(f, "            self.owned = 0")
-    else
-        return println(
-            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
-            "add JLWInterop.@export_release_entrypoints to the library\")"
-        )
-    end
+    return _emit_free_method(
+        f, "buffers", "them",
+        [
+            "        _lib.jlw_free_strings(self.keys, self.length)",
+            "        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))",
+        ],
+        release_present
+    )
 end
 
 function _write_copt_helpers(f::IO, coinfo)
@@ -923,25 +935,29 @@ Classify a method's return for façade auto-wrapping. `release_present` is
 [`_release_symbols_present`](@ref)'s verdict for the surrounding library.
 The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
-- `(kind=:carray_unwrap, classname=…)` — `_result.owned` is `0`: return
-  `_result.as_numpy()` (zero-copy view), matching `CArray`'s historical
-  always-borrowed behavior. `_result.owned` is `1`: copy into a fresh numpy
-  array (`np.array(_result.as_numpy(), copy=True)`) FIRST, then free `data`
-  via `jlw_free` — never hand back a view over memory about to be freed.
-  Not gated on `release_present` (unlike `:cstrarray_unwrap`/
+- `(kind=:carray_unwrap, classname=…)` — inside a `try`: when borrowed
+  (`_result.owned` is `0`), return `_result.as_numpy()` (zero-copy view),
+  matching `CArray`'s historical always-borrowed behavior; when owned
+  (`_result.owned` is `1`), copy into a fresh numpy array
+  (`np.array(_result.as_numpy(), copy=True)`) FIRST — never hand back a view
+  over memory about to be freed. A `finally` then calls `_result.free()`
+  unconditionally (see `_emit_free_method`: idempotent, a no-op when
+  borrowed). Not gated on `release_present` (unlike `:cstrarray_unwrap`/
   `:cdict_unwrap` below): a plain, always-borrowed `CArray` return — by far
   the common case, predating the `owned` flag — must keep auto-wrapping even
-  when the library never calls `@export_release_entrypoints`, since the free
-  branch above is never reached when the value is borrowed.
+  when the library never calls `@export_release_entrypoints`, since
+  `.free()` only escalates to a `RuntimeError` when actually asked to
+  release an owned value.
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
-- `(kind=:cstrarray_unwrap, classname=…)` — return `_result.as_list()`, then
-  free the `data` buffer via `jlw_free_strings` iff `_result.owned` is `1`
-  (ownership is read from the returned value itself, not assumed from the
-  fact that it was returned — a pass-through of a borrowed argument stays
-  `owned = 0` and is never freed)
-- `(kind=:cdict_unwrap, classname=…)` — return `_result.as_dict()`, then,
-  iff `_result.owned` is `1`, free the `keys` buffer via `jlw_free_strings`
-  AND the `values` buffer via `jlw_free` (two separate allocations)
+- `(kind=:cstrarray_unwrap, classname=…)` — inside a `try`: `_out =
+  _result.as_list()` (a real copy, independent of the buffer); a `finally`
+  then calls `_result.free()` unconditionally — a no-op when the value is
+  borrowed (e.g. a pass-through of a borrowed argument), releasing `data`
+  via `jlw_free_strings` only when owned
+- `(kind=:cdict_unwrap, classname=…)` — inside a `try`: `_out =
+  _result.as_dict()`; a `finally` then calls `_result.free()`
+  unconditionally, releasing `keys` via `jlw_free_strings` AND `values` via
+  `jlw_free` (two separate allocations) only when owned
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
@@ -1099,13 +1115,17 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # exactly as before. For `owned == 1` the buffer is about to be
         # freed, so it is copied into a fresh numpy array FIRST — handing
         # back a view over memory we are about to free would leave a
-        # dangling array.
+        # dangling array. `.free()` (in `finally`) is idempotent and a
+        # no-op when `owned == 0`, so this is correct for the borrowed case
+        # too — see `_emit_free_method`.
         println(f, "    _result = ", call)
-        println(f, "    if _result.owned == 1:")
-        println(f, "        _out = np.array(_result.as_numpy(), copy=True)")
-        println(f, "        _lowlevel._lib.jlw_free(ctypes.cast(_result.data, ctypes.c_void_p))")
-        println(f, "    else:")
-        println(f, "        _out = _result.as_numpy()")
+        println(f, "    try:")
+        println(f, "        if _result.owned == 1:")
+        println(f, "            _out = np.array(_result.as_numpy(), copy=True)")
+        println(f, "        else:")
+        println(f, "            _out = _result.as_numpy()")
+        println(f, "    finally:")
+        println(f, "        _result.free()")
         println(f, "    return _out")
     elseif ret.kind === :cstring_unwrap
         println(f, "    _result = ", call)
@@ -1114,26 +1134,27 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # `data` may be Julia-allocated (own-out convention, `owned == 1`)
         # or a pass-through of a borrowed argument (`owned == 0`, e.g. a
         # function that returns one of its own CStrArray arguments
-        # unchanged): convert to the idiomatic `list[str]` first, then
-        # release the buffer via the macro-emitted `jlw_free_strings`
-        # release entrypoint ONLY if this result owns it — freeing a
-        # borrowed value would double-free the caller's buffer.
+        # unchanged): convert to the idiomatic `list[str]` first (a real
+        # copy, independent of the buffer), THEN free via `.free()` in
+        # `finally` — idempotent and a no-op when `owned == 0`, so this is
+        # correct for the pass-through case too.
         println(f, "    _result = ", call)
-        println(f, "    _out = _result.as_list()")
-        println(f, "    if _result.owned == 1:")
-        println(f, "        _lowlevel._lib.jlw_free_strings(_result.data, _result.length)")
+        println(f, "    try:")
+        println(f, "        _out = _result.as_list()")
+        println(f, "    finally:")
+        println(f, "        _result.free()")
         println(f, "    return _out")
     elseif ret.kind === :cdict_unwrap
         # `keys` and `values` are two SEPARATE buffers, own-out or
         # pass-through exactly as for CStrArray above: convert to `dict`
-        # first, then release both via their respective release
-        # entrypoints ONLY if this result owns them — the string-array
-        # allocator for `keys`, the generic allocator for `values`.
+        # first, then free both (`.free()` releases `keys` via
+        # `jlw_free_strings` AND `values` via `jlw_free`) in `finally` —
+        # idempotent and a no-op when `owned == 0`.
         println(f, "    _result = ", call)
-        println(f, "    _out = _result.as_dict()")
-        println(f, "    if _result.owned == 1:")
-        println(f, "        _lowlevel._lib.jlw_free_strings(_result.keys, _result.length)")
-        println(f, "        _lowlevel._lib.jlw_free(ctypes.cast(_result.values, ctypes.c_void_p))")
+        println(f, "    try:")
+        println(f, "        _out = _result.as_dict()")
+        println(f, "    finally:")
+        println(f, "        _result.free()")
         println(f, "    return _out")
     elseif ret.kind === :copt_unwrap
         # COpt is by-value (no heap allocation) — unwrap only, no free.
@@ -1159,11 +1180,6 @@ function _write_facade_stub(
     release_present = _release_symbols_present(abi_info)
     plans = [_facade_plan(m, typeinfo, typedict, release_present) for m in entrypoints]
     needs_np = any(p -> p.uses_numpy, plans)
-    # `:cdict_unwrap`'s and `:carray_unwrap`'s release calls cast
-    # `_result.values`/`_result.data` via `ctypes.cast(...)` directly in
-    # facade.py (see `_emit_facade_autowrapper`), so `ctypes` must be
-    # imported there too.
-    needs_ctypes = any(p -> p.ret.kind in (:cdict_unwrap, :carray_unwrap), plans)
     has_struct_exports = !isempty(struct_names) || needs_jlwerror
 
     println(f, "\"\"\"", dest.package_name, " idiomatic façade.")
@@ -1191,9 +1207,6 @@ function _write_facade_stub(
     end
 
     println(f, "from . import _lowlevel  # noqa: F401")
-    if needs_ctypes
-        println(f, "import ctypes")
-    end
     if needs_np
         println(f, "import numpy as np  # noqa: F401")
     end

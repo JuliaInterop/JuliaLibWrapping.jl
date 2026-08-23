@@ -124,9 +124,10 @@ class CStrArray(ctypes.Structure):
         Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
         no-op. For callers who bypass the façade's convert-then-free wrapper and
         talk to `_lowlevel` directly."""
-        if self.owned == 1:
-            _lib.jlw_free_strings(self.data, self.length)
-            self.owned = 0
+        if self.owned != 1:
+            return
+        _lib.jlw_free_strings(self.data, self.length)
+        self.owned = 0
 
 _lib.take_strs.argtypes = [CStrArray]
 _lib.take_strs.restype = ctypes.c_int64

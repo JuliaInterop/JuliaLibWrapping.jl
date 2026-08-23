@@ -128,10 +128,11 @@ class CDict_Int32(ctypes.Structure):
         Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
         no-op. For callers who bypass the façade's convert-then-free wrapper and
         talk to `_lowlevel` directly."""
-        if self.owned == 1:
-            _lib.jlw_free_strings(self.keys, self.length)
-            _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
-            self.owned = 0
+        if self.owned != 1:
+            return
+        _lib.jlw_free_strings(self.keys, self.length)
+        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
+        self.owned = 0
 
 _lib.take_dict_i32.argtypes = [CDict_Int32]
 _lib.take_dict_i32.restype = ctypes.c_int64

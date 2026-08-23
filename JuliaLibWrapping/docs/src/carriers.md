@@ -82,19 +82,23 @@ is what a consumer actually checks:
   returns a freshly built `CStrArray` or `CDict` (via `CStrArray(::Vector{String})`
   / `CDict(::Dict{String,V})`), Julia `Libc.malloc`s a dense copy of the data
   and the constructor sets `owned = 1`. The generated Python wrapper converts
-  the buffer into idiomatic Python objects (`list[str]` / `dict`) and then,
-  **iff `_result.owned == 1`**, releases the Julia-owned memory through the
-  wrapped library's own exported release entrypoints — see
-  [`@export_release_entrypoints`](@ref) below. A pass-through return (`owned
-  = 0`) is converted the same way but never freed.
+  the buffer into idiomatic Python objects (`list[str]` / `dict`) inside a
+  `try`, then unconditionally calls `.free()` (see below) in a `finally` —
+  releasing the Julia-owned memory through the wrapped library's own
+  exported release entrypoints (see [`@export_release_entrypoints`](@ref)
+  below) when `owned = 1`, and doing nothing when `owned = 0`. A
+  pass-through return is converted the same way but never freed.
 - **`COpt` is by-value.** It carries no pointer and no ownership field —
   needs no ownership handling in either direction — see [`COpt{T}`](@ref).
 
-For callers who bypass the façade and talk to `_lowlevel` directly, both
-`CStrArray` and `CDict`'s generated `ctypes.Structure` classes carry a
-`.free()` method: it releases the buffer(s) iff `self.owned == 1`, then sets
-`owned` back to `0`, so a second call — or a call on a value that was never
-owned — is a no-op.
+Both the façade's `finally` above and a caller who bypasses the façade and
+talks to `_lowlevel` directly go through the same `.free()` method on
+`CStrArray`/`CDict` (and `CArray`)'s generated `ctypes.Structure` classes: a
+genuine no-op when the value was never owned, regardless of whether the
+library exports release entrypoints; releases the buffer(s) and clears
+`owned` back to `0` when it was owned and release entrypoints exist;
+otherwise raises `RuntimeError`. Idempotent either way — a second call is
+always a no-op.
 
 ![Sequence diagram: borrow-in has Python allocate, Julia copy, and Python's GC free; free-out has Julia malloc, Python convert to native objects, then call jlw_free_strings exactly once.](assets/ownership-seq.svg)
 
@@ -268,14 +272,15 @@ Python's `ctypes` allocator, never through a different wrapped library's
 - **Freeing twice, or freeing a borrowed pointer, corrupts the heap.** This
   is exactly the double-free the `owned` field exists to prevent: a function
   that returns one of its own `CStrArray`/`CDict` arguments unchanged
-  (pass-through) hands back a value with `owned = 0`, and the generated
-  façade code — gated on `_result.owned == 1` — never calls the release
-  entrypoint on it. When it *is* owned, the façade calls the release
-  entrypoint exactly once, right after converting the carrier to native
-  Python objects (see the sequence diagram above). Hand-written code that
-  bypasses the façade and talks to `_lowlevel` directly must preserve that
-  same "convert once, check `owned`, free at most once" ordering — or use
-  the carrier's own `.free()` method, which already does.
+  (pass-through) hands back a value with `owned = 0`, and `.free()` — a
+  genuine no-op at that flag value — never calls the release entrypoint on
+  it. The façade converts the carrier to native Python objects inside a
+  `try`, then calls `.free()` unconditionally in a `finally`: idempotent, so
+  correct whether or not the result actually owns anything, and it runs
+  even if the conversion itself raises. Hand-written code that bypasses the
+  façade and talks to `_lowlevel` directly should use the same
+  try/`.free()`-in-`finally` shape, or at minimum call `.free()` — never
+  the release entrypoint directly — exactly once after conversion.
 
 ## Scope note: carriers are ctypes-target-side
 

@@ -101,6 +101,8 @@ class CArray_Float64_3(ctypes.Structure):
         Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
         no-op. For callers who bypass the façade's convert-then-free wrapper and
         talk to `_lowlevel` directly."""
+        if self.owned != 1:
+            return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 
 _lib.sum3d.argtypes = [CArray_Float64_3]
