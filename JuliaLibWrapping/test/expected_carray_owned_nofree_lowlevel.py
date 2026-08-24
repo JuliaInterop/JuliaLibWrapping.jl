@@ -6,8 +6,8 @@ import pathlib
 import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcarrayowned"
-_LIBRARY_ENV_VAR = "CARRAY_OWNED_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcarrayownednofree"
+_LIBRARY_ENV_VAR = "CARRAY_OWNED_NOFREE_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -111,17 +111,10 @@ class CVector_owned_Float64(ctypes.Structure):
         façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
         if getattr(self, "_freed", False):
             return
-        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
-        self._freed = True
+        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 
 _lib.give_vec.argtypes = []
 _lib.give_vec.restype = CVector_owned_Float64
 def give_vec():
     return _lib.give_vec()
-
-_lib.jlw_free.argtypes = [ctypes.c_void_p]
-_lib.jlw_free.restype = None
-
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
-_lib.jlw_free_strings.restype = None
 

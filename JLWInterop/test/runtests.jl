@@ -1,4 +1,5 @@
 using JLWInterop
+using OffsetArrays
 using Test
 
 @testset "JLWInterop" begin
@@ -46,17 +47,17 @@ using Test
 
     @testset "CArray aliases" begin
         # CVector and CMatrix are CArray aliases.
-        @test CVector{Float64} === CArray{Float64, 1}
-        @test CMatrix{Float64} === CArray{Float64, 2}
-        @test CVector === CArray{T, 1} where {T}
-        @test CMatrix === CArray{T, 2} where {T}
+        @test CVector{:owned, Float64} === CArray{:owned, Float64, 1}
+        @test CMatrix{:borrowed, Float64} === CArray{:borrowed, Float64, 2}
+        @test CVector === CArray{owned, T, 1} where {owned, T}
+        @test CMatrix === CArray{owned, T, 2} where {owned, T}
     end
 
     @testset "CVector AbstractVector interface" begin
         # Keep the borrowed buffer alive while using the view.
         buf = Float64[10.0, 20.0, 30.0, 40.0]
         GC.@preserve buf begin
-            v = CVector{Float64}(Int32(length(buf)), pointer(buf))
+            v = CVector{:borrowed, Float64}(Int32(length(buf)), pointer(buf))
 
             @test v isa AbstractVector{Float64}
             @test IndexStyle(typeof(v)) === IndexLinear()
@@ -154,7 +155,7 @@ using Test
         # Column-major storage; verify both linear and Cartesian indexing.
         buf = Float64[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]  # 2x3, col-major
         GC.@preserve buf begin
-            m = CMatrix{Float64}(Int32(2), Int32(3), pointer(buf))
+            m = CMatrix{:borrowed, Float64}(Int32(2), Int32(3), pointer(buf))
 
             @test m isa AbstractMatrix{Float64}
             @test IndexStyle(typeof(m)) === IndexLinear()
@@ -192,7 +193,7 @@ using Test
         # 2 × 3 × 4 = 24 elements in column-major layout.
         buf = collect(1.0:24.0)
         GC.@preserve buf begin
-            a = CArray{Float64, 3}((2, 3, 4), pointer(buf))
+            a = CArray{:borrowed, Float64, 3}((2, 3, 4), pointer(buf))
 
             @test a isa AbstractArray{Float64, 3}
             @test IndexStyle(typeof(a)) === IndexLinear()
@@ -228,82 +229,188 @@ using Test
 
     @testset "CArray layout" begin
         # C and Python emitters rely on this field layout.
-        @test fieldnames(CArray) == (:dims, :data, :owned)
+        @test fieldnames(CArray) == (:dims, :data)
 
-        @test fieldtype(CVector{Float64}, :dims) === NTuple{1, Int32}
-        @test fieldtype(CVector{Float64}, :data) === Ptr{Float64}
-        @test fieldtype(CVector{Float64}, :owned) === Int32
-        @test isbitstype(CVector{Float64})
-        @test iszero(fieldoffset(CVector{Float64}, 1))
+        @test fieldtype(CVector{:borrowed, Float64}, :dims) === NTuple{1, Int32}
+        @test fieldtype(CVector{:borrowed, Float64}, :data) === Ptr{Float64}
+        @test isbitstype(CVector{:borrowed, Float64})
+        @test iszero(fieldoffset(CVector{:borrowed, Float64}, 1))
         # One Int32 (4 bytes) pads out to pointer alignment (8 bytes).
-        @test fieldoffset(CVector{Float64}, 2) == 8
-        @test fieldoffset(CVector{Float64}, 3) == 16
-        @test sizeof(CVector{Float64}) == 24
+        @test fieldoffset(CVector{:borrowed, Float64}, 2) == 8
+        @test sizeof(CVector{:borrowed, Float64}) == 16
 
-        @test fieldtype(CMatrix{Float64}, :dims) === NTuple{2, Int32}
-        @test fieldtype(CMatrix{Float64}, :data) === Ptr{Float64}
-        @test fieldtype(CMatrix{Float64}, :owned) === Int32
-        @test isbitstype(CMatrix{Float64})
-        @test iszero(fieldoffset(CMatrix{Float64}, 1))
+        @test fieldtype(CMatrix{:owned, Float64}, :dims) === NTuple{2, Int32}
+        @test fieldtype(CMatrix{:owned, Float64}, :data) === Ptr{Float64}
+        @test isbitstype(CMatrix{:owned, Float64})
+        @test iszero(fieldoffset(CMatrix{:owned, Float64}, 1))
         # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
-        @test fieldoffset(CMatrix{Float64}, 2) == 8
-        @test fieldoffset(CMatrix{Float64}, 3) == 16
-        @test sizeof(CMatrix{Float64}) == 24
+        @test fieldoffset(CMatrix{:owned, Float64}, 2) == 8
+        @test sizeof(CMatrix{:owned, Float64}) == 16
 
-        @test fieldtype(CArray{Float64, 3}, :dims) === NTuple{3, Int32}
-        @test fieldtype(CArray{Float64, 3}, :owned) === Int32
-        @test isbitstype(CArray{Float64, 3})
-        @test iszero(fieldoffset(CArray{Float64, 3}, 1))
+        @test fieldtype(CArray{:borrowed, Float64, 3}, :dims) === NTuple{3, Int32}
+        @test isbitstype(CArray{:borrowed, Float64, 3})
+        @test iszero(fieldoffset(CArray{:borrowed, Float64, 3}, 1))
         # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
-        @test fieldoffset(CArray{Float64, 3}, 2) == 16
-        @test fieldoffset(CArray{Float64, 3}, 3) == 24
-        @test sizeof(CArray{Float64, 3}) == 32
+        @test fieldoffset(CArray{:borrowed, Float64, 3}, 2) == 16
+        @test sizeof(CArray{:borrowed, Float64, 3}) == 24
+
+        # Ownership is part of the type, so the two flavors are distinct types
+        # with identical layout.
+        @test CVector{:owned, Float64} !== CVector{:borrowed, Float64}
+        @test sizeof(CVector{:owned, Float64}) == sizeof(CVector{:borrowed, Float64})
+    end
+
+    @testset "CArray ABI names" begin
+        # `juliac` writes the ABI JSON's struct names with
+        # `repr(dt; context = :compact => true)`, and JuliaLibWrapping's
+        # recognizer parses the ownership back out of that text. Aliases print
+        # in preference to the raw spelling.
+        compact(T) = repr(T; context = :compact => true)
+        @test compact(CVector{:owned, Float64}) == "CVector{:owned, Float64}"
+        @test compact(CMatrix{:borrowed, Float32}) == "CMatrix{:borrowed, Float32}"
+        @test compact(CArray{:owned, Float64, 3}) == "CArray{:owned, Float64, 3}"
     end
 
     @testset "CArray constructors" begin
-        # Tuple dimensions convert to Int32; pointer constructors borrow.
-        a = CArray{Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
-        @test a isa CMatrix{Float64}
+        # Tuple dimensions convert to Int32; the ownership parameter is
+        # required at every entry point.
+        a = CArray{:borrowed, Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
+        @test a isa CMatrix{:borrowed, Float64}
         @test a.dims === (Int32(2), Int32(3))
-        @test a.owned === Int32(0)
 
-        a2 = CArray{Float64, 2}((2, 3), Ptr{Float64}(0))
+        # `T` and `N` are both inferred from the pointer and dimensions.
+        a2 = CArray{:borrowed}((2, 3), Ptr{Float64}(0))
+        @test a2 isa CMatrix{:borrowed, Float64}
         @test a2.dims === (Int32(2), Int32(3))
-        @test a2.owned === Int32(0)
+
+        a3 = CArray{:owned, Float64, 2}((2, 3), Ptr{Float64}(0))
+        @test a3 isa CMatrix{:owned, Float64}
+        @test a3.dims === (Int32(2), Int32(3))
 
         # Scalar-form shortcuts for 1-D and 2-D.
-        v = CVector{Float64}(Int32(4), Ptr{Float64}(0))
+        v = CVector{:borrowed, Float64}(Int32(4), Ptr{Float64}(0))
         @test v.dims === (Int32(4),)
         @test v.data === Ptr{Float64}(0)
-        @test v.owned === Int32(0)
 
-        m = CMatrix{Float64}(2, 3, Ptr{Float64}(0))
+        m = CMatrix{:owned, Float64}(2, 3, Ptr{Float64}(0))
         @test m.dims === (Int32(2), Int32(3))
-        @test m.owned === Int32(0)
+
+        # There is no ownership-defaulting constructor.
+        @test_throws MethodError CArray([1.0])
+        @test_throws MethodError CVector{Float64}(1, Ptr{Float64}(0))
+
+        # Only :owned and :borrowed name an ownership.
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CArray{:mine, Float64, 1}((Int32(1),), Ptr{Float64}(0))
+        )
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got 1",
+            CArray{1, Float64, 1}((Int32(1),), Ptr{Float64}(0))
+        )
     end
 
-    @testset "CArray owned flag" begin
-        # The array constructor allocates an owning column-major copy.
+    @testset "CArray{:owned} allocates" begin
+        # The array constructor allocates a column-major copy the consumer owns.
         src = [1.0 2.0; 3.0 4.0]  # 2x2, column-major
-        a = CArray(src)
-        @test fieldtype(CArray, :owned) === Int32
-        @test a.owned === Int32(1)
+        a = CArray{:owned}(src)
+        @test a isa CMatrix{:owned, Float64}
         @test a.dims === (Int32(2), Int32(2))
         @test collect(a) == src
         Libc.free(a.data)
 
-        # 1-D owning constructor.
-        v = CArray([10.0, 20.0, 30.0])
-        @test v.owned === Int32(1)
+        # 1-D.
+        v = CArray{:owned}([10.0, 20.0, 30.0])
+        @test v isa CVector{:owned, Float64}
         @test collect(v) == [10.0, 20.0, 30.0]
         Libc.free(v.data)
 
-        # Access does not depend on ownership.
+        # `CArray <: AbstractArray`, so the same constructor promotes a
+        # borrowed carrier into an owning copy.
         buf = Float64[5.0, 6.0]
         GC.@preserve buf begin
-            borrowed = CArray{Float64, 1}((Int32(2),), pointer(buf), Int32(0))
+            borrowed = CVector{:borrowed, Float64}(Int32(2), pointer(buf))
             @test collect(borrowed) == [5.0, 6.0]
+            copied = CArray{:owned}(borrowed)
+            @test copied isa CVector{:owned, Float64}
+            @test copied.data !== borrowed.data
+            @test collect(copied) == [5.0, 6.0]
+            Libc.free(copied.data)
         end
+
+        # The invalid-symbol rejection also covers the array-argument entry
+        # point.
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CArray{:mine}([1.0, 2.0])
+        )
+    end
+
+    @testset "CArray{:borrowed} aliases dense arrays" begin
+        # `DenseArray` storage is already contiguous and column-major, so the
+        # constructor can alias it: `data` is `pointer(A)` and no copy is made.
+        # The caller keeps `A` alive while the carrier is in use.
+        buf = Float64[1.0, 2.0, 3.0]
+        GC.@preserve buf begin
+            v = CArray{:borrowed}(buf)
+            @test v isa CVector{:borrowed, Float64}
+            @test v.dims === (Int32(3),)
+            @test v.data === pointer(buf)
+            # Genuine aliasing, in both directions.
+            buf[2] = 20.0
+            @test v[2] === 20.0
+            v[3] = 30.0
+            @test buf[3] === 30.0
+        end
+
+        M = [1.0 2.0; 3.0 4.0]
+        GC.@preserve M begin
+            m = CArray{:borrowed}(M)
+            @test m isa CMatrix{:borrowed, Float64}
+            @test m.dims === (Int32(2), Int32(2))
+            @test collect(m) == M
+        end
+
+        # Non-`DenseArray` storage cannot be aliased safely, even when it
+        # happens to be contiguous: the layout guarantee lives in the type.
+        src = collect(1.0:6.0)
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(view(src, 2:2:6))
+        )
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(view(src, 1:6))
+        )
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(OffsetArray([1.0, 2.0], -1))
+        )
+    end
+
+    @testset "CArray{:owned} from arrays with unconventional axes" begin
+        # `size(A)` supplies `dims` and the values arrive in iteration order,
+        # so arrays whose axes do not start at 1 copy correctly.
+        o = OffsetArray([10.0, 20.0, 30.0], -1:1)
+        v = CArray{:owned}(o)
+        @test v.dims === (Int32(3),)
+        @test size(v) == size(o)
+        @test collect(v) == collect(o)
+        Libc.free(v.data)
+
+        o2 = OffsetArray([1.0 2.0; 3.0 4.0], 0:1, 5:6)
+        m = CArray{:owned}(o2)
+        @test m.dims === (Int32(2), Int32(2))
+        @test size(m) == size(o2)
+        @test collect(m) == collect(o2)
+        Libc.free(m.data)
+
+        # A non-contiguous view is densified by the copy.
+        src = collect(1.0:6.0)
+        w = CArray{:owned}(view(src, 2:2:6))
+        @test w.dims === (Int32(3),)
+        @test collect(w) == [2.0, 4.0, 6.0]
+        Libc.free(w.data)
     end
 
     @testset "CStrArray round-trip" begin

@@ -54,11 +54,10 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CMatrix_Float64(ctypes.Structure):
+class CMatrix_borrowed_Float64(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int32 * 2)),
         ("data", ctypes.POINTER(ctypes.c_double)),
-        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -80,8 +79,7 @@ class CMatrix_Float64(ctypes.Structure):
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float64, got {arr.dtype}")
         obj = cls(dims=(ctypes.c_int32 * 2)(*arr.shape),
-                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                  owned=0)
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
         obj._buffer = arr
         return obj
 
@@ -95,17 +93,7 @@ class CMatrix_Float64(ctypes.Structure):
         # shape and strides.
         return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T
 
-    def free(self):
-        """Free the Julia-allocated buffer iff this object owns it (owned is 1).
-
-        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
-        no-op. For callers who bypass the façade's convert-then-free wrapper and
-        talk to `_lowlevel` directly."""
-        if self.owned != 1:
-            return
-        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
-
-_lib.trace_cmatrix.argtypes = [CMatrix_Float64]
+_lib.trace_cmatrix.argtypes = [CMatrix_borrowed_Float64]
 _lib.trace_cmatrix.restype = ctypes.c_double
 def trace_cmatrix(m):
     return _lib.trace_cmatrix(m)

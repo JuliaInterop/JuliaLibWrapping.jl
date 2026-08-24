@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for the CMatrix vocabulary type (CMatrix{T} = CArray{T,2}). Mirrors the layout juliac would emit for `struct CMatrix{Float64}; dims::NTuple{2,Int32}; data::Ptr{Float64}; owned::Int32; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape by name + field layout and emit numpy from_numpy/as_numpy/free helpers (column-major).",
+  "_comment": "Hand-authored fixture for the CMatrix vocabulary type (CMatrix{owned,T} = CArray{owned,T,2}). Mirrors the layout juliac emits for `struct CMatrix{:borrowed,Float64}; dims::NTuple{2,Int32}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape by name + field layout and emit the borrowed-flavored numpy from_numpy/as_numpy helpers (column-major, no free).",
   "types": [
     {
       "kind": "primitive",
@@ -36,13 +36,12 @@
     },
     {
       "kind": "struct",
-      "name": "CMatrix{Float64}",
+      "name": "CMatrix{:borrowed, Float64}",
       "id": 4,
-      "size": 24,
+      "size": 16,
       "fields": [
         { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 2, "offset": 16, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     }
@@ -50,7 +49,7 @@
   "functions": [
     {
       "returns": { "type_id": 1 },
-      "name": "trace_cmatrix(m::CMatrix{Float64})",
+      "name": "trace_cmatrix(m::CMatrix{:borrowed, Float64})",
       "arguments": [
         { "name": "m", "type_id": 4 }
       ],

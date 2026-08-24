@@ -12,5 +12,5 @@ JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 # entry project will add their own `[sources]` here.
 
 [compat]
-JLWInterop = "0.1"
+JLWInterop = "0.2"
 julia = "1.13"

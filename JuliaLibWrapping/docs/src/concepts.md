@@ -113,7 +113,7 @@ package directory:
 - `_facade.py` — the package's public API. JuliaLibWrapping creates this
   file only if it does not exist. Its initial version wraps entrypoints whose
   arguments and return are recognized —
-  primitive scalars, `CVector{T}`, `CMatrix{T}`, `CString`, or a
+  primitive scalars, `CVector{owned,T}`, `CMatrix{owned,T}`, `CString`, or a
   direct `JLWStatus` return — is auto-wrapped to accept and return
   idiomatic Python objects (numpy arrays, `str`). Entrypoints with a
   raw pointer, an unrecognized struct, or an embedded `JLWStatus`

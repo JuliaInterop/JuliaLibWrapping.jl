@@ -13,15 +13,16 @@ types:
 
 | JLWInterop type            | Where it appears in `ols`            |
 |----------------------------|--------------------------------------|
-| `CMatrix{Float64}`         | design matrix `X`                    |
-| `CVector{Float64}`         | response `y`, coefficients, predictions |
+| `CMatrix{:borrowed,Float64}` | design matrix `X`                  |
+| `CVector{:borrowed,Float64}` | response `y`, coefficients, predictions |
 | `Float64` (primitive)      | `r_squared`                          |
 | `CString`                  | output buffer for `summary_report`   |
 | `JLWStatus` (direct)       | return of `predict`                  |
 | `JLWStatus` (embedded)     | `FitResult.status` field             |
 
-`CMatrix` and `CVector` are aliases for `CArray` specializations. The example
-uses `X \ y` from `LinearAlgebra`.
+`CMatrix` and `CVector` are aliases for `CArray` specializations, and their
+leading `:borrowed` parameter says the library never owns these buffers. The
+example uses `X \ y` from `LinearAlgebra`.
 
 ## 1. The Julia source
 
@@ -36,21 +37,21 @@ using LinearAlgebra
 
 struct FitResult
     status::JLWStatus
-    coeffs::CVector{Float64}
+    coeffs::CVector{:borrowed, Float64}
     r_squared::Float64
 end
 
-Base.@ccallable function fit(X::CMatrix{Float64},
-                              y::CVector{Float64},
-                              coeffs_buf::CVector{Float64})::FitResult
+Base.@ccallable function fit(X::CMatrix{:borrowed, Float64},
+                              y::CVector{:borrowed, Float64},
+                              coeffs_buf::CVector{:borrowed, Float64})::FitResult
     # … shape checks, then `coeffs = X \\ y`; copy into `coeffs_buf`,
     # compute R^2, and return FitResult with JLWStatus(0,…) on success
     # or JLWStatus(code, msg) on a recognized failure.
 end
 
-Base.@ccallable function predict(coeffs::CVector{Float64},
-                                  X::CMatrix{Float64},
-                                  out::CVector{Float64})::JLWStatus
+Base.@ccallable function predict(coeffs::CVector{:borrowed, Float64},
+                                  X::CMatrix{:borrowed, Float64},
+                                  out::CVector{:borrowed, Float64})::JLWStatus
 
 Base.@ccallable function summary_report(result::FitResult,
                                          buf::CString)::JLWStatus
@@ -58,9 +59,9 @@ Base.@ccallable function summary_report(result::FitResult,
 
 See `examples/ols/src/ols.jl` for the complete implementation.
 
-`coeffs_buf` and `out` are *caller-allocated* buffers: the library
-writes into them but does not own them. This is generally true for
-JLWInterop types that hold pointers, `CArray` and `CString`.
+`coeffs_buf` and `out` are *caller-allocated* buffers: the library writes into
+them but does not own them, which is what the `:borrowed` parameter records.
+`CString` borrows likewise.
 
 Errors travel back as a `JLWStatus`,
 either returned directly (`predict`, `summary_report`) or embedded in
@@ -228,7 +229,7 @@ except JLWError as e:
 The expected `out` is `array([2.04, 4.02, 6., 7.98, 9.96])`, followed by the
 error message.
 
-`np.asfortranarray` is required for any `CMatrix{T}` argument: JLWInterop's
+`np.asfortranarray` is required for any `CMatrix{owned,T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
 row-major view rather than silently transposing. You can edit the wrapper to
 accept a different interface.
@@ -249,9 +250,9 @@ def fit(X, y):
     y = np.ascontiguousarray(y, dtype=np.float64)
     coeffs = np.zeros(X.shape[1])
     result = _lowlevel.fit(
-        _lowlevel.CMatrix_Float64.from_numpy(X),
-        _lowlevel.CVector_Float64.from_numpy(y),
-        _lowlevel.CVector_Float64.from_numpy(coeffs),
+        _lowlevel.CMatrix_borrowed_Float64.from_numpy(X),
+        _lowlevel.CVector_borrowed_Float64.from_numpy(y),
+        _lowlevel.CVector_borrowed_Float64.from_numpy(coeffs),
     )
     return coeffs, result
 ```

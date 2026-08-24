@@ -13,5 +13,5 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 # entry project will add their own `[sources]` here.
 
 [compat]
-JLWInterop = "0.1"
+JLWInterop = "0.2"
 julia = "1.13"

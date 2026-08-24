@@ -38,11 +38,11 @@ Base.@ccallable function echo_dict(d::CDict{Float64})::CDict{Float64}
     return d
 end
 
-# Owning CArray return: `make_vec` mallocs a fresh vector and returns it with
-# `owned == 1`; the façade copies it into a numpy array and frees the
-# Julia-allocated buffer via `jlw_free`.
-Base.@ccallable function make_vec(n::Int64)::CVector{Float64}
-    return CArray(collect(Float64, 1:n))
+# Owning CArray return: `make_vec` mallocs a fresh vector and hands it over;
+# the façade copies it into a numpy array and frees the Julia-allocated
+# buffer via `jlw_free`.
+Base.@ccallable function make_vec(n::Int64)::CVector{:owned, Float64}
+    return CArray{:owned}(collect(Float64, 1:n))
 end
 
 end # module

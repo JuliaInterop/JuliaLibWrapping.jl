@@ -17,17 +17,18 @@ def _fit(X, y):
 
     `fit`'s return type (`FitResult`) embeds a `JLWStatus`, so
     JuliaLibWrapping's façade auto-wrapper leaves it as a mechanical
-    re-export: callers pass `CMatrix_Float64`/`CVector_Float64` wrappers
-    directly rather than bare numpy arrays.
+    re-export: callers pass `CMatrix_borrowed_Float64`/
+    `CVector_borrowed_Float64` wrappers directly rather than bare numpy
+    arrays.
     """
     n, p = X.shape
     Xf = np.asfortranarray(X, dtype=np.float64)
     yf = np.asfortranarray(y, dtype=np.float64)
     coeffs_buf = np.zeros(p, dtype=np.float64)
 
-    X_c = ols_py.CMatrix_Float64.from_numpy(Xf)
-    y_c = ols_py.CVector_Float64.from_numpy(yf)
-    coeffs_c = ols_py.CVector_Float64.from_numpy(coeffs_buf)
+    X_c = ols_py.CMatrix_borrowed_Float64.from_numpy(Xf)
+    y_c = ols_py.CVector_borrowed_Float64.from_numpy(yf)
+    coeffs_c = ols_py.CVector_borrowed_Float64.from_numpy(coeffs_buf)
 
     result = ols_py.fit(X_c, y_c, coeffs_c)
     assert result.status.code == 0, (

@@ -12,10 +12,10 @@ JLWInterop
 
 The package defines fixed-layout types for passing values across a C ABI.
 Borrowed values do not own their underlying storage; the caller must keep the
-storage alive for the duration of the call. Types that support owning returns
-record ownership in an `owned` field. The types are `isbits` when their element
-types are, work with `juliac --trim`, and cross a `@ccallable` boundary without
-allocating a Julia object.
+storage alive for the duration of the call. `CArray` states its ownership in
+its type; `CStrArray` and `CDict` record it in an `owned` field. The types are
+`isbits` when their element types are, work with `juliac --trim`, and cross a
+`@ccallable` boundary without allocating a Julia object.
 
 JuliaLibWrapping targets recognize these types structurally, by name and field
 layout. Using `JLWInterop` keeps those layouts consistent across libraries.
@@ -55,47 +55,63 @@ jlw_error
 JLW_MESSAGE_BYTES
 ```
 
-## `CArray{T,N}` — N-D numeric buffer (column-major)
+## `CArray{owned,T,N}` — N-D numeric buffer (column-major)
 
-`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T}, owned::Int32)` in
-column-major order. Targets may map this layout to native array types.
+`CArray{owned,T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T})` in column-major
+order. Targets may map this layout to native array types.
 
 ### `CArray` ownership contract
 
-As with `CStrArray` and `CDict`, `owned == 0` denotes borrowed storage and
-`owned == 1` denotes Julia-allocated storage.
+Ownership is the leading type parameter, `:owned` or `:borrowed`, so the two
+flavors are two distinct types with identical layout.
 
-- Pointer constructors borrow. The caller must keep the buffer alive and make
-  it writable before mutation.
-- `CArray(A::AbstractArray)` **transfers ownership**: it `Libc.malloc`s a dense
-  column-major copy of `A` and sets `owned = 1`. A target must copy or transfer
-  ownership before releasing this storage.
+- `CArray{:borrowed,T,N}` wraps memory the caller owns. The caller keeps it
+  alive and makes it writable before mutation; the consumer never releases it.
+  `CArray{:borrowed}(A::DenseArray)` aliases `A`'s own storage (`pointer(A)`)
+  without copying; other array types are refused, since only `DenseArray`
+  guarantees the contiguous column-major layout the carrier promises. Pointer
+  constructors build carriers of either ownership for callers who vouch for
+  the layout themselves.
+- `CArray{:owned,T,N}` holds a Julia allocation. `CArray{:owned}(A)`
+  `Libc.malloc`s a dense column-major copy of `A`; the consumer releases
+  `data` exactly once.
 
-### Python target
-
-The generated `as_numpy()` returns a zero-copy view. For an owning return, the
-façade copies the view before releasing the Julia allocation. Low-level callers
-can use the idempotent `.free()` method.
-
-Unlike `CStrArray`/`CDict`, whose façade falls back to a direct
-re-export at build time when release entrypoints are missing, a library
-that returns an owned `CArray` without exporting them still gets a full
-auto-wrapped return — the failure surfaces only at runtime, as `.free()`
-raising `RuntimeError`, because gating `CArray` returns at build time
-would demote every existing borrowed-`CArray` library.
+There is no ownership-defaulting constructor, and any parameter other than
+`:owned` or `:borrowed` is rejected, so an ownership is never guessed.
 
 The one- and two-dimensional aliases are:
 
 ```julia
-const CVector{T} = CArray{T,1}
-const CMatrix{T} = CArray{T,2}
+const CVector{owned,T} = CArray{owned,T,1}
+const CMatrix{owned,T} = CArray{owned,T,2}
 ```
 
-For `N ≥ 2`, the generated Python `from_numpy` helper requires a
-Fortran-contiguous array. Convert row-major input with `np.asfortranarray`.
+`CArray{owned,T,N} <: AbstractArray{T,N}` with linear indexing. It supports
+standard array operations; mutate only writable storage.
 
-`CArray{T,N} <: AbstractArray{T,N}` with linear indexing. It supports standard
-array operations; mutate only writable storage.
+### Python target
+
+A borrowed return becomes a zero-copy numpy view: the façade calls
+`as_numpy()` and hands the view back, because the storage stays the caller's.
+An owning return is copied into a fresh numpy array and the Julia allocation
+is released in a `finally`. The generated classes follow: a borrowed class
+gets `from_numpy` and `as_numpy` and no `free()`; an owning class gets
+`as_numpy` and an idempotent `free()`, and no `from_numpy`.
+
+A library returning an owning `CArray` without
+[`@export_release_entrypoints`](@ref) is demoted at build time to a `TODO`
+re-export naming the macro to add — the same rule as `CStrArray` and `CDict`.
+An owning `CArray` *argument* is likewise left to a human: it would transfer a
+Julia allocation into the library, which numpy cannot supply.
+
+For `N ≥ 2`, the generated `from_numpy` helper requires a Fortran-contiguous
+array. Convert row-major input with `np.asfortranarray`.
+
+### C target
+
+The two ownerships mangle to two distinct typedefs
+(`CVector_owned_Float64`, `CVector_borrowed_Float64`), so whether to free a
+returned buffer is visible in the signature.
 
 ```@docs
 CArray

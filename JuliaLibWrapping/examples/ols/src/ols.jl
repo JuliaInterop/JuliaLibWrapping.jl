@@ -12,15 +12,15 @@ using LinearAlgebra
 
 struct FitResult
     status::JLWStatus
-    coeffs::CVector{Float64}
+    coeffs::CVector{:borrowed, Float64}
     r_squared::Float64
 end
 
 # Caller-owned storage discipline: `coeffs_buf` is allocated by the caller
 # and outlives the call; the returned `FitResult.coeffs` aliases it.
-Base.@ccallable function fit(X::CMatrix{Float64},
-                              y::CVector{Float64},
-                              coeffs_buf::CVector{Float64})::FitResult
+Base.@ccallable function fit(X::CMatrix{:borrowed, Float64},
+                              y::CVector{:borrowed, Float64},
+                              coeffs_buf::CVector{:borrowed, Float64})::FitResult
     n, p = size(X)
     if length(y) != n
         return FitResult(jlw_error(1, "y length must match X rows"), coeffs_buf, 0.0)
@@ -58,9 +58,9 @@ Base.@ccallable function fit(X::CMatrix{Float64},
     return FitResult(jlw_ok(), coeffs_buf, r_squared)
 end
 
-Base.@ccallable function predict(coeffs::CVector{Float64},
-                                  X::CMatrix{Float64},
-                                  out::CVector{Float64})::JLWStatus
+Base.@ccallable function predict(coeffs::CVector{:borrowed, Float64},
+                                  X::CMatrix{:borrowed, Float64},
+                                  out::CVector{:borrowed, Float64})::JLWStatus
     n, p = size(X)
     if length(coeffs) != p
         return jlw_error(1, "coeffs length must match X cols")

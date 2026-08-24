@@ -47,15 +47,15 @@ end
         @test tdesc.name == "CVectorPair{Float32}"
         @test length(tdesc.fields) == 2
         @test tdesc.fields[1].name == "from"
-        @test typeinfo[tdesc.fields[1].type].name == "CVector{Float32}"
+        @test typeinfo[tdesc.fields[1].type].name == "CVector{:borrowed, Float32}"
         @test tdesc.fields[1].offset == 0
         @test tdesc.fields[2].name == "to"
-        @test typeinfo[tdesc.fields[2].type].name == "CVector{Float32}"
+        @test typeinfo[tdesc.fields[2].type].name == "CVector{:borrowed, Float32}"
         @test tdesc.fields[2].offset == 16
         @test tdesc.size == 32
-        tdesc = typeinfo[findtype(typeinfo, "CVector{Float32}")]
-        @test tdesc.name == "CVector{Float32}"
-        @test length(tdesc.fields) == 3
+        tdesc = typeinfo[findtype(typeinfo, "CVector{:borrowed, Float32}")]
+        @test tdesc.name == "CVector{:borrowed, Float32}"
+        @test length(tdesc.fields) == 2
         @test tdesc.fields[1].name == "dims"
         dims_desc = typeinfo[tdesc.fields[1].type]
         @test dims_desc isa ArrayDesc
@@ -65,10 +65,7 @@ end
         @test tdesc.fields[2].name == "data"
         @test typeinfo[tdesc.fields[2].type].name == "Ptr{Float32}"
         @test tdesc.fields[2].offset == 8
-        @test tdesc.fields[3].name == "owned"
-        @test typeinfo[tdesc.fields[3].type].name == "Int32"
-        @test tdesc.fields[3].offset == 16
-        @test tdesc.size == 24
+        @test tdesc.size == 16
         tdesc = typeinfo[findtype(typeinfo, "MyTwoVec")]
         @test tdesc.name == "MyTwoVec"
         @test length(tdesc.fields) == 2
@@ -80,7 +77,7 @@ end
         @test tdesc.fields[2].offset == 4
         @test tdesc.size == 8
         name2idx = Dict(desc.name => i for (i, desc) in enumerate(values(typeinfo)))
-        @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{Float32}"]
+        @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{:borrowed, Float32}"]
     end
 
     @testset "parse_abi_info: malformed input" begin
@@ -218,11 +215,11 @@ end
             @test occursin("#include <stddef.h>", content)
             @test occursin("#include <stdint.h>", content)
             @test occursin("#include <stdbool.h>", content)
-            @test occursin("typedef struct CVector_Float32 {", content)
+            @test occursin("typedef struct CVector_borrowed_Float32 {", content)
             @test occursin("    int32_t dims[1];", content)
             @test occursin("    float* data;", content)
-            @test occursin("CVector_Float32 from;", content)
-            @test occursin("CVector_Float32 to;", content)
+            @test occursin("CVector_borrowed_Float32 from;", content)
+            @test occursin("CVector_borrowed_Float32 to;", content)
             @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
         end
@@ -280,12 +277,12 @@ end
             @test occursin("import ctypes", bindings)
             @test occursin("_LIBRARY_ENV_VAR = \"LIBSIMPLE_LIBRARY\"", bindings)
             @test occursin("class CTree_Float64(ctypes.Structure):\n    pass", bindings)
-            @test occursin("class CVector_Float32(ctypes.Structure):", bindings)
+            @test occursin("class CVector_borrowed_Float32(ctypes.Structure):", bindings)
             @test occursin("(\"dims\", (ctypes.c_int32 * 1))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_float))", bindings)
             # `from` is a Python keyword; it must be renamed to be reachable
             # via attribute access.
-            @test occursin("(\"from_\", CVector_Float32)", bindings)
+            @test occursin("(\"from_\", CVector_borrowed_Float32)", bindings)
             @test occursin("CTree_Float64._fields_ = [", bindings)
             @test occursin("_lib.copyto_and_sum.argtypes = [CVectorPair_Float32]", bindings)
             @test occursin("_lib.copyto_and_sum.restype = ctypes.c_float", bindings)
@@ -300,7 +297,7 @@ end
             @test occursin("def as_numpy(self):", bindings)
             @test occursin("expected_dtype = np.dtype(\"float32\")", bindings)
             @test occursin("ctypes.POINTER(ctypes.c_float)", bindings)
-            # The CVector_CTree_Float64 class has a struct pointee, so the
+            # The CVector_borrowed_CTree_Float64 class has a struct pointee, so the
             # recognizer must reject it (no helper emission). There is only
             # one `from_numpy` definition in the file.
             @test count(s -> occursin("def from_numpy", s), split(bindings, '\n')) == 1
@@ -483,32 +480,36 @@ end
     end
 
     @testset "carray_struct_info" begin
-        # Structural recognition of the CArray{T,N} shape: a struct named
-        # CArray/CVector/CMatrix (since `CVector = CArray{_,1}` and
-        # `CMatrix = CArray{_,2}` may print under either name) with `dims`
-        # (NTuple{N,Int32} → ArrayDesc), `data` (Ptr{T}), and `owned`
-        # (Int32 explicit-ownership discriminant) fields, for any primitive
-        # T. The recognizer reports T's Julia name; `_python_carray_info`
-        # decides whether numpy supports it.
+        # Structural recognition of the CArray{owned,T,N} shape: a struct named
+        # CArray/CVector/CMatrix (since `CVector = CArray{_,_,1}` and
+        # `CMatrix = CArray{_,_,2}` may print under either name) whose first
+        # type parameter is `:owned` or `:borrowed`, with exactly the `dims`
+        # (NTuple{N,Int32} → ArrayDesc) and `data` (Ptr{T}) fields, for any
+        # primitive T. The recognizer reports T's Julia name and the
+        # ownership; `_python_carray_info` decides whether numpy supports the
+        # element type.
         cainfo(desc, typeinfo) = JuliaLibWrapping.carray_struct_info(desc, typeinfo)
         pycainfo(desc, typeinfo) = JuliaLibWrapping._python_carray_info(desc, typeinfo)
 
-        # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
-        # and CVector{CTree{Float64}} (struct pointee, no match).
+        # libsimple exercises CVector{:borrowed, Float32} (N=1, primitive
+        # pointee, match) and CVector{:borrowed, CTree{Float64}} (struct
+        # pointee, no match).
         abi = read_abi_info("bindinginfo_libsimple.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
             k[findfirst((id) -> descs[id].name === name, k)]
         )
-        cv_f32 = abi.typeinfo[findtype(abi.typeinfo, "CVector{Float32}")]
-        cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{CTree{Float64}}")]
+        cv_f32 = abi.typeinfo[findtype(abi.typeinfo, "CVector{:borrowed, Float32}")]
+        cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{:borrowed, CTree{Float64}}")]
         info = cainfo(cv_f32, abi.typeinfo)
         @test info !== nothing
         @test info.eltype == "Float32"
         @test info.ndim == 1
+        @test info.ownership === :borrowed
         pyinfo = pycainfo(cv_f32, abi.typeinfo)
         @test pyinfo.eltype == "Float32"
         @test pyinfo.ndim == 1
+        @test pyinfo.ownership === :borrowed
         @test pyinfo.dtype == "float32"
         @test pyinfo.ctype == "ctypes.c_float"
         # Struct pointee → no match: `data` must point at a primitive.
@@ -517,24 +518,49 @@ end
 
         # cmatrix fixture exercises the N=2 case under the CMatrix alias name.
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
-        cm_f64 = abi_cm.typeinfo[findtype(abi_cm.typeinfo, "CMatrix{Float64}")]
+        cm_f64 = abi_cm.typeinfo[findtype(abi_cm.typeinfo, "CMatrix{:borrowed, Float64}")]
         info2 = cainfo(cm_f64, abi_cm.typeinfo)
         @test info2 !== nothing
         @test info2.eltype == "Float64"
         @test info2.ndim == 2
+        @test info2.ownership === :borrowed
 
         # carray3 fixture exercises N=3 under the CArray name directly.
         abi_c3 = read_abi_info("bindinginfo_carray3.json")
-        ca_f64_3 = abi_c3.typeinfo[findtype(abi_c3.typeinfo, "CArray{Float64, 3}")]
+        ca_f64_3 = abi_c3.typeinfo[findtype(abi_c3.typeinfo, "CArray{:borrowed, Float64, 3}")]
         info3 = cainfo(ca_f64_3, abi_c3.typeinfo)
         @test info3 !== nothing
         @test info3.eltype == "Float64"
         @test info3.ndim == 3
+        @test info3.ownership === :borrowed
 
-        # Hand-built rejections: wrong name, wrong field names, non-integer
-        # dims element, dims-as-primitive (not array), missing owned, owned
-        # present but wrong type. Plus a Bool-pointee CArray, which is a
-        # structural match the Python adapter declines.
+        # carray_owned fixture exercises the `:owned` token.
+        abi_co = read_abi_info("bindinginfo_carray_owned.json")
+        cv_owned = abi_co.typeinfo[findtype(abi_co.typeinfo, "CVector{:owned, Float64}")]
+        info4 = cainfo(cv_owned, abi_co.typeinfo)
+        @test info4 !== nothing
+        @test info4.eltype == "Float64"
+        @test info4.ndim == 1
+        @test info4.ownership === :owned
+
+        # Ownership token parsing, independent of layout.
+        ownership = JuliaLibWrapping._carray_ownership
+        @test ownership("CVector{:owned, Float64}") === :owned
+        @test ownership("CMatrix{:borrowed, Float32}") === :borrowed
+        @test ownership("CArray{:owned, Float64, 3}") === :owned
+        @test ownership("CVector{:owned}") === :owned
+        @test ownership("CArray{ :borrowed , Float64, 3}") === :borrowed
+        @test ownership("CVector{Float64}") === nothing        # no token at all # noidiom
+        @test ownership("CArray{Float64, 3}") === nothing      # noidiom
+        @test ownership("CVector{:mine, Float64}") === nothing # unknown token # noidiom
+        @test ownership("CVector") === nothing                 # brace required # noidiom
+        @test ownership("MyCVector{:owned, Float64}") === nothing  # noidiom
+        @test ownership("CVector{") === nothing                # unterminated # noidiom
+
+        # Hand-built rejections: tokenless name, wrong name, wrong field names,
+        # non-integer dims element, dims-as-primitive (not array), and the
+        # three-field pre-type-parameter layout. Plus a Bool-pointee CArray,
+        # which is a structural match the Python adapter declines.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
         primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
@@ -546,69 +572,62 @@ end
             1 => primint, 2 => primflt, 3 => ptr_to_flt,
             4 => arr_int32_1, 5 => arr_flt_1,
             6 => StructDesc(
-                "CVector{Float32}", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             7 => primbool,
             8 => arr_bool_1,
             9 => StructDesc(
-                "NotACArray", 24, 8, FieldDesc[
+                "NotACArray{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             10 => StructDesc("CVectorEmpty", 0, 0, FieldDesc[]),
             11 => StructDesc(
-                "CVectorBadNames", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("len", 4, 0),
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             12 => StructDesc(
-                "CVectorFloatDims", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("dims", 5, 0),  # NTuple{1,Float32} — not Int*
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             13 => StructDesc(
-                "CVectorPrimDims", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("dims", 1, 0),  # primitive Int32, not ArrayDesc
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             14 => StructDesc(
-                "CVectorBoolDims", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                     FieldDesc("dims", 8, 0),  # Bool element — not Int/UInt
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             15 => StructDesc(
-                "CVectorNoOwned", 16, 8, FieldDesc[
+                "CVector{Float32}", 16, 8, FieldDesc[   # no ownership token
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
                 ]
             ),
             16 => StructDesc(
-                "CVectorOwnedWrongType", 24, 8, FieldDesc[
+                "CVector{:borrowed, Float32}", 24, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 3, 8),
-                    FieldDesc("owned", 2, 16),  # Float32, not Int32
+                    FieldDesc("owned", 1, 16),   # runtime flag: no longer part of the layout
                 ]
             ),
             17 => PointerDesc("Ptr{Bool}", 7),
             18 => StructDesc(
-                "CVector{Bool}", 24, 8, FieldDesc[
+                "CVector{:owned, Bool}", 16, 8, FieldDesc[
                     FieldDesc("dims", 4, 0),
                     FieldDesc("data", 17, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
         )
@@ -619,8 +638,8 @@ end
         @test cainfo(ti[12], ti) === nothing  # non-integer dims element # noidiom
         @test cainfo(ti[13], ti) === nothing  # dims is primitive, not ArrayDesc # noidiom
         @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected # noidiom
-        @test cainfo(ti[15], ti) === nothing  # owned missing entirely # noidiom
-        @test cainfo(ti[16], ti) === nothing  # owned present but not Int32 # noidiom
+        @test cainfo(ti[15], ti) === nothing  # name states no ownership # noidiom
+        @test cainfo(ti[16], ti) === nothing  # three-field layout rejected # noidiom
 
         # Bool element: matches structurally, but `Bool` has no
         # `numpy_dtypes` entry, so the Python adapter rejects it.
@@ -628,12 +647,12 @@ end
         @test info_bool !== nothing
         @test info_bool.eltype == "Bool"
         @test info_bool.ndim == 1
+        @test info_bool.ownership === :owned
         @test pycainfo(ti[18], ti) === nothing  # noidiom
 
         # Field order may be any permutation.
         flipped = StructDesc(
-            "CVector{Float32}", 24, 8, FieldDesc[
-                FieldDesc("owned", 1, 16),
+            "CVector{:borrowed, Float32}", 16, 8, FieldDesc[
                 FieldDesc("data", 3, 8),
                 FieldDesc("dims", 4, 0),
             ]
@@ -1696,8 +1715,8 @@ end
     end
 
     @testset "CMatrix vocabulary" begin
-        # CMatrix{T} = CArray{T,2}: recognition + column-major numpy helpers
-        # in the Python emitter.
+        # CMatrix{owned,T} = CArray{owned,T,2}: recognition + column-major numpy
+        # helpers in the Python emitter.
         abi = read_abi_info("bindinginfo_cmatrix.json")
         mktempdir() do path
             dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
@@ -1711,11 +1730,15 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test occursin("dependencies = [\"numpy>=1.20\"]", pyproject)
 
-            # The struct class is emitted with the new `dims` array field and
-            # decorated with helpers.
-            @test occursin("class CMatrix_Float64(ctypes.Structure):", bindings)
+            # The struct class is emitted with the two-field layout and
+            # decorated with the borrowed-flavored helpers.
+            @test occursin("class CMatrix_borrowed_Float64(ctypes.Structure):", bindings)
             @test occursin("(\"dims\", (ctypes.c_int32 * 2))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_double))", bindings)
+            # Borrowed storage belongs to the caller: no ownership field, and
+            # no `free()` to call on memory this side never allocated.
+            @test !occursin("owned", bindings)
+            @test !occursin("def free(self):", bindings)
 
             # from_numpy enforces column-major (Fortran) layout — silently
             # treating a C-order numpy array as column-major would transpose.
@@ -1740,7 +1763,7 @@ end
             facade = read(joinpath(path, "cmatrix_demo", "_facade.py"), String)
             @test occursin("import numpy as np", facade)
             @test occursin(
-                "def trace_cmatrix(m):\n    _m = CMatrix_Float64.from_numpy(m)\n" *
+                "def trace_cmatrix(m):\n    _m = CMatrix_borrowed_Float64.from_numpy(m)\n" *
                     "    return _lowlevel.trace_cmatrix(_m)", facade
             )
             golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
@@ -1758,8 +1781,8 @@ end
 
     @testset "CArray{T,3} vocabulary" begin
         # Locks in 3-D coverage: the rank-agnostic CArray recognizer should
-        # accept `CArray{Float64,3}` and the emitter should produce the same
-        # helper shape as for N=1,2 but with ndim=3 dispatches.
+        # accept `CArray{:borrowed, Float64, 3}` and the emitter should produce
+        # the same helper shape as for N=1,2 but with ndim=3 dispatches.
         abi = read_abi_info("bindinginfo_carray3.json")
         mktempdir() do path
             dest = PythonTarget(path, "carray3_demo", "libcarray3")
@@ -1768,8 +1791,10 @@ end
             bindings_path = joinpath(path, "carray3_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
 
-            @test occursin("class CArray_Float64_3(ctypes.Structure):", bindings)
+            @test occursin("class CArray_borrowed_Float64_3(ctypes.Structure):", bindings)
             @test occursin("(\"dims\", (ctypes.c_int32 * 3))", bindings)
+            @test !occursin("owned", bindings)
+            @test !occursin("def free(self):", bindings)
             @test occursin("if arr.ndim != 3:", bindings)
             @test occursin("if not arr.flags.f_contiguous:", bindings)
             @test occursin("dims=(ctypes.c_int32 * 3)(*arr.shape)", bindings)
@@ -1783,7 +1808,7 @@ end
 
             facade = read(joinpath(path, "carray3_demo", "_facade.py"), String)
             @test occursin(
-                "def sum3d(a):\n    _a = CArray_Float64_3.from_numpy(a)\n" *
+                "def sum3d(a):\n    _a = CArray_borrowed_Float64_3.from_numpy(a)\n" *
                     "    return _lowlevel.sum3d(_a)", facade
             )
             golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
@@ -1800,11 +1825,11 @@ end
     end
 
     @testset "CArray owned-return vocabulary" begin
-        # Exercises the owning-return (`owned == 1`) façade path for CArray:
-        # carray3/cmatrix/libsimple only ever cover borrowed CArray arguments,
-        # so this dedicated fixture (one no-arg function returning a fresh
-        # CVector{Float64}, plus the macro-emitted release entrypoints) is
-        # what actually drives `:carray_unwrap` through `write_wrapper`.
+        # Exercises the owning-return façade path for CArray: carray3/cmatrix/
+        # libsimple only ever cover borrowed CArrays, so this dedicated fixture
+        # (one no-arg function returning a fresh CVector{:owned, Float64}, plus
+        # the macro-emitted release entrypoints) is what actually drives
+        # `:carray_unwrap` through `write_wrapper`.
         abi = read_abi_info("bindinginfo_carray_owned.json")
         mktempdir() do path
             dest = PythonTarget(path, "carray_owned_demo", "libcarrayowned")
@@ -1813,26 +1838,29 @@ end
             bindings_path = joinpath(path, "carray_owned_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
 
-            # `.free()` is a genuine no-op at owned=0, regardless of
-            # release_present — the shared `_emit_free_method` shape.
-            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
-            @test occursin("owned=0)", bindings)  # from_numpy always borrows
-            @test occursin("        if self.owned != 1:\n            return", bindings)
+            # An owning class has no `from_numpy`: Python has no Julia
+            # allocation to hand over. It does get `free()`, made idempotent by
+            # a Python-side attribute since the struct carries no flag.
+            @test occursin("class CVector_owned_Float64(ctypes.Structure):", bindings)
+            @test !occursin("def from_numpy(cls, arr):", bindings)
+            @test !occursin("owned=0", bindings)
+            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
             @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
+            @test occursin("        self._freed = True", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_carray_owned_lowlevel.py"), String)
             @test bindings == golden
 
-            # Façade auto-wrap: copy-then-free via try/finally + .free().
+            # Façade auto-wrap: copy unconditionally, then free in `finally`.
             facade = read(joinpath(path, "carray_owned_demo", "_facade.py"), String)
             @test occursin(
                 "def give_vec():\n    _result = _lowlevel.give_vec()\n" *
-                    "    try:\n        if _result.owned == 1:\n" *
-                    "            _out = np.array(_result.as_numpy(), copy=True)\n" *
-                    "        else:\n            _out = _result.as_numpy()\n" *
+                    "    try:\n        _out = np.array(_result.as_numpy(), copy=True)\n" *
                     "    finally:\n        _result.free()\n    return _out",
                 facade
             )
+            # No runtime ownership test survives: the type already decided.
+            @test !occursin("_result.owned", facade)
             # No manual free call bypassing `.free()`, and no `ctypes` import
             # (the façade no longer touches `ctypes.*` directly).
             @test !occursin("_lowlevel._lib.jlw_free", facade)
@@ -1849,6 +1877,120 @@ end
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
         end
+    end
+
+    @testset "CArray owning return without release symbols" begin
+        # A library that returns an owning CArray but has not exported the
+        # release entrypoints must not have that return auto-wrapped — the
+        # façade would emit a call to a symbol the shared library does not
+        # export. Same gate as CStrArray/CDict: give_vec falls back to a
+        # mechanical TODO naming the macro to add.
+        abi = read_abi_info("bindinginfo_carray_owned_nofree.json")
+        @test JuliaLibWrapping._release_symbols_present(abi) === false
+        mktempdir() do path
+            dest = PythonTarget(path, "carray_owned_nofree_demo", "libcarrayownednofree")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "carray_owned_nofree_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            # Nothing is bound on `_lib` for the absent entrypoints, so
+            # `.free()` — kept so the class API shape does not depend on the
+            # library — reports the missing macro instead of raising a bare
+            # `AttributeError` on `_lib.jlw_free`.
+            @test !occursin("_lib.jlw_free.argtypes", bindings)
+            @test !occursin("_lib.jlw_free.restype", bindings)
+            @test occursin("def free(self):", bindings)
+            @test !occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
+            @test occursin(
+                "raise RuntimeError(\"this library does not export release entrypoints; " *
+                    "add JLWInterop.@export_release_entrypoints to the library\")",
+                bindings
+            )
+
+            golden = read(joinpath(@__DIR__, "expected_carray_owned_nofree_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "carray_owned_nofree_demo", "_facade.py"), String)
+            @test !occursin("def give_vec():", facade)
+            @test occursin(
+                "from ._lowlevel import give_vec  # TODO: hand-wrap — " *
+                    "owning return needs release entrypoints; add " *
+                    "JLWInterop.@export_release_entrypoints to the library",
+                facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_nofree_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "carray_owned_nofree_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CArray façade classification by ownership" begin
+        # Ownership is read off the type name, and it decides the shape of the
+        # wrapper on both sides of the call.
+        classify_arg = JuliaLibWrapping._facade_classify_arg
+        classify_ret = JuliaLibWrapping._facade_classify_return
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        premangled(abi) = (
+            d = Dict{Int, String}();
+            for (id, type) in pairs(abi.typeinfo)
+                type isa StructDesc && JuliaLibWrapping.mangle_python!(d, id, abi.typeinfo)
+            end;
+            d
+        )
+
+        borrowed = read_abi_info("bindinginfo_cmatrix.json")
+        td_b = premangled(borrowed)
+        cm_id = findtype(borrowed.typeinfo, "CMatrix{:borrowed, Float64}")
+
+        # A borrowed argument arrives from numpy.
+        arg_b = JuliaLibWrapping.ArgDesc("m", cm_id, false)
+        @test classify_arg(arg_b, borrowed.typeinfo, td_b).kind === :carray
+
+        # A borrowed return is a zero-copy view, and needs no release
+        # entrypoints because it releases nothing.
+        ret_b = JuliaLibWrapping.MethodDesc(
+            "view_cmatrix", "view_cmatrix()", cm_id, JuliaLibWrapping.ArgDesc[]
+        )
+        plan_b = JuliaLibWrapping._facade_plan(ret_b, borrowed.typeinfo, td_b, false)
+        @test plan_b.category === :auto
+        @test plan_b.ret.kind === :carray_view
+        # The emitted wrapper hands the view straight back: no copy, no
+        # try/finally, no free.
+        @test sprint(JuliaLibWrapping._emit_facade_autowrapper, ret_b, plan_b) ==
+            "def view_cmatrix():\n    _result = _lowlevel.view_cmatrix()\n" *
+            "    return _result.as_numpy()\n\n"
+
+        owned = read_abi_info("bindinginfo_carray_owned.json")
+        td_o = premangled(owned)
+        cv_id = findtype(owned.typeinfo, "CVector{:owned, Float64}")
+        m_owned = onlymatch(md -> md.symbol == "give_vec", owned.entrypoints)
+
+        # An owning return is copied then freed, and only when the library
+        # exports the release entrypoints.
+        @test classify_ret(m_owned, owned.typeinfo, td_o, true).kind === :carray_unwrap
+        demoted = classify_ret(m_owned, owned.typeinfo, td_o, false)
+        @test demoted.kind === :opaque
+        @test occursin("owning return needs release entrypoints", demoted.reason)
+
+        # An owning CArray argument transfers a Julia allocation into the
+        # library; numpy cannot supply one, so the wrapper is left to a human.
+        arg_o = JuliaLibWrapping.ArgDesc("a", cv_id, false)
+        cls = classify_arg(arg_o, owned.typeinfo, td_o)
+        @test cls.kind === :opaque
+        @test cls.reason == "argument transfers CArray ownership into the library; hand-wrap"
     end
 
     @testset "raw primitive pointer docstring" begin
@@ -1880,7 +2022,7 @@ end
             )
             @test occursin("`data` is a raw pointer to Float64", bindings)
             @test occursin("column-major (Fortran order)", bindings)
-            @test occursin("`CArray{T,N}`", bindings)
+            @test occursin("`CArray{owned,T,N}`", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_rawptr_lowlevel.py"), String)
             @test bindings == golden

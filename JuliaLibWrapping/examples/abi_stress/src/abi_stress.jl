@@ -6,20 +6,21 @@ module abi_stress
 # arguments — so the wrapper emitters have something to chew on. This is a
 # stress fixture, not a tutorial example.
 
-struct CArray{T, N}
+# Kept in sync with JLWInterop.CArray so the recognizer still matches:
+# ownership is a leading Symbol type parameter and the layout is two fields.
+struct CArray{owned, T, N}
     dims::NTuple{N, Int32}
     data::Ptr{T}
-    owned::Int32   # kept in sync with JLWInterop.CArray so the recognizer still matches
 end
-const CVector{T} = CArray{T, 1}
+const CVector{owned, T} = CArray{owned, T, 1}
 
 struct CVectorPair{T}
-    from::CVector{T}
-    to::CVector{T}
+    from::CVector{:borrowed, T}
+    to::CVector{:borrowed, T}
 end
 
 struct CTree{T}
-    children::CVector{CTree{T}}
+    children::CVector{:borrowed, CTree{T}}
 end
 
 struct MyTwoVec
@@ -58,7 +59,7 @@ end
 # Exercises the N=3 case: the JuliaLibWrapping wrapper emitters generate the
 # rank-agnostic CArray helpers, and juliac's "array" ABI kind carries the
 # `NTuple{3,Int32}` shape.
-Base.@ccallable function sum3d(a::CArray{Float64, 3})::Float64
+Base.@ccallable function sum3d(a::CArray{:borrowed, Float64, 3})::Float64
     s = 0.0
     n = Int(a.dims[1]) * Int(a.dims[2]) * Int(a.dims[3])
     for i in 1:n
