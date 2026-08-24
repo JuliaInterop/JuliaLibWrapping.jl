@@ -1308,7 +1308,7 @@ end
 
     @testset "CStrArray vocabulary" begin
         # CStrArray conversion does not require numpy — pure ctypes, like
-        # CString. Exercises a borrow-in argument (take_strs), an owning
+        # CString. Exercises a borrowed argument (take_strs), an owning
         # return that must be converted then freed via jlw_free_strings
         # (give_strs, auto-wrapped because both release symbols are
         # present in this fixture — see `_release_symbols_present`), and
@@ -1393,7 +1393,7 @@ end
 
     @testset "CDict vocabulary" begin
         # CDict conversion does not require numpy — pure ctypes, like
-        # CStrArray. Exercises a borrow-in argument (take_dict), an owning
+        # CStrArray. Exercises a borrowed argument (take_dict), an owning
         # return that must be converted then freed via BOTH release
         # entrypoints (give_dict: jlw_free_strings for `keys`, jlw_free for
         # `values` — both present in this fixture, so give_dict is
@@ -1628,7 +1628,7 @@ end
         # not exported the release entrypoints (no jlw_free/jlw_free_strings
         # among its functions) must not have its owning return auto-wrapped
         # — that would emit a call to a symbol the shared library does not
-        # export. take_strs (borrow-in) is unaffected; give_strs (owning
+        # export. take_strs (a borrowed argument) is unaffected; give_strs (owning
         # return) falls back to a mechanical TODO naming the macro to add.
         abi = read_abi_info("bindinginfo_cstrarray_nofree.json")
         @test JuliaLibWrapping._release_symbols_present(abi) === false
@@ -1663,7 +1663,7 @@ end
             @test bindings == golden
 
             facade = read(joinpath(path, "cstrarray_nofree_demo", "_facade.py"), String)
-            # take_strs (borrow-in) is still auto-wrapped — the release-
+            # take_strs (a borrowed argument) is still auto-wrapped — the release-
             # symbol gate applies only to owning RETURNS.
             @test occursin(
                 "def take_strs(a):\n    _a = CStrArray.from_list(a)\n" *

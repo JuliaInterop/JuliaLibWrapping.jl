@@ -67,7 +67,7 @@ As with `CStrArray` and `CDict`, `owned == 0` denotes borrowed storage and
 
 - Pointer constructors borrow. The caller must keep the buffer alive and make
   it writable before mutation.
-- `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
+- `CArray(A::AbstractArray)` **transfers ownership**: it `Libc.malloc`s a dense
   column-major copy of `A` and sets `owned = 1`. A target must copy or transfer
   ownership before releasing this storage.
 
