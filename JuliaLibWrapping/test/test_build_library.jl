@@ -20,6 +20,7 @@ function example_project(exdir)
     open(joinpath(tmp, "Project.toml"), "w") do io
         TOML.print(io, toml; sorted = true)
     end
+    cp(joinpath(exdir, "src"), joinpath(tmp, "src"))
     return tmp
 end
 
