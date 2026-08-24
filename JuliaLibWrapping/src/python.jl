@@ -824,22 +824,18 @@ function _write_bindings(
         println(f)
     end
     println(f, "def _resolve_library_path():")
-    println(f, "    override = os.environ.get(_LIBRARY_ENV_VAR)")
-    println(f, "    if override:")
-    println(f, "        return override")
     if win_flat_fallback
-        # Widen the DLL search path FIRST, unconditionally — before the
-        # suffix search below, not only as a last resort on the not-found
-        # path. The library is normally found right next to the package
-        # (the loop a few lines down returns early), so if the widening
-        # only ran after that loop it would never execute on the real
-        # path: `ctypes.CDLL` would then fail to resolve the found
-        # library's dependency on libjulia*.dll (WinError 126). This is
-        # DLL-search-path-only — Julia's own bin/ is never itself searched
-        # as a candidate location for the wrapped library: a user's built
-        # library never lives there, and a same-named DLL that happened to
-        # live there would be silently (mis)loaded and fail confusingly
-        # later.
+        # Widen the DLL search path FIRST, unconditionally — before both the
+        # environment override and the suffix search below, not as a last
+        # resort on the not-found path. Every path out of this function ends
+        # in `ctypes.CDLL`, which resolves the library's own dependency on
+        # libjulia*.dll against the search path as it stands then; widening
+        # after an early return leaves that dependency unresolvable
+        # (WinError 126). This is DLL-search-path-only — Julia's own bin/ is
+        # never itself searched as a candidate location for the wrapped
+        # library: a user's built library never lives there, and a same-named
+        # DLL that happened to live there would be silently (mis)loaded and
+        # fail confusingly later.
         println(f, "    _julia_bin = _find_julia_bin()")
         println(f, "    if _julia_bin is not None:")
         println(f, "        if hasattr(os, \"add_dll_directory\"):")
@@ -847,6 +843,9 @@ function _write_bindings(
         println(f, "        else:")
         println(f, "            os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")")
     end
+    println(f, "    override = os.environ.get(_LIBRARY_ENV_VAR)")
+    println(f, "    if override:")
+    println(f, "        return override")
     println(f, "    if sys.platform == \"win32\":")
     println(f, "        suffixes = (\".dll\",)")
     println(f, "    elif sys.platform == \"darwin\":")

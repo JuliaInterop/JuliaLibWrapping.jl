@@ -31,15 +31,15 @@ def _find_julia_bin():
     return None
 
 def _resolve_library_path():
-    override = os.environ.get(_LIBRARY_ENV_VAR)
-    if override:
-        return override
     _julia_bin = _find_julia_bin()
     if _julia_bin is not None:
         if hasattr(os, "add_dll_directory"):
             os.add_dll_directory(_julia_bin)
         else:
             os.environ["PATH"] = _julia_bin + os.pathsep + os.environ.get("PATH", "")
+    override = os.environ.get(_LIBRARY_ENV_VAR)
+    if override:
+        return override
     if sys.platform == "win32":
         suffixes = (".dll",)
     elif sys.platform == "darwin":

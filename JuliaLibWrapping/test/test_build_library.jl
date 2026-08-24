@@ -232,7 +232,7 @@ end
         if !juliac_ok
             @info "Skipping example smoke tests" has_julia has_cc VERSION
         else
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             # The smoke tests and the generated CArray helpers both need numpy.
             has_numpy = python3 !== nothing &&
                 success(pipeline(`$python3 -c "import numpy"`; stderr = devnull))

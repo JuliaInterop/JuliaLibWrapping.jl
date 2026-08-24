@@ -482,13 +482,15 @@ end
                 # DLL that happened to live there would be silently
                 # (mis)loaded and fail confusingly later.
                 @test !occursin("pathlib.Path(_julia_bin)", bindings)
-                # The widening runs BEFORE the suffix search loop, not only
-                # as a last resort right before the raise: the library is
-                # normally found right next to the package (the loop
-                # returns early), so widening the DLL search path only on
-                # the not-found path would never run on that real path —
-                # `ctypes.CDLL` would then fail to resolve the found
-                # library's own dependency on libjulia*.dll.
+                # The widening runs BEFORE every return from
+                # `_resolve_library_path` — the environment override as much
+                # as the suffix search loop. Each of those returns feeds
+                # `ctypes.CDLL`, which resolves the library's own dependency
+                # on libjulia*.dll against the search path as it stands
+                # then, so widening after an early return never runs on the
+                # path that needs it.
+                @test first(findfirst("_julia_bin = _find_julia_bin()", bindings)) <
+                    first(findfirst("override = os.environ.get(_LIBRARY_ENV_VAR)", bindings))
                 @test first(findfirst("_julia_bin = _find_julia_bin()", bindings)) <
                     first(findfirst("for suffix in suffixes:", bindings))
                 # The runtime `sys.platform` suffix-selection logic is
@@ -2059,13 +2061,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_nofree_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "carray_owned_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
