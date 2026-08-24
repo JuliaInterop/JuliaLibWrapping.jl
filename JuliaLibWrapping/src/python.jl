@@ -73,8 +73,7 @@ Map from Julia primitive type name (as it appears in a `PrimitiveTypeDesc`'s
 `name` field, e.g. `"Int64"`, `"Float32"`, `"Cvoid"`) to the corresponding
 `ctypes` expression (e.g. `"ctypes.c_int64"`, `"ctypes.c_float"`, `"None"`).
 Used by [`mangle_python!`](@ref) for scalar/primitive arguments and returns,
-and by [`cdict_struct_info`](@ref)/[`copt_struct_info`](@ref) to recognize a
-carrier's value-typed field as a supported scalar.
+and by [`_python_carray_info`](@ref) for a `CArray`'s element type.
 """
 const pytypes = Dict{String, String}(
     "Int8" => "ctypes.c_int8",
@@ -204,8 +203,9 @@ platform-aliased C ints (`Cint`, `Cshort`, …) are not part of
 `CDICT_VALUE_TYPES` either. Using `pytypes` for this purpose would silently
 accept `CDict{Cvoid}`/`COpt{Cvoid}` fixtures that cannot actually round-trip.
 
-Used by [`cdict_struct_info`](@ref)/[`copt_struct_info`](@ref)/
-[`_facade_classify_return`](@ref) instead of `pytypes`.
+Used by [`_python_cdict_info`](@ref)/[`_python_copt_info`](@ref) instead of
+`pytypes` to decide whether a recognized `CDict`/`COpt` payload type is
+supported.
 """
 const scalar_payload_types = Dict{String, String}(
     "Int8" => "ctypes.c_int8",
@@ -220,6 +220,72 @@ const scalar_payload_types = Dict{String, String}(
     "Float64" => "ctypes.c_double",
     "Bool" => "ctypes.c_bool",
 )
+
+"""
+    _python_carray_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+[`carray_struct_info`](@ref) with this emitter's type tables applied:
+`nothing` unless the struct matches the `CArray` shape and its element type
+has a [`numpy_dtypes`](@ref) entry; otherwise `(; eltype, ndim, ctype,
+dtype)`, adding the element type's `ctypes` expression ([`pytypes`](@ref))
+and numpy dtype to the recognizer's fields.
+"""
+function _python_carray_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    info = carray_struct_info(desc, typeinfo)
+    info === nothing && return nothing
+    haskey(numpy_dtypes, info.eltype) || return nothing
+    return (;
+        info.eltype, info.ndim,
+        ctype = pytypes[info.eltype],
+        dtype = numpy_dtypes[info.eltype],
+    )
+end
+
+"""
+    _python_cdict_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+[`cdict_struct_info`](@ref) with this emitter's type tables applied:
+`nothing` unless the struct matches the `CDict` shape and its value type
+has a [`scalar_payload_types`](@ref) entry; otherwise
+`(; value_type, ctype)`.
+"""
+function _python_cdict_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    info = cdict_struct_info(desc, typeinfo)
+    info === nothing && return nothing
+    haskey(scalar_payload_types, info.value_type) || return nothing
+    return (; info.value_type, ctype = scalar_payload_types[info.value_type])
+end
+
+"""
+    _python_copt_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+[`copt_struct_info`](@ref) with this emitter's type tables applied:
+`nothing` unless the struct matches the `COpt` shape and its payload type
+has a [`scalar_payload_types`](@ref) entry; otherwise
+`(; value_type, ctype)`.
+"""
+function _python_copt_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    info = copt_struct_info(desc, typeinfo)
+    info === nothing && return nothing
+    haskey(scalar_payload_types, info.value_type) || return nothing
+    return (; info.value_type, ctype = scalar_payload_types[info.value_type])
+end
+
+"""
+    _python_status_path(method::MethodDesc, typeinfo) -> Union{Nothing, String}
+
+[`jlwstatus_location`](@ref) as a Python attribute path from `_result` to
+the returned JLWStatus: `nothing` when the return carries no status, `""`
+when the return type is a JLWStatus, and `".<field>"` (the field name
+through [`sanitize_python_argname`](@ref), which escapes Python keywords)
+when the status is an embedded field.
+"""
+function _python_status_path(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    loc = jlwstatus_location(method, typeinfo)
+    loc === nothing && return nothing
+    loc.field === nothing && return ""
+    return "." * sanitize_python_argname(loc.field)
+end
 
 """
     _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
@@ -310,18 +376,18 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
     # Report bare-pointer arguments during generation.
     let raw_ptr_methods = [
             m.symbol for m in entrypoints
-                if !isempty(raw_primitive_pointer_args(m, typeinfo, numpy_dtypes))
+                if !isempty(raw_primitive_pointer_args(m, typeinfo))
         ]
         isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
 
     needs_jlwerror = any(
-        jlwstatus_access_path(m, typeinfo, sanitize_python_argname) !== nothing
+        _python_status_path(m, typeinfo) !== nothing
             for m in entrypoints
     )
     needs_numpy = any(
         type isa StructDesc &&
-            carray_struct_info(type, typeinfo, numpy_dtypes, pytypes) !== nothing
+            _python_carray_info(type, typeinfo) !== nothing
             for type in values(typeinfo)
     )
 
@@ -420,7 +486,7 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
     # Emit methods on the recognized CArray ctypes class. `from_numpy`
     # borrows; `as_numpy` returns a view; the façade copies owning returns
     # before freeing them.
-    ctype = cainfo.pointee_ctype
+    ctype = cainfo.ctype
     dtype = cainfo.dtype
     ndim = cainfo.ndim
     # 1-D arrays accept either C- or F-contiguous (equivalent); higher rank
@@ -587,7 +653,7 @@ end
 
 function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
     # `from_dict` borrows ctypes key and value buffers.
-    ctype = cdinfo.value_ctype
+    ctype = cdinfo.ctype
     println(f, "")
     println(f, "    @classmethod")
     println(f, "    def from_dict(cls, d):")
@@ -784,9 +850,9 @@ function _write_bindings(
                 end
                 println(f, "    ]")
             end
-            cainfo = carray_struct_info(type, typeinfo, numpy_dtypes, pytypes)
-            cdinfo = cdict_struct_info(type, typeinfo, scalar_payload_types)
-            coinfo = copt_struct_info(type, typeinfo, scalar_payload_types)
+            cainfo = _python_carray_info(type, typeinfo)
+            cdinfo = _python_cdict_info(type, typeinfo)
+            coinfo = _python_copt_info(type, typeinfo)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
                 _write_carray_helpers(f, cainfo, release_present)
@@ -829,10 +895,10 @@ function _write_bindings(
         arg_names_seen = Set{String}()
         argnames = String[sanitize_python_argname(a.name, arg_names_seen) for a in method.args]
 
-        status_path = jlwstatus_access_path(method, typeinfo, sanitize_python_argname)
+        status_path = _python_status_path(method, typeinfo)
 
         println(f, "def ", method.symbol, "(", join(argnames, ", "), "):")
-        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo, numpy_dtypes)
+        raw_ptr_idx = raw_primitive_pointer_args(method, typeinfo)
         if !isempty(raw_ptr_idx)
             # Document metadata absent from bare primitive pointers.
             println(f, "    \"\"\"Raw pointer arguments — caller owns layout and lifetime.")
@@ -894,15 +960,15 @@ function _facade_classify_arg(
     if t isa PrimitiveTypeDesc
         return (kind = :primitive,)
     elseif t isa StructDesc
-        if !isnothing(carray_struct_info(t, typeinfo, numpy_dtypes, pytypes))
+        if !isnothing(_python_carray_info(t, typeinfo))
             return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind = :cstring, classname = typedict[arg.type])
         elseif cstrarray_struct_info(t, typeinfo)
             return (kind = :cstrarray, classname = typedict[arg.type])
-        elseif !isnothing(cdict_struct_info(t, typeinfo, scalar_payload_types))
+        elseif !isnothing(_python_cdict_info(t, typeinfo))
             return (kind = :cdict, classname = typedict[arg.type])
-        elseif !isnothing(copt_struct_info(t, typeinfo, scalar_payload_types))
+        elseif !isnothing(_python_copt_info(t, typeinfo))
             return (kind = :copt, classname = typedict[arg.type])
         else
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
@@ -964,7 +1030,7 @@ function _facade_classify_return(
     elseif rt isa StructDesc
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind = :jlwstatus_discard,)
-        elseif !isnothing(carray_struct_info(rt, typeinfo, numpy_dtypes, pytypes))
+        elseif !isnothing(_python_carray_info(rt, typeinfo))
             return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
@@ -974,15 +1040,15 @@ function _facade_classify_return(
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(cdict_struct_info(rt, typeinfo, scalar_payload_types))
+        elseif !isnothing(_python_cdict_info(rt, typeinfo))
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cdict_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(copt_struct_info(rt, typeinfo, scalar_payload_types))
+        elseif !isnothing(_python_copt_info(rt, typeinfo))
             return (kind = :copt_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(jlwstatus_access_path(method, typeinfo, sanitize_python_argname))
+        elseif !isnothing(_python_status_path(method, typeinfo))
             return (
                 kind = :opaque,
                 reason = "returns struct `" * rt.name *
