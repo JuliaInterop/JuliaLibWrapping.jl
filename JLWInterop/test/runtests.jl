@@ -45,8 +45,7 @@ using Test
     end
 
     @testset "CArray aliases" begin
-        # CVector and CMatrix must be aliases for CArray specializations, matching
-        # `Vector{T} = Array{T,1}` and `Matrix{T} = Array{T,2}` in Base.
+        # CVector and CMatrix are CArray aliases.
         @test CVector{Float64} === CArray{Float64, 1}
         @test CMatrix{Float64} === CArray{Float64, 2}
         @test CVector === CArray{T, 1} where {T}
@@ -54,8 +53,7 @@ using Test
     end
 
     @testset "CVector AbstractVector interface" begin
-        # `GC.@preserve buf` keeps the backing Vector alive for the duration
-        # of the CVector view — the same pattern any Julia caller would use.
+        # Keep the borrowed buffer alive while using the view.
         buf = Float64[10.0, 20.0, 30.0, 40.0]
         GC.@preserve buf begin
             v = CVector{Float64}(Int32(length(buf)), pointer(buf))
@@ -229,11 +227,7 @@ using Test
     end
 
     @testset "CArray layout" begin
-        # The compiled ABI relies on `dims::NTuple{N,Int32}` followed by
-        # `data::Ptr{T}` followed by `owned::Int32`. Downstream C and Python
-        # emitters generate the corresponding ctypes.Structure / C struct
-        # from this layout. Offsets verified by a Julia probe of
-        # `fieldoffset`/`sizeof`, not assumed — see the round-2 report.
+        # C and Python emitters rely on this field layout.
         @test fieldnames(CArray) == (:dims, :data, :owned)
 
         @test fieldtype(CVector{Float64}, :dims) === NTuple{1, Int32}
@@ -267,9 +261,7 @@ using Test
     end
 
     @testset "CArray constructors" begin
-        # Tuple-form general constructor accepts any Integer eltype and
-        # coerces to Int32. All borrowed-view constructors set owned = 0 —
-        # today's semantics, unchanged.
+        # Tuple dimensions convert to Int32; pointer constructors borrow.
         a = CArray{Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
         @test a isa CMatrix{Float64}
         @test a.dims === (Int32(2), Int32(3))
@@ -291,8 +283,7 @@ using Test
     end
 
     @testset "CArray owned flag" begin
-        # Own-out constructor mallocs a dense column-major copy and sets
-        # owned=1; the source array is untouched and may be discarded.
+        # The array constructor allocates an owning column-major copy.
         src = [1.0 2.0; 3.0 4.0]  # 2x2, column-major
         a = CArray(src)
         @test fieldtype(CArray, :owned) === Int32
@@ -307,8 +298,7 @@ using Test
         @test collect(v) == [10.0, 20.0, 30.0]
         Libc.free(v.data)
 
-        # A hand-built borrowed (owned=0) CArray round-trips identically —
-        # getindex/setindex! never branch on the flag.
+        # Access does not depend on ownership.
         buf = Float64[5.0, 6.0]
         GC.@preserve buf begin
             borrowed = CArray{Float64, 1}((Int32(2),), pointer(buf), Int32(0))
@@ -328,15 +318,14 @@ using Test
     end
 
     @testset "CStrArray owned flag" begin
-        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        # Conversion copies without inspecting ownership.
         a = CStrArray(["x", "y"])
         @test fieldtype(CStrArray, :owned) === Int32
         @test a.owned === Int32(1)
         @test Vector{String}(a) == ["x", "y"]   # borrow-in ignores owned, copies regardless
         JLWInterop._free_strings(a.data, a.length)
 
-        # A hand-built borrowed (owned=0) CStrArray round-trips identically —
-        # borrow-in never frees and never branches on the flag.
+        # Borrowed arrays convert without being freed.
         a2 = CStrArray(["p", "q"])
         borrowed = CStrArray(a2.length, a2.data, Int32(0))
         @test Vector{String}(borrowed) == ["p", "q"]
@@ -357,7 +346,7 @@ using Test
     end
 
     @testset "CDict owned flag" begin
-        # Own-out constructor sets owned=1; borrow-in never inspects it.
+        # Conversion copies without inspecting ownership.
         c = CDict(Dict("a" => 1.5))
         @test fieldtype(CDict{Float64}, :owned) === Int32
         @test c.owned === Int32(1)

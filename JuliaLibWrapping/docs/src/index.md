@@ -21,9 +21,9 @@ through `pip install` to a Python API using NumPy arrays.
 library and emits a JSON file describing its ABI, but does not generate
 wrappers. JuliaLibWrapping consumes that JSON and emits the wrappers.
 
-[`build_library`](@ref) runs both halves in one call when JuliaC.jl is
-loaded; see [Concepts](@ref) for the pipeline architecture and the
-bundling, multiple libraries in one process, and generated Python files.
+[`build_library`](@ref) runs both stages in one call when JuliaC.jl is
+loaded. See [Concepts](@ref) for details about the pipeline, bundling,
+loading multiple libraries in one process, and generated Python files.
 
 ## Where to go next
 
@@ -31,8 +31,8 @@ bundling, multiple libraries in one process, and generated Python files.
   Python wrapper using numpy.
 - [Concepts](@ref): the pipeline, the ABI data model, the extension
   point for new target languages, and runtime bundling.
-- [JLWInterop](@ref): a small package needed by almost any wrapped Julia module.
-  Defines a few interoperability types (`CArray`, `CString`, and `JLWStatus`)
+- [JLWInterop](@ref): the package that defines shared ABI types (`CArray`,
+  `CString`, and `JLWStatus`)
   for defining ABI-compatible Julia entrypoints.
 - [Error handling across the ABI](@ref): the `JLWStatus` convention
   that lets wrapped libraries report errors as native exceptions in

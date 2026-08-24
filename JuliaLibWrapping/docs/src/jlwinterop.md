@@ -8,20 +8,17 @@ CurrentModule = JLWInterop
 JLWInterop
 ```
 
-## Ownership and layout discipline
+## Ownership and layout
 
-Every type in this package holds a raw pointer and **does not own**
-the underlying storage. The caller that allocated the buffer is
-responsible for keeping it alive for the duration of any call that
-sees it, and for freeing it afterward. In exchange, every type is
-`isbits` (when the element type is), is `juliac --trim`-friendly,
-and crosses a `@ccallable` boundary without heap allocation.
+The package defines fixed-layout types for passing values across a C ABI.
+Borrowed values do not own their underlying storage; the caller must keep the
+storage alive for the duration of the call. Types that support owning returns
+record ownership in an `owned` field. The types are `isbits` when their element
+types are, work with `juliac --trim`, and cross a `@ccallable` boundary without
+allocating a Julia object.
 
-The [JuliaLibWrapping](@ref) Python emitter recognizes these types
-**structurally** — by struct name plus field shape — so an author
-who copy-pastes a compatible definition into their own library gets
-the same wrapper behavior. Depending on `JLWInterop` is the way to
-keep the definitions from drifting across libraries.
+JuliaLibWrapping targets recognize these types structurally, by name and field
+layout. Using `JLWInterop` keeps those layouts consistent across libraries.
 
 ## `JLWStatus` — in-band error reporting
 
@@ -48,9 +45,8 @@ Base.@ccallable function safe_sqrt(x::Float64)::JLWStatus
 end
 ```
 
-See [Error handling across the ABI](@ref) for the full
-library-author-and-Python-caller round trip, including how the
-emitter raises `JLWError` on the Python side.
+See [Error handling across the ABI](@ref) for the protocol and its current
+Python mapping.
 
 ```@docs
 JLWStatus
@@ -61,68 +57,45 @@ JLW_MESSAGE_BYTES
 
 ## `CArray{T,N}` — N-D numeric buffer (column-major)
 
-`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T}, owned::Int32)`, laid
-out in **column-major** order — the same convention as `Array{T,N}` and
-Fortran, not C. For primitive numeric `T`, the Python emitter generates
-`from_numpy` / `as_numpy` / `free` helpers so a Python caller can pass a
-`numpy.ndarray` directly without copying.
+`CArray{T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T}, owned::Int32)` in
+column-major order. Targets may map this layout to native array types.
 
 ### `CArray` ownership contract
 
-Like `CStrArray`/`CDict` (see [L1 carriers: `CStrArray`, `CDict`, `COpt`](@ref)),
-ownership is carried **explicitly in the data**, via `owned`: `0` means
-caller-owned/borrowed, `1` means allocated by Julia's own-out constructor.
-There is no partial ownership — the flag covers the single `data` allocation.
+As with `CStrArray` and `CDict`, `owned == 0` denotes borrowed storage and
+`owned == 1` denotes Julia-allocated storage.
 
-- Every constructor that takes a raw `Ptr{T}` (the tuple-form and
-  scalar-form constructors below) builds a **borrowed** view: `CArray`
-  neither allocates, copies, frees, nor keeps the storage alive, and sets
-  `owned = 0` — today's, pre-flag semantics, unchanged. The caller must keep
-  the buffer alive for the duration of any call that sees it, and ensure it
-  is writable before `setindex!`.
+- Pointer constructors borrow. The caller must keep the buffer alive and make
+  it writable before mutation.
 - `CArray(A::AbstractArray)` **owns out**: it `Libc.malloc`s a dense
-  column-major copy of `A` and sets `owned = 1`. The generated Python
-  wrapper's `as_numpy()` always returns a zero-copy view; for an owning
-  return, the façade copies that view into a fresh numpy array *before*
-  releasing the Julia-allocated buffer via `jlw_free` (see
-  [`@export_release_entrypoints`](@ref)) — never handing back a view over
-  memory that is about to be freed.
+  column-major copy of `A` and sets `owned = 1`. A target must copy or transfer
+  ownership before releasing this storage.
 
-For callers who bypass the façade and talk to `_lowlevel` directly, the
-generated `ctypes.Structure` class carries a `.free()` method: it releases
-`data` iff `self.owned == 1`, then sets `owned` back to `0`, so a second
-call — or a call on a value that was never owned — is a no-op.
+### Python target
 
-Unlike `CStrArray`/`CDict`, whose façade degrades to a mechanical
+The generated `as_numpy()` returns a zero-copy view. For an owning return, the
+façade copies the view before releasing the Julia allocation. Low-level callers
+can use the idempotent `.free()` method.
+
+Unlike `CStrArray`/`CDict`, whose façade falls back to a direct
 re-export at build time when release entrypoints are missing, a library
 that returns an owned `CArray` without exporting them still gets a full
 auto-wrapped return — the failure surfaces only at runtime, as `.free()`
 raising `RuntimeError`, because gating `CArray` returns at build time
 would demote every existing borrowed-`CArray` library.
 
-The 1-D and 2-D specializations have familiar aliases:
+The one- and two-dimensional aliases are:
 
 ```julia
 const CVector{T} = CArray{T,1}
 const CMatrix{T} = CArray{T,2}
 ```
 
-mirroring Julia's own `Vector{T} = Array{T,1}` / `Matrix{T} = Array{T,2}`.
-You can use either the alias or the underlying `CArray{T,N}` form; they
-are the same type.
-
 For `N ≥ 2`, the generated Python `from_numpy` helper requires a
-Fortran-contiguous array and **rejects** a default row-major
-`ndarray`. Silently treating a row-major buffer as column-major would
-reinterpret the array with the wrong layout.
-Python callers wrapping a default numpy array must `.copy(order='F')`
-(or `np.asfortranarray(arr)`) first.
+Fortran-contiguous array. Convert row-major input with `np.asfortranarray`.
 
-`CArray{T,N} <: AbstractArray{T,N}` with `IndexLinear()` style, so
-the type participates in iteration, broadcasting, `sum`, views, and
-any function that accepts an `AbstractArray{T,N}` without allocating the
-array descriptor. `setindex!` is defined unconditionally; only call it on
-storage you know to be writable.
+`CArray{T,N} <: AbstractArray{T,N}` with linear indexing. It supports standard
+array operations; mutate only writable storage.
 
 ```@docs
 CArray
@@ -132,33 +105,103 @@ CMatrix
 
 ## `CString` — length-prefixed UTF-8
 
-`CString` is `(length::Int32, data::Ptr{UInt8})`. It is
-**length-prefixed and not null-terminated** — embedded NUL bytes are
-permitted; `length` is the authoritative size. This makes it distinct
-from `Base.Cstring`, which is null-terminated and forbids embedded
-NULs.
+`CString` is `(length::Int32, data::Ptr{UInt8})`. It is length-prefixed, so it
+permits embedded NUL bytes.
 
 As with the other types, `CString` borrows storage from the caller.
-The Python emitter recognizes it by name plus shape and generates
+The Python target generates
 `from_str` / `as_str` (UTF-8 round-trip) plus `from_bytes` /
 `as_bytes` (raw bytes) helpers.
 
-`CString <: AbstractString` with `ncodeunits`, `codeunit`, valid-
-position checking, UTF-8 iteration, and a fast byte-level `cmp`.
-Base derives the rest: `length` (character count, distinct from
-`ncodeunits`), `==`, `print`, regex matching, `split`, `replace`, …
-Call `String(s)` to copy the bytes out into a fresh, heap-allocated,
-owning Julia `String`.
+`CString <: AbstractString`; call `String(s)` to make an owning copy.
 
 ```@docs
 CString
 ```
 
-## `CStrArray`, `CDict{V}`, `COpt{T}` — variable-size and optional data
+## `CStrArray` — string arrays
 
-Three more carriers cover data `CArray`/`CString` cannot: an array of
-strings, a string-keyed dictionary, and an optional scalar. Unlike the
-non-owning types above, a Julia function that *returns* one of the first two
-must allocate — see [L1 carriers: `CStrArray`, `CDict`, `COpt`](@ref) for the
-struct layouts, the borrow-in/own-out ownership contract, and the
-`@export_release_entrypoints` requirement for owning returns.
+`CStrArray` stores a pointer to `length` [`CString`](@ref)s. Converting it to
+`Vector{String}` copies the strings without freeing the source. Constructing it
+from `Vector{String}` allocates an owning copy.
+
+Each string uses an `Int32` byte length; oversized strings throw
+`InexactError` rather than being truncated.
+
+### Python target
+
+| Julia | Python |
+|---|---|
+| `Vector{String}` | `list[str]` |
+
+`CStrArray.from_list` creates a borrowed carrier and keeps its `ctypes`
+buffers alive. `as_list` copies the result to a Python list. The façade calls
+the carrier's idempotent `.free()` after converting a return value.
+
+```@docs
+CStrArray
+```
+
+## `CDict{V}` — string-keyed dictionaries
+
+`CDict` stores parallel key and value arrays. Keys are [`CString`](@ref)s;
+values use a type in [`CDICT_VALUE_TYPES`](@ref). Converting to a Julia `Dict`
+copies without freeing the source. Constructing from a `Dict` allocates owning
+key and value buffers.
+
+### Python target
+
+| Julia | Python |
+|---|---|
+| `Dict{String,V}` | `dict[str, V]` |
+
+`CDict.from_dict` creates a borrowed carrier and keeps its buffers alive.
+`as_dict` copies the result to a Python dictionary. The façade calls `.free()`
+after converting a return value.
+
+```@docs
+CDict
+CDICT_VALUE_TYPES
+```
+
+## `COpt{T}` — optional scalars
+
+`COpt` represents `Union{T,Nothing}` with an `Int32` discriminant and an
+inline value. It is allocation-free and has no ownership state.
+
+### Python target
+
+| Julia | Python |
+|---|---|
+| `Union{T,Nothing}` for scalar `T` | `T \| None` |
+
+The generated `from_optional` and `as_optional` helpers convert the value
+without a keepalive or release operation.
+
+```@docs
+COpt
+unwrap
+```
+
+## Owning carrier returns
+
+Libraries returning an owning `CArray`, `CStrArray`, or `CDict` must emit the
+release entrypoints at module top level:
+
+```julia
+using JLWInterop
+
+JLWInterop.@export_release_entrypoints
+```
+
+The macro exports `jlw_free` and `jlw_free_strings`. Binding targets use these
+functions to release buffers through the library that allocated them. Owning
+buffers must be released exactly once; borrowed buffers must not be released.
+
+Without these entrypoints, a target cannot safely automate owning returns. The
+current Python target leaves affected functions for manual wrapping.
+
+```@docs
+@export_release_entrypoints
+_free_strings
+```

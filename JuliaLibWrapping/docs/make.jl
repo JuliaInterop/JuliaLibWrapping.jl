@@ -19,7 +19,6 @@ makedocs(;
         "Tutorial" => "tutorial.md",
         "Concepts" => "concepts.md",
         "JLWInterop" => "jlwinterop.md",
-        "L1 carriers" => "carriers.md",
         "Error handling" => "error_handling.md",
         "API reference" => "api.md",
     ],

@@ -22,7 +22,7 @@ Wrapper generation has three stages:
     .h / Python package
 
 [`build_library`](@ref) chains the whole sequence; the stages are also
-callable individually when you need finer control or want to test the
+callable individually when you need to configure each stage or test the
 emitters against fixture JSON.
 
 ## Driving the pipeline
