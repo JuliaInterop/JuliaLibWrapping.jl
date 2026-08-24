@@ -66,7 +66,7 @@ jobs:
         with:
           project: ${{ matrix.package }}
       # The `ols` and `boundary` example smoke tests import numpy.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: matrix.package == 'JuliaLibWrapping'
         with:
           python-version: '3.x'

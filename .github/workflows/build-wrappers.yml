@@ -96,7 +96,7 @@ jobs:
 
       - uses: julia-actions/cache@v2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ inputs.python-version }}
 
