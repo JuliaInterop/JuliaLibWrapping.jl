@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for CArray{T,3} — locks in coverage of higher-rank arrays beyond the CVector (N=1) and CMatrix (N=2) special cases. Mirrors the layout juliac would emit for `struct CArray{Float64,3}; dims::NTuple{3,Int32}; data::Ptr{Float64}; owned::Int32; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape and emit the rank-agnostic from_numpy/as_numpy/free helpers (column-major).",
+  "_comment": "Hand-authored fixture for CArray{owned,T,3} — locks in coverage of higher-rank arrays beyond the CVector (N=1) and CMatrix (N=2) special cases. Mirrors the layout juliac emits for `struct CArray{:borrowed,Float64,3}; dims::NTuple{3,Int32}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape and emit the rank-agnostic, borrowed-flavored from_numpy/as_numpy helpers (column-major, no free).",
   "types": [
     {
       "kind": "primitive",
@@ -36,13 +36,12 @@
     },
     {
       "kind": "struct",
-      "name": "CArray{Float64, 3}",
+      "name": "CArray{:borrowed, Float64, 3}",
       "id": 4,
-      "size": 32,
+      "size": 24,
       "fields": [
         { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 16, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 2, "offset": 24, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 3, "offset": 16, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     }
@@ -50,7 +49,7 @@
   "functions": [
     {
       "returns": { "type_id": 1 },
-      "name": "sum3d(a::CArray{Float64, 3})",
+      "name": "sum3d(a::CArray{:borrowed, Float64, 3})",
       "arguments": [
         { "name": "a", "type_id": 4 }
       ],

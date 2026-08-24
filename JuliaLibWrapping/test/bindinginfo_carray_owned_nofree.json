@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for an owning CArray return. Mirrors the layout juliac emits for `struct CVector{:owned,Float64}; dims::NTuple{1,Int32}; data::Ptr{Float64}; end`, with one @ccallable function returning a freshly allocated CVector{:owned, Float64}, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so the owning return is `:auto` (copy, then free in a `finally`), not `:mechanical`. No CArray-consuming function is needed here — carray3/cmatrix/libsimple already cover the borrowed-argument path; this fixture exists solely to exercise the owning-return facade shape.",
+  "_comment": "Fixture identical to bindinginfo_carray_owned.json EXCEPT the two jlw_free* release-entrypoint function entries are deleted (the `types` array — including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used — is left untouched deliberately). This models a library that returns an owning `CVector{:owned, Float64}` but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_vec` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, exactly as for CStrArray and CDict.",
   "types": [
     {
       "kind": "primitive",
@@ -107,23 +107,6 @@
       "name": "give_vec()",
       "arguments": [],
       "symbol": "give_vec"
-    },
-    {
-      "returns": { "type_id": 11 },
-      "name": "jlw_free(p::Ptr{Nothing})",
-      "arguments": [
-        { "name": "p", "type_id": 12 }
-      ],
-      "symbol": "jlw_free"
-    },
-    {
-      "returns": { "type_id": 11 },
-      "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
-      "arguments": [
-        { "name": "p", "type_id": 10 },
-        { "name": "n", "type_id": 3 }
-      ],
-      "symbol": "jlw_free_strings"
     }
   ]
 }

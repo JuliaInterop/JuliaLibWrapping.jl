@@ -64,11 +64,10 @@ class MyTwoVec(ctypes.Structure):
         ("y", ctypes.c_int32),
     ]
 
-class CVector_Float32(ctypes.Structure):
+class CVector_borrowed_Float32(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int32 * 1)),
         ("data", ctypes.POINTER(ctypes.c_float)),
-        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -87,8 +86,7 @@ class CVector_Float32(ctypes.Structure):
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float32, got {arr.dtype}")
         obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
-                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                  owned=0)
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
         obj._buffer = arr
         return obj
 
@@ -96,30 +94,20 @@ class CVector_Float32(ctypes.Structure):
         """Return a 1-D numpy view of the underlying buffer (no copy)."""
         return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
 
-    def free(self):
-        """Free the Julia-allocated buffer iff this object owns it (owned is 1).
-
-        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
-        no-op. For callers who bypass the façade's convert-then-free wrapper and
-        talk to `_lowlevel` directly."""
-        if self.owned != 1:
-            return
-        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
-
 class CVectorPair_Float32(ctypes.Structure):
     _fields_ = [
-        ("from_", CVector_Float32),
-        ("to", CVector_Float32),
+        ("from_", CVector_borrowed_Float32),
+        ("to", CVector_borrowed_Float32),
     ]
 
-class CVector_CTree_Float64(ctypes.Structure):
+class CVector_borrowed_CTree_Float64(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int32 * 1)),
         ("data", ctypes.POINTER(CTree_Float64)),
     ]
 
 CTree_Float64._fields_ = [
-    ("children", CVector_CTree_Float64),
+    ("children", CVector_borrowed_CTree_Float64),
 ]
 
 _lib.tree_size.argtypes = [CTree_Float64]

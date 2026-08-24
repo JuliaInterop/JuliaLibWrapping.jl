@@ -180,18 +180,49 @@ function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc}
 end
 
 """
+    _carray_ownership(name::AbstractString) -> Union{Nothing, Symbol}
+
+Return the ownership recorded in the leading type parameter of a
+`CArray`/`CVector`/`CMatrix` type name — `:owned` for
+`"CVector{:owned, Float64}"`, `:borrowed` for
+`"CArray{:borrowed, Float32, 3}"`. Return `nothing` when `name` is not a
+CArray-family name or its first parameter is neither token, so that a name
+carrying no ownership is unrecognized rather than guessed at.
+"""
+function _carray_ownership(name::AbstractString)
+    prefix = nothing
+    for candidate in ("CArray{", "CVector{", "CMatrix{")
+        if startswith(name, candidate)
+            prefix = candidate
+            break
+        end
+    end
+    isnothing(prefix) && return nothing
+    rest = SubString(name, ncodeunits(prefix) + 1)
+    stop = findfirst(c -> c == ',' || c == '}', rest)
+    isnothing(stop) && return nothing
+    token = strip(SubString(rest, 1, prevind(rest, stop)))
+    token == ":owned" && return :owned
+    token == ":borrowed" && return :borrowed
+    return nothing
+end
+
+"""
     carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CArray`, `CVector`, or `CMatrix` by name and field layout. On a
-match, return `(; eltype, ndim)` (the Julia name of the element type and the
-`dims` array's `count`); otherwise return `nothing`.
+Recognize `CArray`, `CVector`, or `CMatrix` by name and field layout. The
+name must carry an explicit leading ownership parameter (see
+[`_carray_ownership`](@ref)) and the layout must be exactly two fields:
+`dims`, an `NTuple` of a signed or unsigned integer type, and `data`, a
+pointer to a primitive type. On a match, return
+`(; eltype, ndim, ownership)` — the Julia name of the element type, the
+`dims` array's `count`, and `:owned` or `:borrowed`. Otherwise return
+`nothing`; ownership is never inferred from a name that does not state it.
 """
 function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    (
-        startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
-            startswith(desc.name, "CMatrix")
-    ) || return nothing
-    m = _match_fields(desc, ("dims", "data", "owned"))
+    ownership = _carray_ownership(desc.name)
+    isnothing(ownership) && return nothing
+    m = _match_fields(desc, ("dims", "data"))
     isnothing(m) && return nothing
     dims_type = typeinfo[m.dims.type]
     dims_type isa ArrayDesc || return nothing
@@ -202,9 +233,7 @@ function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDes
     data_type isa PointerDesc || return nothing
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
-    owned_type = typeinfo[m.owned.type]
-    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
-    return (; eltype = pointee.name, ndim = dims_type.count)
+    return (; eltype = pointee.name, ndim = dims_type.count, ownership)
 end
 
 """

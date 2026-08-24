@@ -226,16 +226,17 @@ const scalar_payload_types = Dict{String, String}(
 
 [`carray_struct_info`](@ref) with this emitter's type tables applied:
 `nothing` unless the struct matches the `CArray` shape and its element type
-has a [`numpy_dtypes`](@ref) entry; otherwise `(; eltype, ndim, ctype,
-dtype)`, adding the element type's `ctypes` expression ([`pytypes`](@ref))
-and numpy dtype to the recognizer's fields.
+has a [`numpy_dtypes`](@ref) entry; otherwise
+`(; eltype, ndim, ownership, ctype, dtype)`, adding the element type's
+`ctypes` expression ([`pytypes`](@ref)) and numpy dtype to the recognizer's
+fields.
 """
 function _python_carray_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     info = carray_struct_info(desc, typeinfo)
     info === nothing && return nothing
     haskey(numpy_dtypes, info.eltype) || return nothing
     return (;
-        info.eltype, info.ndim,
+        info.eltype, info.ndim, info.ownership,
         ctype = pytypes[info.eltype],
         dtype = numpy_dtypes[info.eltype],
     )
@@ -378,7 +379,7 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
             m.symbol for m in entrypoints
                 if !isempty(raw_primitive_pointer_args(m, typeinfo))
         ]
-        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
+        isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{owned,T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
 
     needs_jlwerror = any(
@@ -439,15 +440,18 @@ end
 """
     _emit_free_method(f, buffers_desc, pronoun, free_lines, release_present)
 
-Emit the shared `.free()` method body used by `CArray`/`CStrArray`/`CDict`'s
-generated `ctypes.Structure` classes. Idempotent and a genuine no-op when
-`self.owned` is `0` — regardless of `release_present` — since a value that
-was never owned needs no release capability to safely no-op; only escalates
-to a `RuntimeError` when actually asked to release an owned (`owned == 1`)
-buffer the library gave no way to release. This is also what makes it safe
-for the façade to call unconditionally from a `finally` block (see
-`_emit_facade_autowrapper`): a pass-through/borrowed result's `.free()` call
-never raises.
+Emit the shared `.free()` method body used by `CStrArray`/`CDict`'s generated
+`ctypes.Structure` classes, whose ownership is a runtime `owned` field.
+Idempotent and a genuine no-op when `self.owned` is `0` — regardless of
+`release_present` — since a value that was never owned needs no release
+capability to safely no-op; only escalates to a `RuntimeError` when actually
+asked to release an owned (`owned == 1`) buffer the library gave no way to
+release. This is also what makes it safe for the façade to call
+unconditionally from a `finally` block (see `_emit_facade_autowrapper`): a
+pass-through/borrowed result's `.free()` call never raises.
+
+`CArray` carries its ownership in its type instead, and gets
+[`_emit_carray_free_method`](@ref).
 
 `buffers_desc`/`pronoun` fill in "buffer"/"it" or "buffers"/"them" in the
 docstring; `free_lines` are the release-call statements (already indented to
@@ -482,54 +486,93 @@ function _emit_free_method(
     end
 end
 
+"""
+    _emit_carray_free_method(f, release_present)
+
+Emit the `.free()` method for a `CArray{:owned,...}` class. The struct
+carries no ownership field, so idempotence rides on a Python-side `_freed`
+attribute set after the release call. Without release entrypoints the body
+raises the same `RuntimeError` as [`_emit_free_method`](@ref); the façade
+never reaches it, since an owning return is demoted to a mechanical
+re-export in that case (see [`_facade_classify_return`](@ref)), but a
+`_lowlevel` caller gets a clear diagnosis instead of an `AttributeError`.
+"""
+function _emit_carray_free_method(f::IO, release_present::Bool)
+    println(f, "")
+    println(f, "    def free(self):")
+    println(f, "        \"\"\"Free the Julia-allocated buffer.")
+    println(f, "")
+    println(f, "        Idempotent: a second call is a no-op. For callers who bypass the")
+    println(f, "        façade's convert-then-free wrapper and talk to `_lowlevel` directly.\"\"\"")
+    println(f, "        if getattr(self, \"_freed\", False):")
+    println(f, "            return")
+    if release_present
+        println(f, "        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))")
+        return println(f, "        self._freed = True")
+    else
+        return println(
+            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
+            "add JLWInterop.@export_release_entrypoints to the library\")"
+        )
+    end
+end
+
+"""
+    _write_carray_helpers(f, cainfo, release_present)
+
+Emit the conversion methods on a recognized `CArray` `ctypes` class. The
+class's ownership decides its API: a `:borrowed` class gets `from_numpy`
+(building a carrier over a numpy buffer the caller keeps alive) and
+`as_numpy`, and no `free()` — it never owns anything to release. An
+`:owned` class gets `as_numpy` and `free()`, and no `from_numpy` — Python
+has no Julia allocation to hand over.
+"""
 function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
-    # Emit methods on the recognized CArray ctypes class. `from_numpy`
-    # borrows; `as_numpy` returns a view; the façade copies owning returns
-    # before freeing them.
     ctype = cainfo.ctype
     dtype = cainfo.dtype
     ndim = cainfo.ndim
-    # 1-D arrays accept either C- or F-contiguous (equivalent); higher rank
-    # requires Fortran order because CArray storage is column-major.
-    contig_check = ndim == 1 ?
-        "if not (arr.flags.c_contiguous or arr.flags.f_contiguous):" :
-        "if not arr.flags.f_contiguous:"
-    contig_msg = ndim == 1 ?
-        "\"array must be contiguous\"" :
-        (
-            "\"array must be Fortran-contiguous (column-major); \"\n" *
-            "                             \"use np.asfortranarray(arr) to convert\""
-        )
-    println(f, "")
-    println(f, "    @classmethod")
-    println(f, "    def from_numpy(cls, arr):")
-    println(f, "        \"\"\"Return a CArray view of the ", ndim, "-D numpy array `arr`.")
-    println(f, "")
-    if ndim == 1
-        println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no")
-        println(f, "        silent reinterpretation). The returned object holds a reference to `arr`,")
-        println(f, "        so the caller must keep it alive for the duration of any C call that uses")
-        println(f, "        the buffer.\"\"\"")
-    else
-        println(f, "        CArray storage is column-major (Julia / Fortran order). A default")
-        println(f, "        row-major (C-order) numpy array is REJECTED rather than silently")
-        println(f, "        reinterpreted — call `np.asfortranarray(arr)` first if needed.")
-        println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch. The returned")
-        println(f, "        object holds a reference to `arr`, so the caller must keep it alive for")
-        println(f, "        the duration of any C call that uses the buffer.\"\"\"")
+    if cainfo.ownership === :borrowed
+        # 1-D arrays accept either C- or F-contiguous (equivalent); higher rank
+        # requires Fortran order because CArray storage is column-major.
+        contig_check = ndim == 1 ?
+            "if not (arr.flags.c_contiguous or arr.flags.f_contiguous):" :
+            "if not arr.flags.f_contiguous:"
+        contig_msg = ndim == 1 ?
+            "\"array must be contiguous\"" :
+            (
+                "\"array must be Fortran-contiguous (column-major); \"\n" *
+                    "                             \"use np.asfortranarray(arr) to convert\""
+            )
+        println(f, "")
+        println(f, "    @classmethod")
+        println(f, "    def from_numpy(cls, arr):")
+        println(f, "        \"\"\"Return a CArray view of the ", ndim, "-D numpy array `arr`.")
+        println(f, "")
+        if ndim == 1
+            println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no")
+            println(f, "        silent reinterpretation). The returned object holds a reference to `arr`,")
+            println(f, "        so the caller must keep it alive for the duration of any C call that uses")
+            println(f, "        the buffer.\"\"\"")
+        else
+            println(f, "        CArray storage is column-major (Julia / Fortran order). A default")
+            println(f, "        row-major (C-order) numpy array is REJECTED rather than silently")
+            println(f, "        reinterpreted — call `np.asfortranarray(arr)` first if needed.")
+            println(f, "        Raises ValueError on ndim, contiguity, or dtype mismatch. The returned")
+            println(f, "        object holds a reference to `arr`, so the caller must keep it alive for")
+            println(f, "        the duration of any C call that uses the buffer.\"\"\"")
+        end
+        println(f, "        if arr.ndim != ", ndim, ":")
+        println(f, "            raise ValueError(f\"expected ", ndim, "-D array, got {arr.ndim}-D\")")
+        println(f, "        ", contig_check)
+        println(f, "            raise ValueError(", contig_msg, ")")
+        println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
+        println(f, "        if arr.dtype != expected_dtype:")
+        println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
+        println(f, "        obj = cls(dims=(ctypes.c_int32 * ", ndim, ")(*arr.shape),")
+        println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
+        println(f, "        obj._buffer = arr")
+        println(f, "        return obj")
     end
-    println(f, "        if arr.ndim != ", ndim, ":")
-    println(f, "            raise ValueError(f\"expected ", ndim, "-D array, got {arr.ndim}-D\")")
-    println(f, "        ", contig_check)
-    println(f, "            raise ValueError(", contig_msg, ")")
-    println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
-    println(f, "        if arr.dtype != expected_dtype:")
-    println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
-    println(f, "        obj = cls(dims=(ctypes.c_int32 * ", ndim, ")(*arr.shape),")
-    println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")),")
-    println(f, "                  owned=0)")
-    println(f, "        obj._buffer = arr")
-    println(f, "        return obj")
     println(f, "")
     println(f, "    def as_numpy(self):")
     if ndim == 1
@@ -545,11 +588,8 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
         println(f, "        # shape and strides.")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
     end
-    return _emit_free_method(
-        f, "buffer", "it",
-        ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
-        release_present
-    )
+    cainfo.ownership === :owned || return nothing
+    return _emit_carray_free_method(f, release_present)
 end
 
 function _write_cstring_helpers(f::IO)
@@ -915,7 +955,7 @@ function _write_bindings(
             println(f, "    A default numpy array is row-major (C order); passing `arr.ctypes.data`")
             println(f, "    from such an array to a Julia function that interprets it as a matrix")
             println(f, "    will see a silently transposed view. Use `np.asfortranarray(arr)` before")
-            println(f, "    taking `.ctypes.data`, or — better — wrap the field in `CArray{T,N}`")
+            println(f, "    taking `.ctypes.data`, or — better — wrap the field in `CArray{owned,T,N}`")
             println(f, "    (JLWInterop) so shape and layout travel with the buffer.")
             println(f, "    \"\"\"")
         end
@@ -944,7 +984,8 @@ end
 
 Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:primitive,)` — pass-through
-- `(kind=:carray, classname=…)` — wrap with `<class>.from_numpy(name)`
+- `(kind=:carray, classname=…)` — a borrowed `CArray`; wrap with
+  `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
 - `(kind=:cstrarray, classname=…)` — wrap with `<class>.from_list(name)`
 - `(kind=:cdict, classname=…)` — wrap with `<class>.from_dict(name)`
@@ -960,7 +1001,14 @@ function _facade_classify_arg(
     if t isa PrimitiveTypeDesc
         return (kind = :primitive,)
     elseif t isa StructDesc
-        if !isnothing(_python_carray_info(t, typeinfo))
+        cainfo = _python_carray_info(t, typeinfo)
+        if !isnothing(cainfo)
+            # An owning CArray argument hands Julia-allocated storage into the
+            # library, which then owns the release. numpy cannot supply that.
+            cainfo.ownership === :owned && return (
+                kind = :opaque,
+                reason = "argument transfers CArray ownership into the library; hand-wrap",
+            )
             return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind = :cstring, classname = typedict[arg.type])
@@ -987,19 +1035,14 @@ Classify a method's return for façade auto-wrapping. `release_present` is
 [`_release_symbols_present`](@ref)'s verdict for the surrounding library.
 The return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
-- `(kind=:carray_unwrap, classname=…)` — inside a `try`: when borrowed
-  (`_result.owned` is `0`), return `_result.as_numpy()` (zero-copy view),
-  preserving zero-copy behavior; when owned
-  (`_result.owned` is `1`), copy into a fresh numpy array
-  (`np.array(_result.as_numpy(), copy=True)`) FIRST — never hand back a view
-  over memory about to be freed. A `finally` then calls `_result.free()`
-  unconditionally (see `_emit_free_method`: idempotent, a no-op when
-  borrowed). Not gated on `release_present` (unlike `:cstrarray_unwrap`/
-  `:cdict_unwrap` below): a plain, always-borrowed `CArray` return — by far
-  the common case, predating the `owned` flag — must keep auto-wrapping even
-  when the library never calls `@export_release_entrypoints`, since
-  `.free()` only escalates to a `RuntimeError` when actually asked to
-  release an owned value.
+- `(kind=:carray_view, classname=…)` — a borrowed `CArray` return: the
+  storage belongs to the caller, so `return _result.as_numpy()` hands back a
+  zero-copy view and nothing is freed. Not gated on `release_present` — there
+  is nothing to release.
+- `(kind=:carray_unwrap, classname=…)` — an owning `CArray` return: inside a
+  `try`, copy into a fresh numpy array (`np.array(_result.as_numpy(),
+  copy=True)`) FIRST — never hand back a view over memory about to be freed
+  — then a `finally` calls `_result.free()`.
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
 - `(kind=:cstrarray_unwrap, classname=…)` — inside a `try`: `_out =
   _result.as_list()` (a real copy, independent of the buffer); a `finally`
@@ -1014,9 +1057,9 @@ The return is one of:
   is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out. Also returned in place of
-  `:cstrarray_unwrap`/`:cdict_unwrap` when `release_present` is `false`:
-  auto-wrapping an owning return with no release entrypoints available
-  would emit a call to a symbol that does not exist.
+  `:carray_unwrap`/`:cstrarray_unwrap`/`:cdict_unwrap` when `release_present`
+  is `false`: auto-wrapping an owning return with no release entrypoints
+  available would emit a call to a symbol that does not exist.
 """
 function _facade_classify_return(
         method::MethodDesc,
@@ -1028,9 +1071,16 @@ function _facade_classify_return(
     if rt isa PrimitiveTypeDesc
         return (kind = :passthrough,)
     elseif rt isa StructDesc
+        cainfo = _python_carray_info(rt, typeinfo)
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind = :jlwstatus_discard,)
-        elseif !isnothing(_python_carray_info(rt, typeinfo))
+        elseif !isnothing(cainfo)
+            cainfo.ownership === :borrowed &&
+                return (kind = :carray_view, classname = typedict[method.return_type])
+            release_present || return (
+                kind = :opaque,
+                reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+            )
             return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
@@ -1102,10 +1152,10 @@ function _facade_plan(
         )
     end
     uses_numpy = any(c -> c.kind === :carray, arg_classes) ||
-        ret.kind === :carray_unwrap
+        ret.kind in (:carray_view, :carray_unwrap)
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
         ret.kind in (
-        :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap,
+        :carray_view, :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap,
         :cdict_unwrap, :copt_unwrap, :jlwstatus_discard,
     )
     if !adds_value
@@ -1160,15 +1210,17 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         # `_lowlevel` already raises JLWError on a non-zero status; the
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
+    elseif ret.kind === :carray_view
+        # The storage belongs to the caller, so the view is safe to hand back
+        # and there is nothing to release.
+        println(f, "    _result = ", call)
+        println(f, "    return _result.as_numpy()")
     elseif ret.kind === :carray_unwrap
-        # Borrowed results return a zero-copy view. Owning results are copied
-        # before the carrier is freed in `finally`.
+        # The Julia allocation is released here, so the caller gets a copy
+        # rather than a view over freed memory.
         println(f, "    _result = ", call)
         println(f, "    try:")
-        println(f, "        if _result.owned == 1:")
-        println(f, "            _out = np.array(_result.as_numpy(), copy=True)")
-        println(f, "        else:")
-        println(f, "            _out = _result.as_numpy()")
+        println(f, "        _out = np.array(_result.as_numpy(), copy=True)")
         println(f, "    finally:")
         println(f, "        _result.free()")
         println(f, "    return _out")
@@ -1231,7 +1283,7 @@ function _write_facade_stub(
     println(f)
     println(f, "This file is generated **once** by JuliaLibWrapping as a starter")
     println(f, "façade. Functions whose arguments and return are all recognized")
-    println(f, "(primitives, `CArray{T,N}`, `CString`, direct `JLWStatus`)")
+    println(f, "(primitives, `CArray{owned,T,N}`, `CString`, direct `JLWStatus`)")
     println(f, "are wrapped to accept and return idiomatic Python objects (numpy")
     println(f, "arrays, `str`). Anything else is re-exported from `_lowlevel`")
     println(f, "with a `TODO` comment naming what needs hand-wrapping.")

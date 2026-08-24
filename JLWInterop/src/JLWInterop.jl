@@ -20,25 +20,31 @@ for the terminating NUL.
 const JLW_MESSAGE_BYTES = 256
 
 """
-    CArray{T,N}
+    CArray{owned,T,N}
 
 Column-major N-D buffer for `@ccallable` boundaries. `data` points to
 `prod(dims)` contiguous elements of `T`.
 
 # Ownership contract
 
-`owned == 0` denotes borrowed storage; the caller must keep it alive and make
-it writable before mutation. `owned == 1` denotes storage allocated by
-`CArray(::AbstractArray)`; release it once with `Libc.free` or the `jlw_free`
-entrypoint emitted by [`@export_release_entrypoints`](@ref). Constructors that
-accept a pointer create borrowed arrays.
+`owned` is `:owned` or `:borrowed`, so whether a value must be released is a
+property of its type rather than of the value.
+
+`CArray{:owned,T,N}` holds Julia-allocated storage, produced by
+`CArray{:owned}(::AbstractArray)`. The consumer releases `data` exactly once,
+with `Libc.free` or the `jlw_free` entrypoint emitted by
+[`@export_release_entrypoints`](@ref).
+
+`CArray{:borrowed,T,N}` wraps memory the caller owns and keeps alive; the
+consumer never releases it, and must make the storage writable before
+mutating it. Pointer constructors build carriers of either ownership.
 
 # Example
 
 ```julia
 using JLWInterop
 
-Base.@ccallable function sum_values(a::CArray{Float64,2})::Float64
+Base.@ccallable function sum_values(a::CArray{:borrowed,Float64,2})::Float64
     return sum(a)
 end
 ```
@@ -50,67 +56,91 @@ interface with linear indexing, including bounds-checked access and mutation.
 The aliases [`CVector`](@ref) and [`CMatrix`](@ref) cover one and two
 dimensions.
 
-Binding targets can map this layout to native N-D array types without changing
-the ABI. They must preserve column-major dimension and stride semantics.
+Every construction path names an ownership: there is no defaulting
+constructor, and any parameter other than `:owned` or `:borrowed` is
+rejected.
+
+Binding targets can map this layout to native N-D array types without
+changing the ABI. They must preserve column-major dimension and stride
+semantics. The two ownerships are two distinct types, so a target reads
+"release this" or "do not release this" off the signature alone.
 """
-struct CArray{T, N} <: AbstractArray{T, N}
+struct CArray{owned, T, N} <: AbstractArray{T, N}
     dims::NTuple{N, Int32}
     data::Ptr{T}
-    owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by CArray(::AbstractArray)
+
+    function CArray{owned, T, N}(dims, data) where {owned, T, N}
+        owned === :owned || owned === :borrowed || throw(
+            ArgumentError(
+                "ownership parameter must be :owned or :borrowed, got $(repr(owned))"
+            )
+        )
+        return new{owned, T, N}(dims, data)
+    end
 end
 
 """
-    CVector{T}
+    CVector{owned,T}
 
-Alias for `CArray{T,1}`. See [`CArray`](@ref).
+Alias for `CArray{owned,T,1}`. See [`CArray`](@ref).
 """
-const CVector{T} = CArray{T, 1}
-
-"""
-    CMatrix{T}
-
-Alias for `CArray{T,2}`, laid out in column-major order. See [`CArray`](@ref).
-"""
-const CMatrix{T} = CArray{T, 2}
-
-# Infer `N` from the dimensions; borrowed (owned = 0).
-CArray{T}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
-    CArray{T, N}(dims, data)
-
-# Two-argument borrowed constructor.
-CArray{T, N}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {T, N} =
-    CArray{T, N}(dims, data, Int32(0))
-
-# Scalar constructors for the 1-D and 2-D aliases; borrowed (owned = 0).
-CArray{T, 1}(n::Integer, data::Ptr{T}) where {T} =
-    CArray{T, 1}((n,), data)
-CArray{T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {T} =
-    CArray{T, 2}((rows, cols), data)
+const CVector{owned, T} = CArray{owned, T, 1}
 
 """
-    CArray(A::AbstractArray{T,N}) where {T,N}
+    CMatrix{owned,T}
 
-Allocate a dense column-major copy of `A`. The result has `owned == 1`; the
-consumer must release `data` once with `Libc.free` or the exported `jlw_free`.
+Alias for `CArray{owned,T,2}`, laid out in column-major order. See
+[`CArray`](@ref).
+"""
+const CMatrix{owned, T} = CArray{owned, T, 2}
+
+# Infer `T` and `N` from the pointer and the dimensions.
+CArray{owned}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {owned, T, N} =
+    CArray{owned, T, N}(dims, data)
+
+# Infer `N` from the dimensions.
+CArray{owned, T}(dims::Tuple{Vararg{Integer, N}}, data::Ptr{T}) where {owned, T, N} =
+    CArray{owned, T, N}(dims, data)
+
+# Scalar dimension forms for the 1-D and 2-D aliases.
+CArray{owned, T, 1}(n::Integer, data::Ptr{T}) where {owned, T} =
+    CArray{owned, T, 1}((n,), data)
+CArray{owned, T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {owned, T} =
+    CArray{owned, T, 2}((rows, cols), data)
+
+"""
+    CArray{:owned}(A::AbstractArray{T,N}) where {T,N}
+
+Allocate a dense column-major copy of `A`, taking `A`'s values in iteration
+order and `A`'s `size` as `dims`. The consumer must release `data` once with
+`Libc.free` or the exported `jlw_free`.
+
+`CArray{:borrowed}(A)` throws an `ArgumentError`: a borrowed carrier wraps
+caller-managed memory and is built from a pointer.
 
 # Example
 
 ```julia
 using JLWInterop
 
-a = CArray([1.0 2.0; 3.0 4.0])
-a.owned == Int32(1)
+a = CArray{:owned}([1.0 2.0; 3.0 4.0])
 collect(a) == [1.0 2.0; 3.0 4.0]
 Libc.free(a.data)
 ```
 """
-function CArray(A::AbstractArray{T, N}) where {T, N}
+function CArray{owned}(A::AbstractArray{T, N}) where {owned, T, N}
+    owned === :owned || throw(
+        ArgumentError(
+            "only `CArray{:owned}` allocates a copy; `CArray{:borrowed}` wraps " *
+                "caller-managed memory and is constructed from a pointer"
+        )
+    )
     dense = Array{T, N}(undef, size(A))
     copyto!(dense, A)
     n = length(dense)
     data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
     GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
-    return CArray{T, N}(size(A), data, Int32(1))
+    return CArray{owned, T, N}(size(A), data)
 end
 
 Base.size(a::CArray) = Int.(a.dims)
@@ -121,7 +151,7 @@ Base.@propagate_inbounds function Base.getindex(a::CArray, i::Int)
     return unsafe_load(a.data, i)
 end
 
-Base.@propagate_inbounds function Base.setindex!(a::CArray{T}, x, i::Int) where {T}
+Base.@propagate_inbounds function Base.setindex!(a::CArray{owned, T}, x, i::Int) where {owned, T}
     @boundscheck checkbounds(a, i)
     unsafe_store!(a.data, convert(T, x), i)
     return a

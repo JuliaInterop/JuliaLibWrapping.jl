@@ -2,7 +2,7 @@
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
-(primitives, `CArray{T,N}`, `CString`, direct `JLWStatus`)
+(primitives, `CArray{owned,T,N}`, `CString`, direct `JLWStatus`)
 are wrapped to accept and return idiomatic Python objects (numpy
 arrays, `str`). Anything else is re-exported from `_lowlevel`
 with a `TODO` comment naming what needs hand-wrapping.
@@ -19,18 +19,15 @@ import numpy as np  # noqa: F401
 from ._lowlevel import (
     Nothing,
     CString,
-    CVector_Float64,
+    CVector_owned_Float64,
 )
 
 def give_vec():
     _result = _lowlevel.give_vec()
     try:
-        if _result.owned == 1:
-            _out = np.array(_result.as_numpy(), copy=True)
-        else:
-            _out = _result.as_numpy()
+        _out = np.array(_result.as_numpy(), copy=True)
     finally:
         _result.free()
     return _out
 
-__all__ = ["Nothing", "CString", "CVector_Float64", "give_vec"]
+__all__ = ["Nothing", "CString", "CVector_owned_Float64", "give_vec"]
