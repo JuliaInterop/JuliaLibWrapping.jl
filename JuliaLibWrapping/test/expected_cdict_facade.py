@@ -16,7 +16,6 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    Nothing,
     CString,
     CDict_Float64,
 )
@@ -33,4 +32,4 @@ def give_dict():
         _result.free()
     return _out
 
-__all__ = ["Nothing", "CString", "CDict_Float64", "take_dict", "give_dict"]
+__all__ = ["CString", "CDict_Float64", "take_dict", "give_dict"]

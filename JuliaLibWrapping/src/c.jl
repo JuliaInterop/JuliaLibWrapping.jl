@@ -21,11 +21,11 @@ function Base.show(io::IO, t::CTarget)
     print(io, "CTarget(", repr(t.dir), ", ", repr(t.headerbase), ")")
 end
 
-function unwrap_pointer_type(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
-    while typeinfo[type_id] isa PointerDesc
+function unwrap_pointer_type(type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc})
+    while type_id !== nothing && typeinfo[type_id] isa PointerDesc
         type_id = typeinfo[type_id].pointee_type
     end
-    return type_id
+    return type_id # `nothing` for `void *`
 end
 
 """
@@ -79,7 +79,8 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
                     ft = mangle_c!(typedict, field.type, typeinfo)
                     field_desc = typeinfo[field.type]
                     elt_id = field_desc isa ArrayDesc ? field_desc.element_type : field.type
-                    if !in(unwrap_pointer_type(elt_id, typeinfo), printed)
+                    elt = unwrap_pointer_type(elt_id, typeinfo)
+                    if elt !== nothing && !in(elt, printed)
                         ft = "struct " * ft
                     end
                     suffix = c_field_array_suffix(field.type, typeinfo)
@@ -98,7 +99,7 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
         println(f)
 
         for method in entrypoints
-            if typeinfo[method.return_type] isa ArrayDesc
+            if method.return_type !== nothing && typeinfo[method.return_type] isa ArrayDesc
                 error("C entrypoint `", method.symbol,
                       "`: returning an array type is not representable in C; ",
                       "wrap the result in a struct.")
@@ -182,7 +183,8 @@ function sanitize_for_c(str::AbstractString)
     return replace(str, r"_+" => "_")
 end
 
-function mangle_c!(typedict::Dict{Int, String}, type_id::Int, typeinfo::OrderedDict{Int,TypeDesc})
+function mangle_c!(typedict::Dict{Int, String}, @nospecialize(type_id::Union{Int, Nothing}), typeinfo::OrderedDict{Int,TypeDesc})
+    type_id === nothing && return "void"
     if type_id in keys(typedict)
         return typedict[type_id]
     end

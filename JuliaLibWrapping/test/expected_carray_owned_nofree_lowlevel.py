@@ -54,9 +54,6 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class Nothing(ctypes.Structure):
-    _fields_ = []
-
 class CString(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),

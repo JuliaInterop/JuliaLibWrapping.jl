@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixture identical to bindinginfo_cstrarray.json (including the `owned::Int32` ownership field) EXCEPT the two jlw_free*  release-entrypoint function entries are deleted (the `types` array — including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used — is left untouched deliberately). This models a library that defines the CStrArray carrier but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_strs` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, while the borrowed `take_strs` argument classification stays `:auto` (arg-side classification is unaffected by the gate).",
+  "_comment": "Fixture identical to bindinginfo_cstrarray.json (including the `owned::Int32` ownership field) EXCEPT the two jlw_free*  release-entrypoint function entries are deleted (the `types` array \u2014 including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used \u2014 is left untouched deliberately). This models a library that defines the CStrArray carrier but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_strs` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, while the borrowed `take_strs` argument classification stays `:auto` (arg-side classification is unaffected by the gate).",
   "types": [
     {
       "kind": "primitive",
@@ -40,8 +40,20 @@
       "id": 5,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "length",
+          "type_id": 4,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "data",
+          "type_id": 3,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
@@ -57,38 +69,55 @@
       "id": 7,
       "size": 24,
       "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 4, "offset": 16, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "length",
+          "type_id": 2,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "data",
+          "type_id": 6,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "owned",
+          "type_id": 4,
+          "offset": 16,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
     {
-      "kind": "struct",
-      "name": "Nothing",
-      "id": 8,
-      "size": 0,
-      "fields": [],
-      "alignment": 1
-    },
-    {
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 9,
-      "pointee_type_id": 8
+      "id": 8,
+      "pointee_type_id": null
     }
   ],
   "functions": [
     {
-      "returns": { "type_id": 2 },
+      "returns": {
+        "type_id": 2
+      },
       "name": "take_strs(a::CStrArray)",
       "arguments": [
-        { "name": "a", "type_id": 7 }
+        {
+          "name": "a",
+          "type_id": 7
+        }
       ],
       "symbol": "take_strs"
     },
     {
-      "returns": { "type_id": 7 },
+      "returns": {
+        "type_id": 7
+      },
       "name": "give_strs()",
       "arguments": [],
       "symbol": "give_strs"

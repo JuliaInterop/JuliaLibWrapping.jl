@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for an owning CArray return. Mirrors the layout juliac emits for `struct CVector{:owned,Float64}; dims::NTuple{1,Int32}; data::Ptr{Float64}; end`, with one @ccallable function returning a freshly allocated CVector{:owned, Float64}, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so the owning return is `:auto` (copy, then free in a `finally`), not `:mechanical`. No CArray-consuming function is needed here — carray3/cmatrix/libsimple already cover the borrowed-argument path; this fixture exists solely to exercise the owning-return facade shape.",
+  "_comment": "Hand-authored fixture for an owning CArray return. Mirrors the layout juliac emits for `struct CVector{:owned,Float64}; dims::NTuple{1,Int32}; data::Ptr{Float64}; end`, with one @ccallable function returning a freshly allocated CVector{:owned, Float64}, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so the owning return is `:auto` (copy, then free in a `finally`), not `:mechanical`. No CArray-consuming function is needed here \u2014 carray3/cmatrix/libsimple already cover the borrowed-argument path; this fixture exists solely to exercise the owning-return facade shape.",
   "types": [
     {
       "kind": "primitive",
@@ -49,8 +49,20 @@
       "id": 6,
       "size": 16,
       "fields": [
-        { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "dims",
+          "type_id": 5,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "data",
+          "type_id": 4,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
@@ -75,8 +87,20 @@
       "id": 9,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 8, "offset": 8, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "length",
+          "type_id": 2,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "data",
+          "type_id": 8,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
@@ -87,41 +111,48 @@
       "pointee_type_id": 9
     },
     {
-      "kind": "struct",
-      "name": "Nothing",
-      "id": 11,
-      "size": 0,
-      "fields": [],
-      "alignment": 1
-    },
-    {
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 12,
-      "pointee_type_id": 11
+      "id": 11,
+      "pointee_type_id": null
     }
   ],
   "functions": [
     {
-      "returns": { "type_id": 6 },
+      "returns": {
+        "type_id": 6
+      },
       "name": "give_vec()",
       "arguments": [],
       "symbol": "give_vec"
     },
     {
-      "returns": { "type_id": 11 },
+      "returns": {
+        "type_id": null
+      },
       "name": "jlw_free(p::Ptr{Nothing})",
       "arguments": [
-        { "name": "p", "type_id": 12 }
+        {
+          "name": "p",
+          "type_id": 11
+        }
       ],
       "symbol": "jlw_free"
     },
     {
-      "returns": { "type_id": 11 },
+      "returns": {
+        "type_id": null
+      },
       "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
       "arguments": [
-        { "name": "p", "type_id": 10 },
-        { "name": "n", "type_id": 3 }
+        {
+          "name": "p",
+          "type_id": 10
+        },
+        {
+          "name": "n",
+          "type_id": 3
+        }
       ],
       "symbol": "jlw_free_strings"
     }

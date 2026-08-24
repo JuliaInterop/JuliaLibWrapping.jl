@@ -16,11 +16,10 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    Nothing,
     CString,
     CVector_owned_Float64,
 )
 
 from ._lowlevel import give_vec  # TODO: hand-wrap — owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
 
-__all__ = ["Nothing", "CString", "CVector_owned_Float64", "give_vec"]
+__all__ = ["CString", "CVector_owned_Float64", "give_vec"]

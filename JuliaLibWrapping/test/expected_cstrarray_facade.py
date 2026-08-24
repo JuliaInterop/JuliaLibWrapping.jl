@@ -16,7 +16,6 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    Nothing,
     CString,
     CStrArray,
 )
@@ -33,4 +32,4 @@ def give_strs():
         _result.free()
     return _out
 
-__all__ = ["Nothing", "CString", "CStrArray", "take_strs", "give_strs"]
+__all__ = ["CString", "CStrArray", "take_strs", "give_strs"]

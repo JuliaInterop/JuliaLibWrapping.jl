@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixture identical in shape to bindinginfo_cdict.json (including the `owned::Int32` ownership field), but instantiated at V=Int32 instead of V=Float64 — proves cdict_struct_info's value-type parameterization (and the helper codegen that substitutes the matching ctypes name) varies correctly beyond a single value type. Field offsets (0, 8, 16, 24, size 32) are IDENTICAL to the Float64 case: `values` is a pointer field (8 bytes) regardless of what it points at, so the pointee's own size never affects CDict's own layout. `keys`/`jlw_free_strings` are unaffected by the value type (always Ptr{CString}); only `values`'s pointee type and the Float64->Int32 substitution in from_dict/as_dict's value ctype differ from bindinginfo_cdict.json.",
+  "_comment": "Fixture identical in shape to bindinginfo_cdict.json (including the `owned::Int32` ownership field), but instantiated at V=Int32 instead of V=Float64 \u2014 proves cdict_struct_info's value-type parameterization (and the helper codegen that substitutes the matching ctypes name) varies correctly beyond a single value type. Field offsets (0, 8, 16, 24, size 32) are IDENTICAL to the Float64 case: `values` is a pointer field (8 bytes) regardless of what it points at, so the pointee's own size never affects CDict's own layout. `keys`/`jlw_free_strings` are unaffected by the value type (always Ptr{CString}); only `values`'s pointee type and the Float64->Int32 substitution in from_dict/as_dict's value ctype differ from bindinginfo_cdict.json.",
   "types": [
     {
       "kind": "primitive",
@@ -40,8 +40,20 @@
       "id": 5,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 1, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "length",
+          "type_id": 1,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "data",
+          "type_id": 4,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
@@ -63,57 +75,93 @@
       "id": 8,
       "size": 32,
       "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "keys", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
-        { "name": "values", "type_id": 7, "offset": 16, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 1, "offset": 24, "isptr": false, "isfieldatomic": false }
+        {
+          "name": "length",
+          "type_id": 2,
+          "offset": 0,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "keys",
+          "type_id": 6,
+          "offset": 8,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "values",
+          "type_id": 7,
+          "offset": 16,
+          "isptr": false,
+          "isfieldatomic": false
+        },
+        {
+          "name": "owned",
+          "type_id": 1,
+          "offset": 24,
+          "isptr": false,
+          "isfieldatomic": false
+        }
       ],
       "alignment": 8
     },
     {
-      "kind": "struct",
-      "name": "Nothing",
-      "id": 9,
-      "size": 0,
-      "fields": [],
-      "alignment": 1
-    },
-    {
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 10,
-      "pointee_type_id": 9
+      "id": 9,
+      "pointee_type_id": null
     }
   ],
   "functions": [
     {
-      "returns": { "type_id": 2 },
+      "returns": {
+        "type_id": 2
+      },
       "name": "take_dict_i32(d::CDict{Int32})",
       "arguments": [
-        { "name": "d", "type_id": 8 }
+        {
+          "name": "d",
+          "type_id": 8
+        }
       ],
       "symbol": "take_dict_i32"
     },
     {
-      "returns": { "type_id": 8 },
+      "returns": {
+        "type_id": 8
+      },
       "name": "give_dict_i32()",
       "arguments": [],
       "symbol": "give_dict_i32"
     },
     {
-      "returns": { "type_id": 9 },
+      "returns": {
+        "type_id": null
+      },
       "name": "jlw_free(p::Ptr{Nothing})",
       "arguments": [
-        { "name": "p", "type_id": 10 }
+        {
+          "name": "p",
+          "type_id": 9
+        }
       ],
       "symbol": "jlw_free"
     },
     {
-      "returns": { "type_id": 9 },
+      "returns": {
+        "type_id": null
+      },
       "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
       "arguments": [
-        { "name": "p", "type_id": 6 },
-        { "name": "n", "type_id": 2 }
+        {
+          "name": "p",
+          "type_id": 6
+        },
+        {
+          "name": "n",
+          "type_id": 2
+        }
       ],
       "symbol": "jlw_free_strings"
     }
