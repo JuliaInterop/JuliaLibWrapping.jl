@@ -110,6 +110,41 @@ end
         @test_throws "unexpected kind 'nonsense'" parse_abi_info(bad)
     end
 
+    @testset "parse_abi_info: null Cvoid type ids" begin
+        # JuliaC 0.3.9 writes `null` rather than a `Nothing` struct id for a
+        # void pointer's pointee and a void return. Both resolve to the
+        # zero-field `Nothing` struct the rest of the pipeline expects.
+        doc = Dict{String, Any}(
+            "types" => Any[
+                Dict{String, Any}(
+                    "id" => 1, "kind" => "primitive", "name" => "Int64",
+                    "signed" => true, "bits" => 64, "size" => 8, "alignment" => 8,
+                ),
+                Dict{String, Any}(
+                    "id" => 2, "kind" => "pointer", "name" => "Ptr{Nothing}",
+                    "pointee_type_id" => nothing,
+                ),
+            ],
+            "functions" => Any[
+                Dict{String, Any}(
+                    "symbol" => "jlw_free", "name" => "jlw_free(Ptr{Nothing})",
+                    "returns" => Dict{String, Any}("type_id" => nothing),
+                    "arguments" => Any[Dict{String, Any}("name" => "p", "type_id" => 2)],
+                ),
+            ],
+        )
+        (; typeinfo, entrypoints) = parse_abi_info(doc)
+        void = typeinfo[3]
+        @test void isa StructDesc
+        @test void.name == "Nothing"
+        @test isempty(void.fields)
+        @test typeinfo[2].pointee_type == 3
+        @test only(entrypoints).return_type == 3
+
+        # An ABI without a null type id gains no synthetic descriptor.
+        @test length(read_abi_info("bindinginfo_rawptr.json").typeinfo) == 3
+    end
+
     @testset "read_abi_info" begin
         from_file = read_abi_info("bindinginfo_libsimple.json")
         from_dict = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
