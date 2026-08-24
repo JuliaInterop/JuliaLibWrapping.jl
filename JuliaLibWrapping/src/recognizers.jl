@@ -115,7 +115,7 @@ end
 Recognize `CStrArray` by name and field layout: exactly three fields named
 `length` (a signed primitive integer), `data` (a pointer to a struct matching
 [`cstring_struct_info`](@ref)), and `owned` (`Int32`, the ownership
-discriminant: `0` = borrowed, `1` = allocated by the own-out constructor).
+discriminant: `0` = borrowed, `1` = allocated by the owning constructor).
 Field order is unrestricted.
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})

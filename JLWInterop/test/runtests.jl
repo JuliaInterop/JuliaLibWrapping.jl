@@ -292,7 +292,7 @@ using Test
         @test collect(a) == src
         Libc.free(a.data)
 
-        # 1-D own-out.
+        # 1-D owning constructor.
         v = CArray([10.0, 20.0, 30.0])
         @test v.owned === Int32(1)
         @test collect(v) == [10.0, 20.0, 30.0]
@@ -322,7 +322,7 @@ using Test
         a = CStrArray(["x", "y"])
         @test fieldtype(CStrArray, :owned) === Int32
         @test a.owned === Int32(1)
-        @test Vector{String}(a) == ["x", "y"]   # borrow-in ignores owned, copies regardless
+        @test Vector{String}(a) == ["x", "y"]   # the conversion ignores owned, copies regardless
         JLWInterop._free_strings(a.data, a.length)
 
         # Borrowed arrays convert without being freed.
@@ -350,7 +350,7 @@ using Test
         c = CDict(Dict("a" => 1.5))
         @test fieldtype(CDict{Float64}, :owned) === Int32
         @test c.owned === Int32(1)
-        @test Dict{String, Float64}(c) == Dict("a" => 1.5)   # borrow-in ignores owned, copies regardless
+        @test Dict{String, Float64}(c) == Dict("a" => 1.5)   # the conversion ignores owned, copies regardless
         JLWInterop._free_strings(c.keys, c.length)
         Libc.free(c.values)
 

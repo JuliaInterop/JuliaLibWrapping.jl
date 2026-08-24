@@ -1176,7 +1176,7 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
     elseif ret.kind === :cstrarray_unwrap
-        # `data` may be Julia-allocated (own-out convention, `owned == 1`)
+        # `data` may be Julia-allocated (`owned == 1`)
         # or a pass-through of a borrowed argument (`owned == 0`, e.g. a
         # function that returns one of its own CStrArray arguments
         # unchanged): convert to the idiomatic `list[str]` first (a real
@@ -1190,7 +1190,7 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
         println(f, "        _result.free()")
         println(f, "    return _out")
     elseif ret.kind === :cdict_unwrap
-        # `keys` and `values` are two SEPARATE buffers, own-out or
+        # `keys` and `values` are two SEPARATE buffers, owned or
         # pass-through exactly as for CStrArray above: convert to `dict`
         # first, then free both (`.free()` releases `keys` via
         # `jlw_free_strings` AND `values` via `jlw_free`) in `finally` —

@@ -19,9 +19,9 @@ assert b.maybe_sqrt(-1.0) is None
 assert b.echo_strs(["x", "y"]) == ["x", "y"]
 assert b.echo_dict({"k": 1.0}) == {"k": 1.0}
 
-# Own-out CArray: make_vec mallocs a fresh vector (owned == 1); the façade
-# copies it into a numpy array and frees the Julia-allocated buffer before
-# returning — the same copy-then-free discipline as echo_strs/echo_dict's
+# Owning CArray return: make_vec mallocs a fresh vector (owned == 1); the
+# façade copies it into a numpy array and frees the Julia-allocated buffer
+# before returning — the same copy-then-free contract as echo_strs/echo_dict's
 # owning-return sibling functions, extended to CArray.
 assert np.array_equal(b.make_vec(4), np.array([1.0, 2.0, 3.0, 4.0]))
 
