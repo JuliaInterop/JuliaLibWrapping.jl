@@ -67,7 +67,11 @@ flavors are two distinct types with identical layout.
 
 - `CArray{:borrowed,T,N}` wraps memory the caller owns. The caller keeps it
   alive and makes it writable before mutation; the consumer never releases it.
-  Pointer constructors build carriers of either ownership.
+  `CArray{:borrowed}(A::DenseArray)` aliases `A`'s own storage (`pointer(A)`)
+  without copying; other array types are refused, since only `DenseArray`
+  guarantees the contiguous column-major layout the carrier promises. Pointer
+  constructors build carriers of either ownership for callers who vouch for
+  the layout themselves.
 - `CArray{:owned,T,N}` holds a Julia allocation. `CArray{:owned}(A)`
   `Libc.malloc`s a dense column-major copy of `A`; the consumer releases
   `data` exactly once.

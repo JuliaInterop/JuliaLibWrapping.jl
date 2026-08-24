@@ -325,13 +325,6 @@ using Test
         @test collect(v) == [10.0, 20.0, 30.0]
         Libc.free(v.data)
 
-        # Borrowed carriers wrap memory the caller already holds, so there is
-        # nothing for this constructor to do.
-        @test_throws(
-            "`CArray{:borrowed}` wraps caller-managed memory and is constructed from a pointer",
-            CArray{:borrowed}([1.0, 2.0])
-        )
-
         # `CArray <: AbstractArray`, so the same constructor promotes a
         # borrowed carrier into an owning copy.
         buf = Float64[5.0, 6.0]
@@ -344,6 +337,55 @@ using Test
             @test collect(copied) == [5.0, 6.0]
             Libc.free(copied.data)
         end
+
+        # The invalid-symbol rejection also covers the array-argument entry
+        # point.
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CArray{:mine}([1.0, 2.0])
+        )
+    end
+
+    @testset "CArray{:borrowed} aliases dense arrays" begin
+        # `DenseArray` storage is already contiguous and column-major, so the
+        # constructor can alias it: `data` is `pointer(A)` and no copy is made.
+        # The caller keeps `A` alive while the carrier is in use.
+        buf = Float64[1.0, 2.0, 3.0]
+        GC.@preserve buf begin
+            v = CArray{:borrowed}(buf)
+            @test v isa CVector{:borrowed, Float64}
+            @test v.dims === (Int32(3),)
+            @test v.data === pointer(buf)
+            # Genuine aliasing, in both directions.
+            buf[2] = 20.0
+            @test v[2] === 20.0
+            v[3] = 30.0
+            @test buf[3] === 30.0
+        end
+
+        M = [1.0 2.0; 3.0 4.0]
+        GC.@preserve M begin
+            m = CArray{:borrowed}(M)
+            @test m isa CMatrix{:borrowed, Float64}
+            @test m.dims === (Int32(2), Int32(2))
+            @test collect(m) == M
+        end
+
+        # Non-`DenseArray` storage cannot be aliased safely, even when it
+        # happens to be contiguous: the layout guarantee lives in the type.
+        src = collect(1.0:6.0)
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(view(src, 2:2:6))
+        )
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(view(src, 1:6))
+        )
+        @test_throws(
+            "only `DenseArray` storage (contiguous, column-major) can be aliased",
+            CArray{:borrowed}(OffsetArray([1.0, 2.0], -1))
+        )
     end
 
     @testset "CArray{:owned} from arrays with unconventional axes" begin

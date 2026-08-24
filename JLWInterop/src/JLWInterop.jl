@@ -109,14 +109,26 @@ CArray{owned, T, 2}(rows::Integer, cols::Integer, data::Ptr{T}) where {owned, T}
     CArray{owned, T, 2}((rows, cols), data)
 
 """
-    CArray{:owned}(A::AbstractArray{T,N}) where {T,N}
+    CArray{:owned}(A::AbstractArray{T,N})
+    CArray{:borrowed}(A::DenseArray{T,N})
 
-Allocate a dense column-major copy of `A`, taking `A`'s values in iteration
-order and `A`'s `size` as `dims`. The consumer must release `data` once with
-`Libc.free` or the exported `jlw_free`.
+`CArray{:owned}(A)` allocates a dense column-major copy of `A`, taking `A`'s
+values in iteration order and `A`'s `size` as `dims`. The consumer must
+release `data` once with `Libc.free` or the exported `jlw_free`.
 
-`CArray{:borrowed}(A)` throws an `ArgumentError`: a borrowed carrier wraps
-caller-managed memory and is built from a pointer.
+`CArray{:borrowed}(A)` wraps `A`'s own storage without copying: `data` is
+`pointer(A)`. The caller must keep `A` alive (a rooted global, or
+`GC.@preserve` around every use) for as long as the carrier is in use. Only
+`DenseArray`s can be borrowed — their storage is already contiguous and
+column-major, so the alias is exact; borrowing any other array throws an
+`ArgumentError` rather than aliasing memory whose layout may not match.
+Non-`DenseArray` storage can still be copied with `CArray{:owned}(A)`, or
+wrapped through a pointer constructor by a caller who vouches for its
+layout.
+
+Neither constructor records axes: only `size(A)` crosses the boundary, so
+arrays with offset axes are handled correctly but index the same data from
+`1` on the other side.
 
 # Example
 
@@ -126,22 +138,38 @@ using JLWInterop
 a = CArray{:owned}([1.0 2.0; 3.0 4.0])
 collect(a) == [1.0 2.0; 3.0 4.0]
 Libc.free(a.data)
+
+buf = zeros(3)
+b = CArray{:borrowed}(buf)  # aliases buf; keep buf alive while b is in use
 ```
 """
 function CArray{owned}(A::AbstractArray{T, N}) where {owned, T, N}
-    owned === :owned || throw(
-        ArgumentError(
-            "only `CArray{:owned}` allocates a copy; `CArray{:borrowed}` wraps " *
-                "caller-managed memory and is constructed from a pointer"
+    if owned === :owned
+        dense = Array{T, N}(undef, size(A))
+        copyto!(dense, A)
+        n = length(dense)
+        data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
+        GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
+        return CArray{owned, T, N}(size(A), data)
+    elseif owned === :borrowed
+        throw(
+            ArgumentError(
+                "cannot borrow a " * string(typeof(A)) * ": only `DenseArray` " *
+                    "storage (contiguous, column-major) can be aliased; copy with " *
+                    "`CArray{:owned}(A)` or construct from a pointer"
+            )
         )
-    )
-    dense = Array{T, N}(undef, size(A))
-    copyto!(dense, A)
-    n = length(dense)
-    data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
-    GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
-    return CArray{owned, T, N}(size(A), data)
+    else
+        throw(
+            ArgumentError(
+                "ownership parameter must be :owned or :borrowed, got $(repr(owned))"
+            )
+        )
+    end
 end
+
+CArray{:borrowed}(A::DenseArray{T, N}) where {T, N} =
+    CArray{:borrowed, T, N}(size(A), pointer(A))
 
 Base.size(a::CArray) = Int.(a.dims)
 Base.IndexStyle(::Type{<:CArray}) = IndexLinear()
