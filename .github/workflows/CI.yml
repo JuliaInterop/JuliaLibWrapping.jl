@@ -50,9 +50,9 @@ jobs:
           - package: JuliaLibWrapping
             version: 'min'
             experimental: true
-          # juliac --trim is currently broken on Julia nightly (verifier
-          # errors in Base, e.g. unresolved HashState/IOContext calls);
-          # keep the signal visible without failing the workflow.
+          # The juliac build breaks on Julia nightly whenever the compiler or
+          # Pkg changes ahead of the released toolchain. Keep the signal
+          # visible without failing the workflow.
           - package: JuliaLibWrapping
             version: 'nightly'
             experimental: true
