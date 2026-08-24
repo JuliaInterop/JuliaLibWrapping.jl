@@ -1,4 +1,9 @@
 # Target-independent, structural recognition of JLWInterop carriers.
+#
+# Recognizers report Julia-level facts (primitive type names, field names,
+# dimension counts); each emitter translates those into its own type names
+# and decides which element types it supports (e.g. `_python_carray_info`
+# in `python.jl`).
 
 """
     _is_void_struct(desc::StructDesc) -> Bool
@@ -53,24 +58,23 @@ function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
 end
 
 """
-    jlwstatus_access_path(method, typeinfo, sanitize_fieldname) -> Union{Nothing, String}
+    jlwstatus_location(method, typeinfo) -> Union{Nothing, NamedTuple}
 
-Return the path to a direct or immediately embedded `JLWStatus`, or `nothing`.
-Field names are passed through `sanitize_fieldname`.
+Locate a `JLWStatus` in `method`'s return type: `nothing` when there is none,
+`(; field = nothing)` when the return type is a `JLWStatus`, and
+`(; field = "<name>")` (the raw ABI field name) when one is an immediately
+embedded field.
 """
-function jlwstatus_access_path(
-        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
-        sanitize_fieldname::Function
-    )
+function jlwstatus_location(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
     rt = typeinfo[method.return_type]
     rt isa StructDesc || return nothing
     if is_jlwstatus_struct(rt, typeinfo)
-        return ""
+        return (; field = nothing)
     end
     for field in rt.fields
         ftype = typeinfo[field.type]
         if ftype isa StructDesc && is_jlwstatus_struct(ftype, typeinfo)
-            return "." * sanitize_fieldname(field.name)
+            return (; field = field.name)
         end
     end
     return nothing
@@ -131,15 +135,12 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
 end
 
 """
-    cdict_struct_info(desc::StructDesc, typeinfo, scalar_types) -> Union{Nothing, NamedTuple}
+    cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CDict` by name and field layout. Return the target-specific
-`value_ctype` from the caller-supplied `scalar_types` map, or `nothing`.
+Recognize `CDict` by name and field layout. Return `(; value_type)` (the
+Julia name of the value type, e.g. `"Float64"`), or `nothing`.
 """
-function cdict_struct_info(
-        desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc},
-        scalar_types::AbstractDict{String, String}
-    )
+function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CDict") || return nothing
     m = _match_fields(desc, ("length", "keys", "values", "owned"))
     isnothing(m) && return nothing
@@ -155,22 +156,18 @@ function cdict_struct_info(
     values_type isa PointerDesc || return nothing
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
-    values_pointee.name in keys(scalar_types) || return nothing
     owned_type = typeinfo[m.owned.type]
     owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
-    return (; value_ctype = scalar_types[values_pointee.name])
+    return (; value_type = values_pointee.name)
 end
 
 """
-    copt_struct_info(desc::StructDesc, typeinfo, scalar_types) -> Union{Nothing, NamedTuple}
+    copt_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `COpt` by name and field layout. Return the target-specific
-`value_ctype` from the caller-supplied `scalar_types` map, or `nothing`.
+Recognize `COpt` by name and field layout. Return `(; value_type)` (the
+Julia name of the payload type, e.g. `"Float64"`), or `nothing`.
 """
-function copt_struct_info(
-        desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc},
-        scalar_types::AbstractDict{String, String}
-    )
+function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "COpt") || return nothing
     m = _match_fields(desc, ("has_value", "value"))
     isnothing(m) && return nothing
@@ -179,22 +176,17 @@ function copt_struct_info(
     hv_type.name == "Int32" || return nothing
     value_type = typeinfo[m.value.type]
     value_type isa PrimitiveTypeDesc || return nothing
-    value_type.name in keys(scalar_types) || return nothing
-    return (; value_ctype = scalar_types[value_type.name])
+    return (; value_type = value_type.name)
 end
 
 """
-    carray_struct_info(desc::StructDesc, typeinfo, numeric_types, scalar_types) -> Union{Nothing, NamedTuple}
+    carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize `CArray`, `CVector`, or `CMatrix` by name and field layout. On a
-match, return `(; pointee_name, pointee_ctype, dtype, ndim)`; otherwise return
-`nothing`. The caller supplies target-specific numeric and scalar type maps.
+match, return `(; eltype, ndim)` (the Julia name of the element type and the
+`dims` array's `count`); otherwise return `nothing`.
 """
-function carray_struct_info(
-        desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc},
-        numeric_types::AbstractDict{String, String},
-        scalar_types::AbstractDict{String, String}
-    )
+function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     (
         startswith(desc.name, "CArray") || startswith(desc.name, "CVector") ||
             startswith(desc.name, "CMatrix")
@@ -206,48 +198,33 @@ function carray_struct_info(
     dims_eltype = typeinfo[dims_type.element_type]
     dims_eltype isa PrimitiveTypeDesc || return nothing
     (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
-    dims_eltype.name in keys(numeric_types) || return nothing
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
-    pointee.name in keys(numeric_types) || return nothing
     owned_type = typeinfo[m.owned.type]
     owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
-    return (;
-        pointee_name = pointee.name,
-        pointee_ctype = scalar_types[pointee.name],
-        dtype = numeric_types[pointee.name],
-        ndim = dims_type.count,
-    )
+    return (; eltype = pointee.name, ndim = dims_type.count)
 end
 
 """
-    raw_primitive_pointer_args(method::MethodDesc, typeinfo, numeric_types) -> Vector{Int}
+    raw_primitive_pointer_args(method::MethodDesc, typeinfo) -> Vector{Int}
 
 Return positional indices into `method.args` for arguments whose static type is
-a bare `Ptr{T}` where `T` is a primitive numeric type recognized by
-`numeric_types`. `Ptr{Cvoid}` and pointers inside carrier structs are excluded.
+a bare `Ptr{T}` with `T` a primitive type other than `Cvoid`. Pointers inside
+carrier structs are not examined.
 
 A non-empty result identifies an argument with no length, ownership, or layout
 metadata. Targets can use it to warn users or decline automatic wrapping.
-
-`numeric_types` maps a Julia primitive type name to the caller's own spelling
-of it, e.g. `"Float64" => "float64"` for [`numpy_dtypes`](@ref); only its keys
-are consulted here.
 """
-function raw_primitive_pointer_args(
-        method::MethodDesc,
-        typeinfo::OrderedDict{Int, TypeDesc},
-        numeric_types::AbstractDict{String, String}
-    )
+function raw_primitive_pointer_args(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
     out = Int[]
     for (i, arg) in pairs(method.args)
         t = typeinfo[arg.type]
         t isa PointerDesc || continue
         pointee = typeinfo[t.pointee_type]
         pointee isa PrimitiveTypeDesc || continue
-        pointee.name in keys(numeric_types) || continue
+        pointee.name == "Cvoid" && continue
         push!(out, i)
     end
     return out

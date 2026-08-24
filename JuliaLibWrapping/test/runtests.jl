@@ -487,9 +487,11 @@ end
         # CArray/CVector/CMatrix (since `CVector = CArray{_,1}` and
         # `CMatrix = CArray{_,2}` may print under either name) with `dims`
         # (NTuple{N,Int32} → ArrayDesc), `data` (Ptr{T}), and `owned`
-        # (Int32 explicit-ownership discriminant) fields, for primitive
-        # numeric T recognized by `numpy_dtypes`.
-        cainfo(desc, typeinfo) = JuliaLibWrapping.carray_struct_info(desc, typeinfo, JuliaLibWrapping.numpy_dtypes, JuliaLibWrapping.pytypes)
+        # (Int32 explicit-ownership discriminant) fields, for any primitive
+        # T. The recognizer reports T's Julia name; `_python_carray_info`
+        # decides whether numpy supports it.
+        cainfo(desc, typeinfo) = JuliaLibWrapping.carray_struct_info(desc, typeinfo)
+        pycainfo(desc, typeinfo) = JuliaLibWrapping._python_carray_info(desc, typeinfo)
 
         # libsimple exercises CVector{Float32} (N=1, primitive pointee, match)
         # and CVector{CTree{Float64}} (struct pointee, no match).
@@ -502,19 +504,23 @@ end
         cv_tree = abi.typeinfo[findtype(abi.typeinfo, "CVector{CTree{Float64}}")]
         info = cainfo(cv_f32, abi.typeinfo)
         @test info !== nothing
-        @test info.pointee_name == "Float32"
-        @test info.dtype == "float32"
-        @test info.pointee_ctype == "ctypes.c_float"
+        @test info.eltype == "Float32"
         @test info.ndim == 1
-        # Struct pointee → no match (no useful numpy mapping).
+        pyinfo = pycainfo(cv_f32, abi.typeinfo)
+        @test pyinfo.eltype == "Float32"
+        @test pyinfo.ndim == 1
+        @test pyinfo.dtype == "float32"
+        @test pyinfo.ctype == "ctypes.c_float"
+        # Struct pointee → no match: `data` must point at a primitive.
         @test cainfo(cv_tree, abi.typeinfo) === nothing
+        @test pycainfo(cv_tree, abi.typeinfo) === nothing
 
         # cmatrix fixture exercises the N=2 case under the CMatrix alias name.
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
         cm_f64 = abi_cm.typeinfo[findtype(abi_cm.typeinfo, "CMatrix{Float64}")]
         info2 = cainfo(cm_f64, abi_cm.typeinfo)
         @test info2 !== nothing
-        @test info2.pointee_name == "Float64"
+        @test info2.eltype == "Float64"
         @test info2.ndim == 2
 
         # carray3 fixture exercises N=3 under the CArray name directly.
@@ -522,12 +528,13 @@ end
         ca_f64_3 = abi_c3.typeinfo[findtype(abi_c3.typeinfo, "CArray{Float64, 3}")]
         info3 = cainfo(ca_f64_3, abi_c3.typeinfo)
         @test info3 !== nothing
-        @test info3.pointee_name == "Float64"
+        @test info3.eltype == "Float64"
         @test info3.ndim == 3
 
         # Hand-built rejections: wrong name, wrong field names, non-integer
-        # dims element, non-numpy pointee, dims-as-primitive (not array),
-        # missing owned, owned present but wrong type.
+        # dims element, dims-as-primitive (not array), missing owned, owned
+        # present but wrong type. Plus a Bool-pointee CArray, which is a
+        # structural match the Python adapter declines.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
         primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
         primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
@@ -578,7 +585,7 @@ end
             ),
             14 => StructDesc(
                 "CVectorBoolDims", 24, 8, FieldDesc[
-                    FieldDesc("dims", 8, 0),  # Bool element — in numpy_dtypes but not Int/UInt
+                    FieldDesc("dims", 8, 0),  # Bool element — not Int/UInt
                     FieldDesc("data", 3, 8),
                     FieldDesc("owned", 1, 16),
                 ]
@@ -596,6 +603,14 @@ end
                     FieldDesc("owned", 2, 16),  # Float32, not Int32
                 ]
             ),
+            17 => PointerDesc("Ptr{Bool}", 7),
+            18 => StructDesc(
+                "CVector{Bool}", 24, 8, FieldDesc[
+                    FieldDesc("dims", 4, 0),
+                    FieldDesc("data", 17, 8),
+                    FieldDesc("owned", 1, 16),
+                ]
+            ),
         )
         @test cainfo(ti[6], ti) !== nothing  # noidiom
         @test cainfo(ti[9], ti) === nothing   # wrong name prefix # noidiom
@@ -606,6 +621,14 @@ end
         @test cainfo(ti[14], ti) === nothing  # Bool dims element rejected # noidiom
         @test cainfo(ti[15], ti) === nothing  # owned missing entirely # noidiom
         @test cainfo(ti[16], ti) === nothing  # owned present but not Int32 # noidiom
+
+        # Bool element: matches structurally, but `Bool` has no
+        # `numpy_dtypes` entry, so the Python adapter rejects it.
+        info_bool = cainfo(ti[18], ti)
+        @test info_bool !== nothing
+        @test info_bool.eltype == "Bool"
+        @test info_bool.ndim == 1
+        @test pycainfo(ti[18], ti) === nothing  # noidiom
 
         # Field order may be any permutation.
         flipped = StructDesc(
@@ -806,11 +829,14 @@ end
         # Structural recognition of the CDict{V} shape: a struct named CDict
         # with `length` (primitive integer), `keys` (Ptr{CString} — same
         # shape as CStrArray's `data`, recognized via `cstring_struct_info`
-        # applied to the pointee), `values` (Ptr{<primitive in
-        # scalar_payload_types>}), and `owned` (an Int32 explicit-ownership
-        # discriminant) fields. The name is only the first gate; the full
-        # 4-field shape and the keys pointee's own shape must also match.
-        cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo, JuliaLibWrapping.scalar_payload_types)
+        # applied to the pointee), `values` (Ptr{<primitive>}), and `owned`
+        # (an Int32 explicit-ownership discriminant) fields. The name is
+        # only the first gate; the full 4-field shape and the keys pointee's
+        # own shape must also match. The recognizer reports V's Julia name;
+        # `_python_cdict_info` decides whether it is a supported payload
+        # type.
+        cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo)
+        pycdinfo(desc, typeinfo) = JuliaLibWrapping._python_cdict_info(desc, typeinfo)
         abi = read_abi_info("bindinginfo_cdict.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -819,7 +845,10 @@ end
         cd = abi.typeinfo[findtype(abi.typeinfo, "CDict{Float64}")]
         info = cdinfo(cd, abi.typeinfo)
         @test !isnothing(info)
-        @test info.value_ctype == "ctypes.c_double"
+        @test info.value_type == "Float64"
+        pyinfo = pycdinfo(cd, abi.typeinfo)
+        @test pyinfo.value_type == "Float64"
+        @test pyinfo.ctype == "ctypes.c_double"
 
         # Hand-built rejections.
         primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -898,7 +927,7 @@ end
                 "CDictUnsupportedValue", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
-                    FieldDesc("values", 14, 16),  # Ptr{NotARealType} — not in pytypes
+                    FieldDesc("values", 14, 16),  # Ptr{NotARealType} — not in scalar_payload_types
                     FieldDesc("owned", 1, 24),
                 ]
             ),
@@ -929,12 +958,9 @@ end
             24 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 1),
             25 => PointerDesc("Ptr{Cvoid}", 24),
             26 => StructDesc(
-                # `values` points to `Cvoid` — present in `pytypes` (maps to
-                # Python `None`, valid for a restype but not a ctypes struct
-                # field) but absent from `scalar_payload_types`. Regression
-                # case for the scalar-only payload restriction: this must be
-                # rejected even though the OLD pytypes-gated check would
-                # have accepted it.
+                # `values` points to `Cvoid`: matches the CDict shape, but
+                # `Cvoid` is absent from `scalar_payload_types` (`None` is
+                # not a valid ctypes field type).
                 "CDictCvoidValue", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
@@ -948,12 +974,15 @@ end
         @test isnothing(cdinfo(ti[17], ti)) # keys' pointee isn't CString-shaped
         @test isnothing(cdinfo(ti[18], ti)) # wrong field names
         @test isnothing(cdinfo(ti[19], ti)) # missing `values` field
-        @test isnothing(cdinfo(ti[20], ti)) # values pointee not in pytypes
+        @test !isnothing(cdinfo(ti[20], ti)) # values pointee is a primitive: a structural match
+        @test cdinfo(ti[20], ti).value_type == "NotARealType"
+        @test isnothing(pycdinfo(ti[20], ti)) # ...but not a supported payload type
         @test isnothing(cdinfo(ti[21], ti)) # keys isn't a pointer-to-struct at all
         @test isnothing(cdinfo(ti[22], ti)) # missing `owned` field entirely
         @test isnothing(cdinfo(ti[23], ti)) # `owned` present but not Int32
-        @test isnothing(cdinfo(ti[26], ti)) # CDict{Cvoid}: not a scalar payload type
-        @test !isnothing(JuliaLibWrapping.cdict_struct_info(ti[26], ti, JuliaLibWrapping.pytypes)) # ...though pytypes alone WOULD have accepted it
+        @test !isnothing(cdinfo(ti[26], ti)) # CDict{Cvoid} matches structurally
+        @test cdinfo(ti[26], ti).value_type == "Cvoid"
+        @test isnothing(pycdinfo(ti[26], ti)) # ...but Cvoid is not a scalar payload type
 
         # Field order may be any permutation.
         permuted = StructDesc(
@@ -969,9 +998,11 @@ end
 
     @testset "copt_struct_info" begin
         # Structural recognition of the COpt{T} shape: a struct named COpt
-        # with `has_value` (Int32 primitive) and `value` (any primitive in
-        # `scalar_payload_types`) fields.
-        coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo, JuliaLibWrapping.scalar_payload_types)
+        # with `has_value` (Int32 primitive) and `value` (any primitive)
+        # fields. The recognizer reports T's Julia name; `_python_copt_info`
+        # decides whether it is a supported payload type.
+        coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo)
+        pycoinfo(desc, typeinfo) = JuliaLibWrapping._python_copt_info(desc, typeinfo)
         abi = read_abi_info("bindinginfo_copt.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
@@ -980,7 +1011,10 @@ end
         co = abi.typeinfo[findtype(abi.typeinfo, "COpt{Float64}")]
         info = coinfo(co, abi.typeinfo)
         @test !isnothing(info)
-        @test info.value_ctype == "ctypes.c_double"
+        @test info.value_type == "Float64"
+        pyinfo = pycoinfo(co, abi.typeinfo)
+        @test pyinfo.value_type == "Float64"
+        @test pyinfo.ctype == "ctypes.c_double"
 
         # Hand-built rejections.
         primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -1016,7 +1050,7 @@ end
             9 => StructDesc(
                 "COptUnsupportedValue", 16, 8, FieldDesc[
                     FieldDesc("has_value", 1, 0),
-                    FieldDesc("value", 4, 8),  # NotARealType — not in pytypes
+                    FieldDesc("value", 4, 8),  # NotARealType — not in scalar_payload_types
                 ]
             ),
             10 => StructDesc(
@@ -1028,10 +1062,9 @@ end
             ),
             11 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 1),
             12 => StructDesc(
-                # `value` is `Cvoid` — present in `pytypes` (maps to Python
-                # `None`) but absent from `scalar_payload_types`. Same
-                # regression case as `CDictCvoidValue` above, for COpt{Nothing}
-                # (`Nothing`/`Cvoid` are the same Julia type).
+                # `value` is `Cvoid`: matches the COpt shape, but `Cvoid`
+                # is absent from `scalar_payload_types`. Represents
+                # COpt{Nothing} (`Nothing`/`Cvoid` are the same Julia type).
                 "COptCvoidValue", 16, 8, FieldDesc[
                     FieldDesc("has_value", 1, 0),
                     FieldDesc("value", 11, 8),
@@ -1042,10 +1075,13 @@ end
         @test isnothing(coinfo(ti[6], ti)) # wrong name prefix
         @test isnothing(coinfo(ti[7], ti)) # has_value is Int64, not Int32
         @test isnothing(coinfo(ti[8], ti)) # wrong field names
-        @test isnothing(coinfo(ti[9], ti)) # value pointee not in pytypes
+        @test !isnothing(coinfo(ti[9], ti)) # value is a primitive: a structural match
+        @test coinfo(ti[9], ti).value_type == "NotARealType"
+        @test isnothing(pycoinfo(ti[9], ti)) # ...but not a supported payload type
         @test isnothing(coinfo(ti[10], ti)) # too many fields
-        @test isnothing(coinfo(ti[12], ti)) # COpt{Nothing}: not a scalar payload type
-        @test !isnothing(JuliaLibWrapping.copt_struct_info(ti[12], ti, JuliaLibWrapping.pytypes)) # ...though pytypes alone WOULD have accepted it
+        @test !isnothing(coinfo(ti[12], ti)) # COpt{Nothing} matches structurally
+        @test coinfo(ti[12], ti).value_type == "Cvoid"
+        @test isnothing(pycoinfo(ti[12], ti)) # ...but Cvoid is not a scalar payload type
 
         # Field order may be either way.
         flipped = StructDesc(
@@ -1055,6 +1091,52 @@ end
             ]
         )
         @test !isnothing(coinfo(flipped, ti))
+    end
+
+    @testset "jlwstatus_location" begin
+        # Three outcomes: no status, the return type *is* a JLWStatus, and a
+        # JLWStatus embedded as a top-level field of the return struct. The
+        # recognizer reports the raw ABI field name; `_python_status_path`
+        # turns it into a Python member path, escaping keywords.
+        abi = read_abi_info("bindinginfo_jlwstatus.json")
+        byname(sym) = only(m for m in abi.entrypoints if m.symbol == sym)
+
+        @test JuliaLibWrapping.jlwstatus_location(byname("plain_add"), abi.typeinfo) === nothing
+        @test JuliaLibWrapping._python_status_path(byname("plain_add"), abi.typeinfo) === nothing
+
+        direct = JuliaLibWrapping.jlwstatus_location(byname("do_thing"), abi.typeinfo)
+        @test direct !== nothing
+        @test direct.field === nothing
+        @test JuliaLibWrapping._python_status_path(byname("do_thing"), abi.typeinfo) == ""
+
+        embedded = JuliaLibWrapping.jlwstatus_location(byname("compute"), abi.typeinfo)
+        @test embedded !== nothing
+        @test embedded.field == "status"
+        @test JuliaLibWrapping._python_status_path(byname("compute"), abi.typeinfo) == ".status"
+
+        # A field named after a Python keyword is escaped on the way out;
+        # the recognizer itself reports the unsanitized ABI name.
+        primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        msgarr = ArrayDesc("NTuple{256, UInt8}", 3, 256, 256, 1)
+        primu8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        status = StructDesc(
+            "JLWStatus", 264, 8, FieldDesc[
+                FieldDesc("code", 1, 0),
+                FieldDesc("message", 2, 8),
+            ]
+        )
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => primi32, 2 => msgarr, 3 => primu8, 4 => status,
+            5 => StructDesc(
+                "KeywordFieldResult", 272, 8, FieldDesc[
+                    FieldDesc("lambda", 4, 0),
+                    FieldDesc("n", 1, 264),
+                ]
+            ),
+        )
+        method = JuliaLibWrapping.MethodDesc("kw", "kw()", 5, JuliaLibWrapping.ArgDesc[])
+        @test JuliaLibWrapping.jlwstatus_location(method, ti).field == "lambda"
+        @test JuliaLibWrapping._python_status_path(method, ti) == ".lambda_"
     end
 
     @testset "_is_void_struct" begin
@@ -1391,12 +1473,12 @@ end
     end
 
     @testset "CDict{Int32} vocabulary" begin
-        # Proves `value_ctype`/`value_dtype_name` parameterization (and
-        # the generated from_dict/as_dict codegen that substitutes them)
-        # varies correctly for a value type OTHER than the Float64
-        # exercised by the main "CDict vocabulary" testset. Field offsets
-        # are identical to the Float64 fixture — `values` is a pointer
-        # field, so its own size never depends on the pointee's size.
+        # Verifies that the value-type parameterization (`_python_cdict_info`'s
+        # `ctype` and the generated from_dict/as_dict codegen that
+        # substitutes it) varies correctly for a value type other than the
+        # Float64 exercised by the main "CDict vocabulary" testset. Field
+        # offsets are identical to the Float64 fixture — `values` is a
+        # pointer field, so its own size never depends on the pointee's size.
         # Also re-exercises the jlw_free `ctypes.c_void_p` argtype
         # handling on a second, independent fixture.
         abi = read_abi_info("bindinginfo_cdict_int32.json")
@@ -1413,7 +1495,7 @@ end
                 "(\"keys\", ctypes.POINTER(CString))", bindings
             )
             @test occursin("(\"values\", ctypes.POINTER(ctypes.c_int32))", bindings)
-            # <value_ctype> substitution varies: Int32 here, not Float64.
+            # The value ctype substitution varies: Int32 here, not Float64.
             @test occursin("varr = (ctypes.c_int32 * len(keys))(*d.values())", bindings)
             @test occursin(
                 "values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32))", bindings
@@ -1775,7 +1857,7 @@ end
 
         # Helper recognizes the raw-primitive-pointer argument.
         method = only(abi.entrypoints)
-        @test JuliaLibWrapping.raw_primitive_pointer_args(method, abi.typeinfo, JuliaLibWrapping.numpy_dtypes) == [1]
+        @test JuliaLibWrapping.raw_primitive_pointer_args(method, abi.typeinfo) == [1]
 
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
@@ -1830,7 +1912,7 @@ end
         # and don't pick up the docstring.
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
         method_cm = only(abi_cm.entrypoints)
-        @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo, JuliaLibWrapping.numpy_dtypes))
+        @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
     end
 
     @testset "JLWStatus convention" begin
