@@ -47,6 +47,20 @@ end
 
 const TypeDesc = Union{StructDesc, PointerDesc, PrimitiveTypeDesc, ArrayDesc}
 
+"""
+    _void_type_id(id, void_id::Int) -> Int
+
+`id` as an `Int`, or `void_id` when the ABI JSON writes `null` in its place.
+
+`juliac` spells `Cvoid` two ways: as a zero-field `Nothing` struct with an id of
+its own, and — from JuliaC 0.3.9 — as a `null` type id in the two positions where
+a type may be absent, a void pointer's pointee and a void return.
+[`parse_abi_info`](@ref) maps `null` onto the `Nothing` struct, so the rest of the
+pipeline sees one shape.
+"""
+_void_type_id(id::Integer, ::Int) = Int(id)
+_void_type_id(::Nothing, void_id::Int) = void_id
+
 function from_json(::Type{PrimitiveTypeDesc}, type::AbstractDict{String, Any})
     return PrimitiveTypeDesc(
 	type["name"],
@@ -73,8 +87,8 @@ function from_json(::Type{StructDesc}, type::AbstractDict{String, Any})
     )
 end
 
-function from_json(::Type{PointerDesc}, json::AbstractDict{String, Any})
-    return PointerDesc(json["name"], json["pointee_type_id"])
+function from_json(::Type{PointerDesc}, json::AbstractDict{String, Any}, void_id::Int)
+    return PointerDesc(json["name"], _void_type_id(json["pointee_type_id"], void_id))
 end
 
 function from_json(::Type{ArrayDesc}, json::AbstractDict{String, Any})
@@ -87,14 +101,14 @@ function from_json(::Type{ArrayDesc}, json::AbstractDict{String, Any})
     )
 end
 
-function from_json(::Type{TypeDesc}, json::AbstractDict{String, Any})
+function from_json(::Type{TypeDesc}, json::AbstractDict{String, Any}, void_id::Int)
     kind = json["kind"]::String
     if kind === "primitive"
         return from_json(PrimitiveTypeDesc, json)
     elseif kind === "struct"
         return from_json(StructDesc, json)
     elseif kind === "pointer"
-        return from_json(PointerDesc, json)
+        return from_json(PointerDesc, json, void_id)
     elseif kind === "array"
         return from_json(ArrayDesc, json)
     else
@@ -102,11 +116,11 @@ function from_json(::Type{TypeDesc}, json::AbstractDict{String, Any})
     end
 end
 
-function from_json(::Type{MethodDesc}, method::AbstractDict{String, Any})
+function from_json(::Type{MethodDesc}, method::AbstractDict{String, Any}, void_id::Int)
     return MethodDesc(
         method["symbol"],
         method["name"],
-        method["returns"]["type_id"],
+        _void_type_id(method["returns"]["type_id"], void_id),
         ArgDesc[
             ArgDesc(
                 arg["name"],
@@ -240,17 +254,27 @@ is the dictionary returned by `JSON.parsefile` (or `JSON.parse`) on such a file.
 See [`read_abi_info`](@ref) for the file-based convenience.
 """
 function parse_abi_info(parsed::AbstractDict)
+    # Type ids run 1:n, so n+1 is free for the `Nothing` struct a `null` type id
+    # stands for (see `_void_type_id`). It joins `typedescs` only if something
+    # refers to it.
+    void_id = length(parsed["types"]) + 1
+
     # Extract type descriptors.
     typedescs = OrderedDict{Int, TypeDesc}()
     for type in parsed["types"]
         id = Int(type["id"]::Integer)
-        typedescs[id] = from_json(TypeDesc, type)
+        typedescs[id] = from_json(TypeDesc, type, void_id)
     end
 
     # Collect entrypoints.
     entrypoints = MethodDesc[]
     for method in parsed["functions"]
-        push!(entrypoints, from_json(MethodDesc, method))
+        push!(entrypoints, from_json(MethodDesc, method, void_id))
+    end
+
+    if any(d -> d isa PointerDesc && d.pointee_type == void_id, values(typedescs)) ||
+       any(m -> m.return_type == void_id, entrypoints)
+        typedescs[void_id] = StructDesc("Nothing", 0, 1, FieldDesc[])
     end
 
     forward_declared = sort_declarations!(typedescs)

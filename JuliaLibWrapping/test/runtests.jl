@@ -16,6 +16,26 @@ function onlymatch(f, collection)
     return matches[1]
 end
 
+# Locate a Python 3 interpreter for the wrapper-validation tests below. Some
+# platforms (notably python.org installers on Windows) register `python`
+# rather than `python3` on PATH; accept either.
+function _find_python()
+    p = Sys.which("python3")
+    isnothing(p) || return p
+    return Sys.which("python")
+end
+
+# Run `python -c "ast.parse(...)"` against `path`, syntax-checking the
+# generated wrapper. The path is passed as a `sys.argv` element rather than
+# interpolated into a single-quoted Python string literal: a Windows
+# absolute path contains backslashes, which are escape characters inside a
+# Python string literal, so interpolating one directly is a correctness
+# hazard that argv sidesteps entirely.
+function _ast_parse_ok(python::AbstractString, path::AbstractString)
+    cmd = `$python -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" $path`
+    return success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+end
+
 @testset "JuliaLibWrapping.jl" begin
     @testset "parse_abi_info" begin
         abi_info = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
@@ -88,6 +108,41 @@ end
             "functions" => Any[],
         )
         @test_throws "unexpected kind 'nonsense'" parse_abi_info(bad)
+    end
+
+    @testset "parse_abi_info: null Cvoid type ids" begin
+        # JuliaC 0.3.9 writes `null` rather than a `Nothing` struct id for a
+        # void pointer's pointee and a void return. Both resolve to the
+        # zero-field `Nothing` struct the rest of the pipeline expects.
+        doc = Dict{String, Any}(
+            "types" => Any[
+                Dict{String, Any}(
+                    "id" => 1, "kind" => "primitive", "name" => "Int64",
+                    "signed" => true, "bits" => 64, "size" => 8, "alignment" => 8,
+                ),
+                Dict{String, Any}(
+                    "id" => 2, "kind" => "pointer", "name" => "Ptr{Nothing}",
+                    "pointee_type_id" => nothing,
+                ),
+            ],
+            "functions" => Any[
+                Dict{String, Any}(
+                    "symbol" => "jlw_free", "name" => "jlw_free(Ptr{Nothing})",
+                    "returns" => Dict{String, Any}("type_id" => nothing),
+                    "arguments" => Any[Dict{String, Any}("name" => "p", "type_id" => 2)],
+                ),
+            ],
+        )
+        (; typeinfo, entrypoints) = parse_abi_info(doc)
+        void = typeinfo[3]
+        @test void isa StructDesc
+        @test void.name == "Nothing"
+        @test isempty(void.fields)
+        @test typeinfo[2].pointee_type == 3
+        @test only(entrypoints).return_type == 3
+
+        # An ABI without a null type id gains no synthetic descriptor.
+        @test length(read_abi_info("bindinginfo_rawptr.json").typeinfo) == 3
     end
 
     @testset "read_abi_info" begin
@@ -262,7 +317,7 @@ end
         abi_info = read_abi_info("bindinginfo_libsimple.json")
         mktempdir() do path
             dest = PythonTarget(path, "libsimple", "libsimple")
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
 
             bindings_path = joinpath(path, "libsimple", "_lowlevel.py")
             facade_path = joinpath(path, "libsimple", "_facade.py")
@@ -322,7 +377,7 @@ end
             open(facade_path, "a") do io
                 write(io, sentinel)
             end
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
             @test occursin(sentinel, read(facade_path, String))
 
             pyproject = read(pyproject_path, String)
@@ -351,16 +406,14 @@ end
             @test !occursin("RuntimeWarning", priv)
             @test occursin("_jlw_loaded.add(_jlw_this_pkg)", priv)
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 === nothing
                 # CI must exercise the Python wrapper; locally we allow skipping
                 # so contributors without python3 can still run the suite.
                 haskey(ENV, "CI") && error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             else
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
+                @test _ast_parse_ok(python3, facade_path)
             end
         end
 
@@ -384,13 +437,13 @@ end
             abi_info = read_abi_info("bindinginfo_libsimple.json")
             mktempdir() do path
                 dest = PythonTarget(path, "libsimple", "libsimple"; version = "1.2.3")
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
                 pyproject = read(joinpath(path, "pyproject.toml"), String)
                 @test occursin("version = \"1.2.3\"", pyproject)
             end
             mktempdir() do path
                 dest = PythonTarget(path, "libsimple", "libsimple")
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
                 pyproject = read(joinpath(path, "pyproject.toml"), String)
                 @test occursin("version = \"0.0.0\"", pyproject)
             end
@@ -406,7 +459,7 @@ end
                     path, "libsimple", "libsimple";
                     bundle_subdir = "bundle"
                 )
-                write_wrapper(dest, abi_info)
+                write_wrapper(dest, abi_info; os_kernel = :linux)
 
                 bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
                 # Bundle path is searched first so the baked-in RUNPATH
@@ -421,11 +474,145 @@ end
                 @test occursin("\"bundle/lib/julia/*\"", pyproject)
                 @test occursin("\"bundle/artifacts/*/**/*\"", pyproject)
 
-                python3 = Sys.which("python3")
+                python3 = _find_python()
                 if python3 !== nothing
                     bp = joinpath(path, "libsimple", "_lowlevel.py")
-                    cmd = `$python3 -c "import ast; ast.parse(open('$bp').read())"`
-                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                    @test _ast_parse_ok(python3, bp)
+                end
+            end
+        end
+
+        @testset "cross-platform loader (os_kernel)" begin
+            # `_current_os_kernel` reports one of the three supported kernels
+            # for whatever host actually runs this test. Both facts live in
+            # shared module scope (`platform.jl`), not inside the Python
+            # target, so any future target consumes the same definitions.
+            @test JuliaLibWrapping._current_os_kernel() in (:linux, :apple, :windows)
+            @test JuliaLibWrapping.bundle_libdir(:windows) == "bin"
+            @test JuliaLibWrapping.bundle_libdir(:linux) == "lib"
+            @test JuliaLibWrapping.bundle_libdir(:apple) == "lib"
+
+            abi_info = read_abi_info("bindinginfo_libsimple.json")
+
+            # ── flat layout, :windows — the `_find_julia_bin` fallback ─────
+            mktempdir() do path
+                dest = PythonTarget(path, "libsimple", "libsimple")
+                write_wrapper(dest, abi_info; os_kernel = :windows)
+                bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+
+                @test occursin("import shutil", bindings)
+                @test occursin("def _find_julia_bin():", bindings)
+                @test occursin("JULIA_BINDIR", bindings)
+                @test occursin("JULIA_PREFIX", bindings)
+                @test occursin("shutil.which(\"julia\")", bindings)
+                @test occursin("_julia_bin = _find_julia_bin()", bindings)
+                @test occursin("os.add_dll_directory(_julia_bin)", bindings)
+                @test occursin(
+                    "os.environ[\"PATH\"] = _julia_bin + os.pathsep + os.environ.get(\"PATH\", \"\")",
+                    bindings
+                )
+                # DLL-search-path-only: Julia's own bin/ is never searched as
+                # a candidate location for the wrapped library itself — a
+                # user's built library never lives there, and a same-named
+                # DLL that happened to live there would be silently
+                # (mis)loaded and fail confusingly later.
+                @test !occursin("pathlib.Path(_julia_bin)", bindings)
+                # The widening runs BEFORE every return from
+                # `_resolve_library_path` — the environment override as much
+                # as the suffix search loop. Each of those returns feeds
+                # `ctypes.CDLL`, which resolves the library's own dependency
+                # on libjulia*.dll against the search path as it stands
+                # then, so widening after an early return never runs on the
+                # path that needs it.
+                @test first(findfirst("_julia_bin = _find_julia_bin()", bindings)) <
+                    first(findfirst("override = os.environ.get(_LIBRARY_ENV_VAR)", bindings))
+                @test first(findfirst("_julia_bin = _find_julia_bin()", bindings)) <
+                    first(findfirst("for suffix in suffixes:", bindings))
+                # The runtime `sys.platform` suffix-selection logic is
+                # unchanged — it already handles all three platforms
+                # dynamically, independent of the build-time `os_kernel`.
+                @test occursin("suffixes = (\".dll\",)", bindings)
+                @test occursin("suffixes = (\".dylib\", \".so\")", bindings)
+                @test occursin("suffixes = (\".so\", \".dylib\")", bindings)
+
+                # `__init__.py` has NO add_dll_directory preamble in the flat
+                # layout — that fallback lives entirely in `_lowlevel.py`
+                # (there is no static bundle/bin directory to point at).
+                init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                @test !occursin("add_dll_directory", init)
+
+                golden = read(joinpath(@__DIR__, "expected_libsimple_lowlevel_win.py"), String)
+                @test bindings == golden
+
+                python3 = _find_python()
+                if !isnothing(python3)
+                    @test _ast_parse_ok(python3, joinpath(path, "libsimple", "_lowlevel.py"))
+                elseif haskey(ENV, "CI")
+                    error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+                end
+            end
+
+            # ── bundled layout, :windows — bin/ search dir + __init__ preamble ─
+            mktempdir() do path
+                dest = PythonTarget(
+                    path, "libsimple", "libsimple";
+                    bundle_subdir = "bundle"
+                )
+                write_wrapper(dest, abi_info; os_kernel = :windows)
+                bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+
+                # Bundled layout needs no `_find_julia_bin` fallback — the
+                # bundle already carries its own runtime.
+                @test !occursin("_find_julia_bin", bindings)
+                @test !occursin("import shutil", bindings)
+                @test occursin("search_dirs = (_HERE / \"bundle\" / \"bin\", _HERE)", bindings)
+
+                init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                @test occursin("add_dll_directory", init)
+                @test occursin("_bin = _os.path.join(_d, \"bundle\", \"bin\")", init)
+                @test occursin("hasattr(_os, \"add_dll_directory\")", init)
+                @test occursin(
+                    "_os.environ[\"PATH\"] = _bin + _os.pathsep + _os.environ.get(\"PATH\", \"\")",
+                    init
+                )
+                # The add_dll_directory preamble runs before the facade/
+                # lowlevel import that transitively reaches `ctypes.CDLL`.
+                @test first(findfirst("add_dll_directory", init)) < first(findfirst("from ._facade import", init))
+            end
+
+            # ── default host (:linux on CI) and explicit :linux — no Windows
+            #    text anywhere, in either layout ──────────────────────────
+            for bundle_subdir in (nothing, "bundle")
+                mktempdir() do path
+                    dest = PythonTarget(
+                        path, "libsimple", "libsimple";
+                        bundle_subdir
+                    )
+                    write_wrapper(dest, abi_info; os_kernel = :linux)
+                    bindings = read(joinpath(path, "libsimple", "_lowlevel.py"), String)
+                    @test !occursin("_find_julia_bin", bindings)
+                    @test !occursin("add_dll_directory", bindings)
+                    init = read(joinpath(path, "libsimple", "__init__.py"), String)
+                    @test !occursin("add_dll_directory", init)
+                end
+            end
+
+            # ── :apple spot-check — no Windows-only branch fires; codegen is
+            #    byte-identical to the (default) :linux output, since no
+            #    macOS-specific text exists on the target side (JuliaC
+            #    itself handles @loader_path + codesign; nothing here is
+            #    macOS-conditional beyond the runtime `sys.platform` check
+            #    already covered above) ───────────────────────────────────
+            mktempdir() do path_linux
+                mktempdir() do path_apple
+                    dest_linux = PythonTarget(path_linux, "libsimple", "libsimple")
+                    dest_apple = PythonTarget(path_apple, "libsimple", "libsimple")
+                    write_wrapper(dest_linux, abi_info; os_kernel = :linux)
+                    write_wrapper(dest_apple, abi_info; os_kernel = :apple)
+                    bindings_linux = read(joinpath(path_linux, "libsimple", "_lowlevel.py"), String)
+                    bindings_apple = read(joinpath(path_apple, "libsimple", "_lowlevel.py"), String)
+                    @test bindings_linux == bindings_apple
+                    @test occursin("suffixes = (\".dylib\", \".so\")", bindings_apple)
                 end
             end
         end
@@ -1273,7 +1460,7 @@ end
         abi = read_abi_info("bindinginfo_cstring.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstring_demo", "libcstring")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstring_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1315,10 +1502,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1338,7 +1524,7 @@ end
         abi = read_abi_info("bindinginfo_cstrarray.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstrarray_demo", "libcstrarray")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstrarray_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1397,13 +1583,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1423,7 +1607,7 @@ end
         abi = read_abi_info("bindinginfo_cdict.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_demo", "libcdict")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cdict_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1478,13 +1662,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cdict_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1503,7 +1685,7 @@ end
         abi = read_abi_info("bindinginfo_cdict_int32.json")
         mktempdir() do path
             dest = PythonTarget(path, "cdict_int32_demo", "libcdicti32")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cdict_int32_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1540,13 +1722,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cdict_int32_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1560,7 +1740,7 @@ end
         abi = read_abi_info("bindinginfo_copt.json")
         mktempdir() do path
             dest = PythonTarget(path, "copt_demo", "libcopt")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "copt_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1581,13 +1761,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_copt_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "copt_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1653,7 +1831,7 @@ end
         @test JuliaLibWrapping._release_symbols_present(abi) === false
         mktempdir() do path
             dest = PythonTarget(path, "cstrarray_nofree_demo", "libcstrarraynofree")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1701,13 +1879,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_nofree_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1720,7 +1896,7 @@ end
         abi = read_abi_info("bindinginfo_cmatrix.json")
         mktempdir() do path
             dest = PythonTarget(path, "cmatrix_demo", "libcmatrix")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "cmatrix_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1769,10 +1945,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1786,7 +1961,7 @@ end
         abi = read_abi_info("bindinginfo_carray3.json")
         mktempdir() do path
             dest = PythonTarget(path, "carray3_demo", "libcarray3")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "carray3_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1814,10 +1989,9 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1833,7 +2007,7 @@ end
         abi = read_abi_info("bindinginfo_carray_owned.json")
         mktempdir() do path
             dest = PythonTarget(path, "carray_owned_demo", "libcarrayowned")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "carray_owned_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1869,10 +2043,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
+                facade_path = joinpath(path, "carray_owned_demo", "_facade.py")
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1889,7 +2064,7 @@ end
         @test JuliaLibWrapping._release_symbols_present(abi) === false
         mktempdir() do path
             dest = PythonTarget(path, "carray_owned_nofree_demo", "libcarrayownednofree")
-            write_wrapper(dest, abi)
+            write_wrapper(dest, abi; os_kernel = :linux)
 
             bindings_path = joinpath(path, "carray_owned_nofree_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
@@ -1921,13 +2096,11 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_nofree_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
                 facade_path = joinpath(path, "carray_owned_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, facade_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2004,7 +2177,7 @@ end
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
             bindings = @test_logs (:info,) match_mode = :any begin
-                write_wrapper(dest, abi)
+                write_wrapper(dest, abi; os_kernel = :linux)
                 read(joinpath(path, "rawptr_demo", "_lowlevel.py"), String)
             end
 
@@ -2040,11 +2213,10 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_rawptr_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
                 bindings_path = joinpath(path, "rawptr_demo", "_lowlevel.py")
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2062,7 +2234,7 @@ end
         abi_info = read_abi_info("bindinginfo_jlwstatus.json")
         mktempdir() do path
             dest = PythonTarget(path, "demo", "libdemo")
-            write_wrapper(dest, abi_info)
+            write_wrapper(dest, abi_info; os_kernel = :linux)
 
             bindings = read(joinpath(path, "demo", "_lowlevel.py"), String)
             facade = read(joinpath(path, "demo", "_facade.py"), String)
@@ -2121,11 +2293,10 @@ end
             golden_facade = read(joinpath(@__DIR__, "expected_jlwstatus_facade.py"), String)
             @test facade == golden_facade
 
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             if python3 !== nothing
                 bindings_path = joinpath(path, "demo", "_lowlevel.py")
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                @test _ast_parse_ok(python3, bindings_path)
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end

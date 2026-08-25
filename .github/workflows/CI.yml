@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
-    name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    name: ${{ matrix.package }} - Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental == true }}
     timeout-minutes: 60
@@ -35,6 +35,8 @@ jobs:
           - 'nightly'
         os:
           - ubuntu-latest
+          - macos-latest
+          - windows-latest
         arch:
           - x64
         include:
@@ -48,9 +50,9 @@ jobs:
           - package: JuliaLibWrapping
             version: 'min'
             experimental: true
-          # juliac --trim is currently broken on Julia nightly (verifier
-          # errors in Base, e.g. unresolved HashState/IOContext calls);
-          # keep the signal visible without failing the workflow.
+          # The juliac build breaks on Julia nightly whenever the compiler or
+          # Pkg changes ahead of the released toolchain. Keep the signal
+          # visible without failing the workflow.
           - package: JuliaLibWrapping
             version: 'nightly'
             experimental: true
@@ -59,9 +61,20 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
+          # macos-latest is an Apple Silicon (arm64) runner; matrix.arch is
+          # x64 for the ubuntu/windows cells, so override it to "default"
+          # (let setup-julia pick the host's native arch) on macOS instead of
+          # forcing an x64 Julia onto an arm64 runner.
+          arch: ${{ matrix.os == 'macos-latest' && 'default' || matrix.arch }}
           project: ${{ matrix.package }}
       - uses: julia-actions/cache@v3
+      # On Windows, MinGW-w64 is pre-installed at C:\msys64\mingw64\bin but is
+      # not on PATH. Add it so the `gcc`/`clang` availability gates in
+      # test_build_library.jl's end-to-end tests find a compiler.
+      - name: Set up MinGW-w64 (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
       - uses: julia-actions/julia-buildpkg@v1
         with:
           project: ${{ matrix.package }}

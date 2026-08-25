@@ -27,13 +27,15 @@ end
     @testset "validate [sources] paths" begin
         mktempdir() do proj
             open(joinpath(proj, "Project.toml"), "w") do io
-                write(io, """
-                name = "Dummy"
-                uuid = "00000000-0000-0000-0000-000000000000"
+                write(
+                    io, """
+                    name = "Dummy"
+                    uuid = "00000000-0000-0000-0000-000000000000"
 
-                [sources]
-                Foo = {path = "../foo"}
-                """)
+                    [sources]
+                    Foo = {path = "../foo"}
+                    """
+                )
             end
             entry = joinpath(proj, "src.jl")
             touch(entry)
@@ -48,16 +50,22 @@ end
             @test occursin("Foo", err.msg)
         end
 
-        # Absolute paths are accepted.
+        # Absolute paths are accepted. The literal path must be a
+        # platform-correct absolute path (and, on Windows, pre-escaped for
+        # TOML's basic-string backslash rules) since
+        # `_validate_sources_absolute` calls `isabspath` on it.
         mktempdir() do proj
+            foo_path = Sys.iswindows() ? "C:\\\\tmp\\\\foo" : "/tmp/foo"
             open(joinpath(proj, "Project.toml"), "w") do io
-                write(io, """
-                name = "Dummy"
-                uuid = "00000000-0000-0000-0000-000000000001"
+                write(
+                    io, """
+                    name = "Dummy"
+                    uuid = "00000000-0000-0000-0000-000000000001"
 
-                [sources]
-                Foo = {path = "/tmp/foo"}
-                """)
+                    [sources]
+                    Foo = {path = "$foo_path"}
+                    """
+                )
             end
             @test JuliaLibWrapping._validate_sources_absolute(proj) === nothing
         end
@@ -79,8 +87,10 @@ end
         if ext === nothing
             for be in (:auto, :juliac)
                 err = try
-                    build_library(entry, AbstractTarget[]; project = proj,
-                                  libname = "abi_stress", backend = be)
+                    build_library(
+                        entry, AbstractTarget[]; project = proj,
+                        libname = "abi_stress", backend = be
+                    )
                     nothing
                 catch e
                     e
@@ -92,8 +102,10 @@ end
 
         # Unknown backend rejected.
         err = try
-            build_library(entry, AbstractTarget[]; project = proj,
-                          libname = "abi_stress", backend = :bogus)
+            build_library(
+                entry, AbstractTarget[]; project = proj,
+                libname = "abi_stress", backend = :bogus
+            )
             nothing
         catch e
             e
@@ -103,8 +115,10 @@ end
 
         # Unknown trim mode rejected.
         err = try
-            build_library(entry, AbstractTarget[]; project = proj,
-                          libname = "abi_stress", trim = :wild)
+            build_library(
+                entry, AbstractTarget[]; project = proj,
+                libname = "abi_stress", trim = :wild
+            )
             nothing
         catch e
             e
@@ -115,16 +129,18 @@ end
 
     @testset "bundle validation" begin
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
-        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+        proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
 
         # bundle = true with a PythonTarget lacking bundle_subdir must
         # fail immediately: writing into the package would leave the
         # generated loader looking in the wrong place.
         err = try
-            build_library(entry,
+            build_library(
+                entry,
                 [PythonTarget("/tmp", "pkg", "libfoo")];
                 project = proj, libname = "abi_stress",
-                bundle = true)
+                bundle = true
+            )
             nothing
         catch e
             e
@@ -132,6 +148,34 @@ end
         @test err isa ArgumentError
         @test occursin("needs `bundle_subdir", err.msg)
         @test occursin("\"pkg\"", err.msg)
+    end
+
+    @testset "privatize mislabel (Windows build host)" begin
+        # `_iswindows` is injectable so this exercises the Windows no-op
+        # branch on any host: `privatize = true` must be downgraded to
+        # `privatized = false` (with a warning) rather than mislabeling a
+        # package whose bundle was never actually salted — JuliaC does not
+        # implement libjulia SONAME salting on Windows.
+        apply = JuliaLibWrapping._apply_privatization
+        t = PythonTarget("/tmp/pkgdir", "pkg", "libfoo"; bundle_subdir = "bundle")
+
+        out = @test_logs (:warn, r"privatize = true.*no effect.*Windows"i) match_mode = :any begin
+            apply(t, true; _iswindows = true)
+        end
+        @test !out.privatized
+        @test out.dir == t.dir
+        @test out.package_name == t.package_name
+        @test out.bundle_subdir == t.bundle_subdir
+
+        # A non-Windows host still privatizes normally — the new branch
+        # changes nothing off Windows.
+        out2 = apply(t, true; _iswindows = false)
+        @test out2.privatized
+
+        # The default `_iswindows = Sys.iswindows()` reflects whatever host
+        # actually runs this test (true unless CI ever runs it on Windows).
+        out3 = apply(t, true)
+        @test out3.privatized == !Sys.iswindows()
     end
 
     @testset "end-to-end" begin
@@ -142,15 +186,21 @@ end
         if !juliac_ok
             @info "Skipping build_library end-to-end test" has_julia has_cc VERSION
         else
-            entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
-                             "src", "abi_stress.jl")
-            proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+            entry = joinpath(
+                @__DIR__, "..", "examples", "abi_stress",
+                "src", "abi_stress.jl"
+            )
+            proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
             mktempdir() do out
-                result = build_library(entry,
-                    [CTarget(out, "abi_stress"),
-                     PythonTarget(out, "abi_stress_py", "abi_stress")];
+                result = build_library(
+                    entry,
+                    [
+                        CTarget(out, "abi_stress"),
+                        PythonTarget(out, "abi_stress_py", "abi_stress"),
+                    ];
                     project = proj, libname = "abi_stress",
-                    libdir = out, cpu_target = "generic")
+                    libdir = out, cpu_target = "generic"
+                )
                 @test isfile(result.library)
                 @test isfile(result.abi_path)
                 @test result.abi_info isa JuliaLibWrapping.ABIInfo
@@ -162,10 +212,9 @@ end
 
                 lowlevel = joinpath(out, "abi_stress_py", "_lowlevel.py")
                 @test isfile(lowlevel)
-                python3 = Sys.which("python3")
-                if python3 !== nothing
-                    cmd = `$python3 -c "import ast; ast.parse(open('$lowlevel').read())"`
-                    @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                python3 = _find_python()
+                if !isnothing(python3)
+                    @test _ast_parse_ok(python3, lowlevel)
                 end
             end
         end
@@ -183,7 +232,7 @@ end
         if !juliac_ok
             @info "Skipping example smoke tests" has_julia has_cc VERSION
         else
-            python3 = Sys.which("python3")
+            python3 = _find_python()
             # The smoke tests and the generated CArray helpers both need numpy.
             has_numpy = python3 !== nothing &&
                 success(pipeline(`$python3 -c "import numpy"`; stderr = devnull))
@@ -227,28 +276,38 @@ end
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
         ext === nothing && error("JLW_TEST_BUNDLE set but JuliaC.jl is not loaded")
         VERSION >= v"1.13.0-rc1" || error("JLW_TEST_BUNDLE set but julia < 1.13")
-        python3 = Sys.which("python3")
-        python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH")
+        python3 = _find_python()
+        isnothing(python3) && error("JLW_TEST_BUNDLE set but python3 not on PATH")
         # The generated _lowlevel.py imports numpy (CVector helpers).
         # Report the missing dependency before attempting the import.
-        has_numpy = success(pipeline(`$python3 -c "import numpy"`; stderr=devnull))
+        has_numpy = success(pipeline(`$python3 -c "import numpy"`; stderr = devnull))
         has_numpy || error("JLW_TEST_BUNDLE set but `python3 -c 'import numpy'` failed; install numpy in this python")
 
-        entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
-                         "src", "abi_stress.jl")
-        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+        entry = joinpath(
+            @__DIR__, "..", "examples", "abi_stress",
+            "src", "abi_stress.jl"
+        )
+        proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
         mktempdir() do out
-            result = build_library(entry,
-                [PythonTarget(out, "abi_stress_py", "abi_stress";
-                              bundle_subdir = "bundle")];
+            result = build_library(
+                entry,
+                [
+                    PythonTarget(
+                        out, "abi_stress_py", "abi_stress";
+                        bundle_subdir = "bundle"
+                    ),
+                ];
                 project = proj, libname = "abi_stress",
-                libdir = out, bundle = true)
+                libdir = out, bundle = true
+            )
             @test result.bundle_dir !== nothing
             @test isdir(result.bundle_dir)
 
             pkgdir = joinpath(out, "abi_stress_py")
-            bundled_lib = joinpath(pkgdir, "bundle", "lib",
-                                   "abi_stress." * Base.Libc.Libdl.dlext)
+            bundled_lib = joinpath(
+                pkgdir, "bundle", "lib",
+                "abi_stress." * Base.Libc.Libdl.dlext
+            )
             @test isfile(bundled_lib)
             # libjulia must be next to the user lib so the embedded
             # RUNPATH ($ORIGIN/../lib[/julia]) resolves it. Privatization is on
@@ -260,9 +319,11 @@ end
             @test !any(startswith.(salted, "libjulia"))
 
             # Import directly from `out`, without installing.
-            cmd = addenv(`$python3 -c "import abi_stress_py; print('ok')"`,
-                         "PYTHONPATH" => out)
-            @test success(run(pipeline(cmd; stderr=stderr, stdout=stdout); wait=true))
+            cmd = addenv(
+                `$python3 -c "import abi_stress_py; print('ok')"`,
+                "PYTHONPATH" => out
+            )
+            @test success(run(pipeline(cmd; stderr = stderr, stdout = stdout); wait = true))
         end
     end
 end
