@@ -213,9 +213,7 @@ Two limits apply to that arrangement:
 This behavior is tested on Linux and macOS, both of which resolve
 `libjulia` via a baked-in rpath (`$ORIGIN`/`@loader_path`). Windows has no
 rpath equivalent, and `juliac` does not yet implement SONAME salting there,
-so `privatize = true` has no effect on a Windows build — see
-[Platform support](@ref) for the Windows loader mechanism and the
-resulting privatization caveat.
+so `privatize = true` has no effect on a Windows build.
 
 At import time, generated `_lowlevel.py` files record their package names in
 `sys._jlw_loaded_packages`. A non-privatized package emits a `RuntimeWarning`

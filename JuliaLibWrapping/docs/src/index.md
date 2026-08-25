@@ -31,9 +31,6 @@ loading multiple libraries in one process, and generated Python files.
   Python wrapper using numpy.
 - [Concepts](@ref): the pipeline, the ABI data model, the extension
   point for new target languages, and runtime bundling.
-- [Platform support](@ref): what's tested where (Linux/macOS/Windows CI),
-  the Windows loader mechanism, and a checklist for a future target's
-  author.
 - [JLWInterop](@ref): the package that defines shared ABI types (`CArray`,
   `CString`, and `JLWStatus`)
   for defining ABI-compatible Julia entrypoints.

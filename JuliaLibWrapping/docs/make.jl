@@ -18,7 +18,6 @@ makedocs(;
         "Home" => "index.md",
         "Tutorial" => "tutorial.md",
         "Concepts" => "concepts.md",
-        "Platform support" => "platform.md",
         "JLWInterop" => "jlwinterop.md",
         "Error handling" => "error_handling.md",
         "API reference" => "api.md",
