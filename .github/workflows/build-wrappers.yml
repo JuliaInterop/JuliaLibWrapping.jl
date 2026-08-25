@@ -87,7 +87,7 @@ jobs:
   build:
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: julia-actions/setup-julia@v2
         with:
