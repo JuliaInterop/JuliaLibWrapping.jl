@@ -1,5 +1,5 @@
 {
-  "_comment": "Synthetic fixture for the CDict vocabulary type. Mirrors the layout juliac would emit for `struct CDict{owned,V}; length::Int64; keys::Ptr{CString}; values::Ptr{V}; end` (JLWInterop) instantiated at V=Float64, with one @ccallable function taking a `CDict{:borrowed, Float64}` argument and one returning a `CDict{:owned, Float64}`, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints so the owning return is `:auto`, not `:mechanical`. `keys` and `values` are two SEPARATE allocations: keys are length-prefixed `CString`s freed with `jlw_free_strings`, values a dense buffer freed with `jlw_free`. Ownership is a leading Symbol type parameter carried in the ABI JSON name, so the two ownerships are two distinct 24-byte structs with an identical `(length, keys, values)` layout. `jlw_free` takes a `Ptr{Nothing}` (a pointer with a null pointee id) and both release entrypoints return void (a null return type id), mirroring juliac's actual ABI JSON rendering. The Python emitter must emit `from_dict`/`as_dict` on the borrowed class, `as_dict`/`free` on the owning class, and an owning-return convert-then-free facade wrapper.",
+  "_comment": "Fixture identical to bindinginfo_cdict.json EXCEPT the two jlw_free* release-entrypoint function entries are deleted (the `types` array \u2014 including the `Ptr{Nothing}` those functions used \u2014 is left untouched deliberately). This models a library that defines the CDict carrier but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. The generator must demote `give_dict`, whose `CDict{:owned, Float64}` return would need both `jlw_free_strings` (keys) and `jlw_free` (values), to a mechanical re-export naming the macro to add; `take_dict`, whose argument is borrowed, still auto-wraps. The owning class's `.free()` is still emitted but raises RuntimeError, for callers who bypass the facade and talk to `_lowlevel` directly.",
   "types": [
     {
       "kind": "primitive",
@@ -111,23 +111,6 @@
       "name": "give_dict()",
       "arguments": [],
       "symbol": "give_dict"
-    },
-    {
-      "returns": { "type_id": null },
-      "name": "jlw_free(p::Ptr{Nothing})",
-      "arguments": [
-        { "name": "p", "type_id": 10 }
-      ],
-      "symbol": "jlw_free"
-    },
-    {
-      "returns": { "type_id": null },
-      "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
-      "arguments": [
-        { "name": "p", "type_id": 7 },
-        { "name": "n", "type_id": 2 }
-      ],
-      "symbol": "jlw_free_strings"
     }
   ]
 }

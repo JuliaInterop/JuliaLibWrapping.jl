@@ -1,107 +1,116 @@
 {
-  "_comment": "Synthetic fixture for the CStrArray vocabulary type. Mirrors the layout juliac would emit for `struct CStrArray; length::Int64; data::Ptr{CString}; owned::Int32; end` (JLWInterop), with one @ccallable function borrowing a CStrArray argument and one returning an owned one, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints so the owning return is `:auto`, not `:mechanical`. `data` points to length-prefixed `CString` elements (`struct CString; length::Int32; data::Ptr{UInt8}; end`, size 16, offsets 0/8) rather than NUL-terminated `Ptr{UInt8}`s. The `owned::Int32` field at offset 16 (size 24 total, with 4 bytes of trailing padding) is the explicit ownership discriminant: 0 = caller-owned/borrowed, 1 = allocated by CStrArray's owning constructor. The Python emitter's façade free-on-return wrapper is gated on `_result.owned == 1`, never on call direction. The `Ptr{Nothing}`/synthetic zero-size `Nothing` struct for `jlw_free`'s void return mirrors juliac's actual ABI JSON rendering for that type verbatim. The Python emitter must recognize the CStrArray shape (name + pointee-is-CString shape + owned field, not just the name) and emit from_list/as_list/free helpers plus an owning-return convert-then-free façade wrapper.",
+  "_comment": "Synthetic fixture for the CStrArray vocabulary type. Mirrors the layout juliac would emit for `struct CStrArray{owned}; length::Int64; data::Ptr{CString}; end` (JLWInterop), with one @ccallable function taking a `CStrArray{:borrowed}` argument and one returning a `CStrArray{:owned}`, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints so the owning return is `:auto`, not `:mechanical`. `data` points to length-prefixed `CString` elements (`struct CString; length::Int32; data::Ptr{UInt8}; end`, size 16, offsets 0/8) rather than NUL-terminated `Ptr{UInt8}`s. Ownership is a leading Symbol type parameter carried in the ABI JSON name, so the two ownerships are two distinct 16-byte structs with an identical `(length, data)` layout. `jlw_free` takes a `Ptr{Nothing}` (a pointer with a null pointee id) and both release entrypoints return void (a null return type id), mirroring juliac's actual ABI JSON rendering. The Python emitter must recognize the CStrArray shape (ownership token in the name + pointee-is-CString shape, not just the name) and emit `from_list`/`as_list` on the borrowed class, `as_list`/`free` on the owning class, and an owning-return convert-then-free facade wrapper.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 1,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 2,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 4,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "CString",
+      "id": 5,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString}",
+      "id": 6,
+      "pointee_type_id": 5
+    },
+    {
+      "kind": "struct",
+      "name": "CStrArray{:borrowed}",
+      "id": 7,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "CStrArray{:owned}",
+      "id": 9,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 8,
+      "pointee_type_id": null
+    }
+  ],
   "functions": [
     {
-      "symbol": "take_strs",
-      "name": "take_strs(a::CStrArray)",
+      "returns": { "type_id": 2 },
+      "name": "take_strs(a::CStrArray{:borrowed})",
       "arguments": [
         { "name": "a", "type_id": 7 }
       ],
-      "returns": { "type_id": 2 }
+      "symbol": "take_strs"
     },
     {
-      "symbol": "give_strs",
+      "returns": { "type_id": 9 },
       "name": "give_strs()",
-      "arguments": [
-      ],
-      "returns": { "type_id": 7 }
+      "arguments": [],
+      "symbol": "give_strs"
     },
     {
-      "symbol": "jlw_free",
+      "returns": { "type_id": null },
       "name": "jlw_free(p::Ptr{Nothing})",
       "arguments": [
         { "name": "p", "type_id": 8 }
       ],
-      "returns": { "type_id": null }
+      "symbol": "jlw_free"
     },
     {
-      "symbol": "jlw_free_strings",
+      "returns": { "type_id": null },
       "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
       "arguments": [
         { "name": "p", "type_id": 6 },
         { "name": "n", "type_id": 2 }
       ],
-      "returns": { "type_id": null }
-    }
-  ],
-  "types": [
-    {
-      "id": 1,
-      "kind": "primitive",
-      "name": "UInt8",
-      "signed": false,
-      "bits": 8,
-      "size": 1,
-      "alignment": 1
-    },
-    {
-      "id": 2,
-      "kind": "primitive",
-      "name": "Int64",
-      "signed": true,
-      "bits": 64,
-      "size": 8,
-      "alignment": 8
-    },
-    {
-      "id": 3,
-      "kind": "pointer",
-      "name": "Ptr{UInt8}",
-      "pointee_type_id": 1
-    },
-    {
-      "id": 4,
-      "kind": "primitive",
-      "name": "Int32",
-      "signed": true,
-      "bits": 32,
-      "size": 4,
-      "alignment": 4
-    },
-    {
-      "id": 5,
-      "kind": "struct",
-      "name": "CString",
-      "size": 16,
-      "alignment": 8,
-      "fields": [
-        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
-      ]
-    },
-    {
-      "id": 6,
-      "kind": "pointer",
-      "name": "Ptr{CString}",
-      "pointee_type_id": 5
-    },
-    {
-      "id": 7,
-      "kind": "struct",
-      "name": "CStrArray",
-      "size": 24,
-      "alignment": 8,
-      "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 4, "offset": 16, "isptr": false, "isfieldatomic": false }
-      ]
-    },
-    {
-      "id": 8,
-      "kind": "pointer",
-      "name": "Ptr{Nothing}",
-      "pointee_type_id": null
+      "symbol": "jlw_free_strings"
     }
   ]
 }

@@ -90,12 +90,11 @@ class CString(ctypes.Structure):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
 
-class CDict_Int32(ctypes.Structure):
+class CDict_borrowed_Int32(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
         ("keys", ctypes.POINTER(CString)),
         ("values", ctypes.POINTER(ctypes.c_int32)),
-        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -106,8 +105,7 @@ class CDict_Int32(ctypes.Structure):
         varr = (ctypes.c_int32 * len(keys))(*d.values())
         obj = cls(length=len(keys),
                   keys=ctypes.cast(karr, ctypes.POINTER(CString)),
-                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)),
-                  owned=0)
+                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
         obj._buffer = (keys, karr, varr)
         return obj
 
@@ -119,25 +117,39 @@ class CDict_Int32(ctypes.Structure):
             out[k] = self.values[i]
         return out
 
-    def free(self):
-        """Free the Julia-allocated buffers iff this object owns them (owned is 1).
+class CDict_owned_Int32(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("keys", ctypes.POINTER(CString)),
+        ("values", ctypes.POINTER(ctypes.c_int32)),
+    ]
 
-        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
-        no-op. For callers who bypass the façade's convert-then-free wrapper and
-        talk to `_lowlevel` directly."""
-        if self.owned != 1:
+    def as_dict(self):
+        out = {}
+        for i in range(self.length):
+            e = self.keys[i]
+            k = ctypes.string_at(e.data, e.length).decode("utf-8")
+            out[k] = self.values[i]
+        return out
+
+    def free(self):
+        """Free the Julia-allocated buffers.
+
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
             return
         _lib.jlw_free_strings(self.keys, self.length)
         _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
-        self.owned = 0
+        self._freed = True
 
-_lib.take_dict_i32.argtypes = [CDict_Int32]
+_lib.take_dict_i32.argtypes = [CDict_borrowed_Int32]
 _lib.take_dict_i32.restype = ctypes.c_int64
 def take_dict_i32(d):
     return _lib.take_dict_i32(d)
 
 _lib.give_dict_i32.argtypes = []
-_lib.give_dict_i32.restype = CDict_Int32
+_lib.give_dict_i32.restype = CDict_owned_Int32
 def give_dict_i32():
     return _lib.give_dict_i32()
 

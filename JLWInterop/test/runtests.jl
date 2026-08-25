@@ -413,57 +413,124 @@ using Test
         Libc.free(w.data)
     end
 
+    @testset "CStrArray layout" begin
+        @test fieldnames(CStrArray{:owned}) === (:length, :data)
+        @test fieldtype(CStrArray{:owned}, :length) === Int64
+        @test fieldtype(CStrArray{:owned}, :data) === Ptr{CString}
+        @test isbitstype(CStrArray{:owned})
+        @test iszero(fieldoffset(CStrArray{:owned}, 1))
+        @test fieldoffset(CStrArray{:owned}, 2) == 8
+        @test sizeof(CStrArray{:owned}) == 16
+
+        # Ownership is part of the type, so the two flavors are distinct types
+        # with identical layout.
+        @test CStrArray{:owned} !== CStrArray{:borrowed}
+        @test sizeof(CStrArray{:owned}) == sizeof(CStrArray{:borrowed})
+    end
+
+    @testset "CStrArray ABI names" begin
+        # `juliac` writes the ABI JSON's struct names with
+        # `repr(dt; context = :compact => true)`, and JuliaLibWrapping's
+        # recognizer parses the ownership back out of that text.
+        compact(T) = repr(T; context = :compact => true)
+        @test compact(CStrArray{:owned}) == "CStrArray{:owned}"
+        @test compact(CStrArray{:borrowed}) == "CStrArray{:borrowed}"
+    end
+
+    @testset "CStrArray constructors" begin
+        a = CStrArray{:borrowed}(Int64(0), Ptr{CString}(0))
+        @test a isa CStrArray{:borrowed}
+        @test a.length === Int64(0)
+
+        # There is no ownership-defaulting constructor, and no Julia-side
+        # borrowed-from-collection constructor.
+        @test_throws MethodError CStrArray(["x"])
+        @test_throws MethodError CStrArray{:borrowed}(["x"])
+
+        # Only :owned and :borrowed name an ownership.
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CStrArray{:mine}(Int64(0), Ptr{CString}(0))
+        )
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got 1",
+            CStrArray{1}(Int64(0), Ptr{CString}(0))
+        )
+    end
+
     @testset "CStrArray round-trip" begin
         v = ["hello", "wörld", "", "a\0b"]   # incl. UTF-8, empty, and embedded NUL
-        a = CStrArray(v)
+        a = CStrArray{:owned}(v)
+        @test a isa CStrArray{:owned}
         @test a.length == 4
-        @test fieldtype(CStrArray, :data) === Ptr{CString}
         @test unsafe_load(a.data, 3).data != C_NULL   # empty string still mallocs a real, freeable pointer
         @test Vector{String}(a) == v
         JLWInterop._free_strings(a.data, a.length)   # tests own the free
-        @test Vector{String}(CStrArray(String[])) == String[]
-    end
+        @test Vector{String}(CStrArray{:owned}(String[])) == String[]
 
-    @testset "CStrArray owned flag" begin
-        # Conversion copies without inspecting ownership.
-        a = CStrArray(["x", "y"])
-        @test fieldtype(CStrArray, :owned) === Int32
-        @test a.owned === Int32(1)
-        @test Vector{String}(a) == ["x", "y"]   # the conversion ignores owned, copies regardless
-        JLWInterop._free_strings(a.data, a.length)
-
-        # Borrowed arrays convert without being freed.
-        a2 = CStrArray(["p", "q"])
-        borrowed = CStrArray(a2.length, a2.data, Int32(0))
+        # Conversion copies regardless of ownership.
+        a2 = CStrArray{:owned}(["p", "q"])
+        borrowed = CStrArray{:borrowed}(a2.length, a2.data)
         @test Vector{String}(borrowed) == ["p", "q"]
         JLWInterop._free_strings(a2.data, a2.length)
     end
 
+    @testset "CDict layout" begin
+        @test fieldnames(CDict{:owned, Float64}) === (:length, :keys, :values)
+        @test fieldtype(CDict{:owned, Float64}, :length) === Int64
+        @test fieldtype(CDict{:owned, Float64}, :keys) === Ptr{CString}
+        @test fieldtype(CDict{:owned, Float64}, :values) === Ptr{Float64}
+        @test isbitstype(CDict{:owned, Float64})
+        @test iszero(fieldoffset(CDict{:owned, Float64}, 1))
+        @test fieldoffset(CDict{:owned, Float64}, 2) == 8
+        @test fieldoffset(CDict{:owned, Float64}, 3) == 16
+        @test sizeof(CDict{:owned, Float64}) == 24
+
+        @test CDict{:owned, Float64} !== CDict{:borrowed, Float64}
+        @test sizeof(CDict{:owned, Float64}) == sizeof(CDict{:borrowed, Float64})
+    end
+
+    @testset "CDict ABI names" begin
+        compact(T) = repr(T; context = :compact => true)
+        @test compact(CDict{:owned, Float64}) == "CDict{:owned, Float64}"
+        @test compact(CDict{:borrowed, Int32}) == "CDict{:borrowed, Int32}"
+    end
+
+    @testset "CDict constructors" begin
+        # `V` is inferred from the value pointer.
+        c = CDict{:borrowed}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+        @test c isa CDict{:borrowed, Float64}
+
+        # There is no ownership-defaulting constructor, and no Julia-side
+        # borrowed-from-collection constructor.
+        @test_throws MethodError CDict(Dict("a" => 1.5))
+        @test_throws MethodError CDict{:borrowed}(Dict("a" => 1.5))
+
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CDict{:mine, Float64}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+        )
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got 1",
+            CDict{1, Float64}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+        )
+    end
+
     @testset "CDict round-trip and allowlist" begin
         d = Dict("a" => 1.5, "b" => -2.0, "c\0d" => 3.0, "" => 4.0)
-        c = CDict(d)
+        c = CDict{:owned}(d)
+        @test c isa CDict{:owned, Float64}
         @test c.length == 4
-        @test fieldtype(CDict{Float64}, :keys) === Ptr{CString}
         empty_idx = findfirst(i -> iszero(unsafe_load(c.keys, i).length), 1:c.length)
         @test unsafe_load(c.keys, empty_idx).data != C_NULL   # empty key still mallocs a real, freeable pointer
         @test Dict{String, Float64}(c) == d
         JLWInterop._free_strings(c.keys, c.length)
         Libc.free(c.values)
-        @test_throws MethodError CDict(Dict("x" => 1.0im))   # ComplexF64 not allowlisted
-    end
+        @test_throws MethodError CDict{:owned}(Dict("x" => 1.0im))   # ComplexF64 not allowlisted
 
-    @testset "CDict owned flag" begin
-        # Conversion copies without inspecting ownership.
-        c = CDict(Dict("a" => 1.5))
-        @test fieldtype(CDict{Float64}, :owned) === Int32
-        @test c.owned === Int32(1)
-        @test Dict{String, Float64}(c) == Dict("a" => 1.5)   # the conversion ignores owned, copies regardless
-        JLWInterop._free_strings(c.keys, c.length)
-        Libc.free(c.values)
-
-        # A hand-built borrowed (owned=0) CDict round-trips identically.
-        c2 = CDict(Dict("b" => 2.5))
-        borrowed = CDict{Float64}(c2.length, c2.keys, c2.values, Int32(0))
+        # Conversion copies regardless of ownership.
+        c2 = CDict{:owned}(Dict("b" => 2.5))
+        borrowed = CDict{:borrowed}(c2.length, c2.keys, c2.values)
         @test Dict{String, Float64}(borrowed) == Dict("b" => 2.5)
         JLWInterop._free_strings(c2.keys, c2.length)
         Libc.free(c2.values)
@@ -481,7 +548,7 @@ using Test
         Core.eval(m, :(using JLWInterop))
         Core.eval(m, :(JLWInterop.@export_release_entrypoints))
         # Functions exist and run on malloc'd data without crashing:
-        a = CStrArray(["x", "y"])
+        a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))

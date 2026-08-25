@@ -97,40 +97,48 @@ function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
 end
 
 """
-    cstrarray_struct_info(desc::StructDesc, typeinfo) -> Bool
+    cstrarray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CStrArray` by name and field layout: exactly three fields named
-`length` (a signed primitive integer), `data` (a pointer to a struct matching
-[`cstring_struct_info`](@ref)), and `owned` (`Int32`, the ownership
-discriminant: `0` = borrowed, `1` = allocated by the owning constructor).
-Field order is unrestricted.
+Recognize `CStrArray` by name and field layout. The name must carry an
+explicit leading ownership parameter (see [`_carrier_ownership`](@ref)) and
+the layout must be exactly two fields: `length`, a signed primitive integer,
+and `data`, a pointer to a struct matching [`cstring_struct_info`](@ref).
+Field order is unrestricted. On a match, return `(; ownership)` — `:owned` or
+`:borrowed`. Otherwise return `nothing`; ownership is never inferred from a
+name that does not state it.
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CStrArray") || return false
-    m = _match_fields(desc, ("length", "data", "owned"))
-    isnothing(m) && return false
+    ownership = _carrier_ownership(desc.name, ("CStrArray{",))
+    isnothing(ownership) && return nothing
+    m = _match_fields(desc, ("length", "data"))
+    isnothing(m) && return nothing
     length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc && length_type.signed || return false
+    length_type isa PrimitiveTypeDesc && length_type.signed || return nothing
     data_type = typeinfo[m.data.type]
-    data_type isa PointerDesc || return false
-    data_type.pointee_type === nothing && return false # `void` pointee
+    data_type isa PointerDesc || return nothing
+    data_type.pointee_type === nothing && return nothing # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
-    pointee isa StructDesc || return false
-    cstring_struct_info(pointee, typeinfo) || return false
-    owned_type = typeinfo[m.owned.type]
-    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return false
-    return true
+    pointee isa StructDesc || return nothing
+    cstring_struct_info(pointee, typeinfo) || return nothing
+    return (; ownership)
 end
 
 """
     cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CDict` by name and field layout. Return `(; value_type)` (the
-Julia name of the value type, e.g. `"Float64"`), or `nothing`.
+Recognize `CDict` by name and field layout. The name must carry an explicit
+leading ownership parameter (see [`_carrier_ownership`](@ref)) and the layout
+must be exactly three fields: `length`, a primitive integer; `keys`, a pointer
+to a struct matching [`cstring_struct_info`](@ref); and `values`, a pointer to
+a primitive type. On a match, return `(; value_type, ownership)` — the Julia
+name of the value type (e.g. `"Float64"`) and `:owned` or `:borrowed`.
+Otherwise return `nothing`; ownership is never inferred from a name that does
+not state it.
 """
 function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    startswith(desc.name, "CDict") || return nothing
-    m = _match_fields(desc, ("length", "keys", "values", "owned"))
+    ownership = _carrier_ownership(desc.name, ("CDict{",))
+    isnothing(ownership) && return nothing
+    m = _match_fields(desc, ("length", "keys", "values"))
     isnothing(m) && return nothing
     length_type = typeinfo[m.length.type]
     length_type isa PrimitiveTypeDesc || return nothing
@@ -146,9 +154,7 @@ function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
     values_type.pointee_type === nothing && return nothing # `void` pointee
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
-    owned_type = typeinfo[m.owned.type]
-    owned_type isa PrimitiveTypeDesc && owned_type.name == "Int32" || return nothing
-    return (; value_type = values_pointee.name)
+    return (; value_type = values_pointee.name, ownership)
 end
 
 """
@@ -170,18 +176,18 @@ function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc}
 end
 
 """
-    _carray_ownership(name::AbstractString) -> Union{Nothing, Symbol}
+    _carrier_ownership(name::AbstractString, prefixes) -> Union{Nothing, Symbol}
 
-Return the ownership recorded in the leading type parameter of a
-`CArray`/`CVector`/`CMatrix` type name — `:owned` for
-`"CVector{:owned, Float64}"`, `:borrowed` for
-`"CArray{:borrowed, Float32, 3}"`. Return `nothing` when `name` is not a
-CArray-family name or its first parameter is neither token, so that a name
-carrying no ownership is unrecognized rather than guessed at.
+Return the ownership recorded in the leading type parameter of a carrier type
+name whose spelling starts with one of `prefixes` (each ending in `{`) —
+`:owned` for `"CVector{:owned, Float64}"`, `:borrowed` for
+`"CArray{:borrowed, Float32, 3}"`. Return `nothing` when `name` matches no
+prefix or its first parameter is neither token, so that a name carrying no
+ownership is unrecognized rather than guessed at.
 """
-function _carray_ownership(name::AbstractString)
+function _carrier_ownership(name::AbstractString, prefixes)
     prefix = nothing
-    for candidate in ("CArray{", "CVector{", "CMatrix{")
+    for candidate in prefixes
         if startswith(name, candidate)
             prefix = candidate
             break
@@ -202,7 +208,7 @@ end
 
 Recognize `CArray`, `CVector`, or `CMatrix` by name and field layout. The
 name must carry an explicit leading ownership parameter (see
-[`_carray_ownership`](@ref)) and the layout must be exactly two fields:
+[`_carrier_ownership`](@ref)) and the layout must be exactly two fields:
 `dims`, an `NTuple` of a signed or unsigned integer type, and `data`, a
 pointer to a primitive type. On a match, return
 `(; eltype, ndim, ownership)` — the Julia name of the element type, the
@@ -210,7 +216,7 @@ pointer to a primitive type. On a match, return
 `nothing`; ownership is never inferred from a name that does not state it.
 """
 function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
-    ownership = _carray_ownership(desc.name)
+    ownership = _carrier_ownership(desc.name, ("CArray{", "CVector{", "CMatrix{"))
     isnothing(ownership) && return nothing
     m = _match_fields(desc, ("dims", "data"))
     isnothing(m) && return nothing

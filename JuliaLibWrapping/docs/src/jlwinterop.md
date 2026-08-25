@@ -12,10 +12,12 @@ JLWInterop
 
 The package defines fixed-layout types for passing values across a C ABI.
 Borrowed values do not own their underlying storage; the caller must keep the
-storage alive for the duration of the call. `CArray` states its ownership in
-its type; `CStrArray` and `CDict` record it in an `owned` field. The types are
-`isbits` when their element types are, work with `juliac --trim`, and cross a
-`@ccallable` boundary without allocating a Julia object.
+storage alive for the duration of the call. `CArray`, `CStrArray`, and `CDict`
+each state their ownership in a leading `:owned`/`:borrowed` type parameter,
+so whether a value must be released is visible in its type. The types are
+`isbits` when their element types are, work
+with `juliac --trim`, and cross a `@ccallable` boundary without allocating a
+Julia object.
 
 JuliaLibWrapping targets recognize these types structurally, by name and field
 layout. Using `JLWInterop` keeps those layouts consistent across libraries.
@@ -102,7 +104,8 @@ A library returning an owning `CArray` without
 [`@export_release_entrypoints`](@ref) is demoted at build time to a `TODO`
 re-export naming the macro to add — the same rule as `CStrArray` and `CDict`.
 An owning `CArray` *argument* is likewise left to a human: it would transfer a
-Julia allocation into the library, which numpy cannot supply.
+Julia allocation into the library, which numpy cannot supply. The same holds
+for owning `CStrArray` and `CDict` arguments.
 
 For `N ≥ 2`, the generated `from_numpy` helper requires a Fortran-contiguous
 array. Convert row-major input with `np.asfortranarray`.
@@ -135,14 +138,26 @@ The Python target generates
 CString
 ```
 
-## `CStrArray` — string arrays
+## `CStrArray{owned}` — string arrays
 
-`CStrArray` stores a pointer to `length` [`CString`](@ref)s. Converting it to
-`Vector{String}` copies the strings without freeing the source. Constructing it
-from `Vector{String}` allocates an owning copy.
+`CStrArray{owned}` is `(length::Int64, data::Ptr{CString})`: a pointer to
+`length` [`CString`](@ref)s. Converting it to `Vector{String}` copies the
+strings without freeing the source.
 
 Each string uses an `Int32` byte length; oversized strings throw
 `InexactError` rather than being truncated.
+
+### `CStrArray` ownership contract
+
+`owned` is `:owned` or `:borrowed`, and the two are distinct types with the
+same layout.
+
+- `CStrArray{:borrowed}` wraps storage the caller owns and keeps alive; the
+  consumer never releases it.
+- `CStrArray{:owned}` holds a Julia allocation, produced by
+  `CStrArray{:owned}(::Vector{String})`. The consumer releases it once with
+  `jlw_free_strings`. There is no borrowing constructor: a Julia
+  `Vector{String}` has no length-prefixed layout to alias.
 
 ### Python target
 
@@ -150,20 +165,32 @@ Each string uses an `Int32` byte length; oversized strings throw
 |---|---|
 | `Vector{String}` | `list[str]` |
 
-`CStrArray.from_list` creates a borrowed carrier and keeps its `ctypes`
-buffers alive. `as_list` copies the result to a Python list. The façade calls
-the carrier's idempotent `.free()` after converting a return value.
+A borrowed class gets `from_list` and `as_list`; an owning class gets `as_list`
+and an idempotent `free()`. Owning returns are copied and freed in a `finally`.
 
 ```@docs
 CStrArray
 ```
 
-## `CDict{V}` — string-keyed dictionaries
+## `CDict{owned,V}` — string-keyed dictionaries
 
-`CDict` stores parallel key and value arrays. Keys are [`CString`](@ref)s;
-values use a type in [`CDICT_VALUE_TYPES`](@ref). Converting to a Julia `Dict`
-copies without freeing the source. Constructing from a `Dict` allocates owning
-key and value buffers.
+`CDict{owned,V}` is `(length::Int64, keys::Ptr{CString}, values::Ptr{V})`: two
+parallel arrays. Keys are [`CString`](@ref)s; values use a type in
+[`CDICT_VALUE_TYPES`](@ref). Converting to a Julia `Dict` copies without
+freeing the source.
+
+### `CDict` ownership contract
+
+`owned` is `:owned` or `:borrowed`, and the two are distinct types with the
+same layout.
+
+- `CDict{:borrowed,V}` wraps storage the caller owns and keeps alive; the
+  consumer never releases it.
+- `CDict{:owned,V}` holds two separate Julia allocations, produced by
+  `CDict{:owned}(::Dict)`. `keys` is released with `jlw_free_strings` and
+  `values` with `jlw_free`, each exactly once. There is no borrowing
+  constructor: a `Dict`'s storage is neither length-prefixed strings nor a
+  dense value array.
 
 ### Python target
 
@@ -171,9 +198,8 @@ key and value buffers.
 |---|---|
 | `Dict{String,V}` | `dict[str, V]` |
 
-`CDict.from_dict` creates a borrowed carrier and keeps its buffers alive.
-`as_dict` copies the result to a Python dictionary. The façade calls `.free()`
-after converting a return value.
+A borrowed class gets `from_dict` and `as_dict`; an owning class gets `as_dict`
+and an idempotent `free()`. Owning returns are copied and freed in a `finally`.
 
 ```@docs
 CDict
@@ -215,7 +241,8 @@ functions to release buffers through the library that allocated them. Owning
 buffers must be released exactly once; borrowed buffers must not be released.
 
 Without these entrypoints, a target cannot safely automate owning returns. The
-current Python target leaves affected functions for manual wrapping.
+current Python target leaves affected functions for manual wrapping. A library
+whose carriers are all borrowed needs no release entrypoints at all.
 
 ```@docs
 @export_release_entrypoints

@@ -17,11 +17,12 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     CString,
-    CDict_Float64,
+    CDict_borrowed_Float64,
+    CDict_owned_Float64,
 )
 
 def take_dict(d):
-    _d = CDict_Float64.from_dict(d)
+    _d = CDict_borrowed_Float64.from_dict(d)
     return _lowlevel.take_dict(_d)
 
 def give_dict():
@@ -32,4 +33,4 @@ def give_dict():
         _result.free()
     return _out
 
-__all__ = ["CString", "CDict_Float64", "take_dict", "give_dict"]
+__all__ = ["CString", "CDict_borrowed_Float64", "CDict_owned_Float64", "take_dict", "give_dict"]
