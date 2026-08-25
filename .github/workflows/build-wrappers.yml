@@ -94,7 +94,7 @@ jobs:
           version: ${{ inputs.julia-version }}
           include-all-prereleases: true
 
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
 
       - uses: actions/setup-python@v7
         with:
