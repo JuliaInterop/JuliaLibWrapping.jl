@@ -168,16 +168,99 @@ end
                 @test err isa ErrorException
                 @test occursin("JLWInterop", err.msg)
 
-                # A directory entry carries no text to scan, so it skips.
-                @test isnothing(
-                    JuliaLibWrapping._maybe_dump_api_metadata(dir, proj, dir, "lib"; verbose = false)
-                )
-
                 plain = joinpath(dir, "plain.jl")
                 write(plain, "f(x) = x\n")
                 @test isnothing(
                     JuliaLibWrapping._maybe_dump_api_metadata(plain, proj, dir, "lib"; verbose = false)
                 )
+
+                # `@api` named in prose is not a use of the macro: a library
+                # that merely mentions it must stay buildable.
+                mentions = joinpath(dir, "mentions.jl")
+                write(mentions, "# see the @api macro docs for the annotated form\nf(x) = x\n")
+                @test isnothing(
+                    JuliaLibWrapping._maybe_dump_api_metadata(mentions, proj, dir, "lib"; verbose = false)
+                )
+                @test JuliaLibWrapping._text_uses_api("    @api function f() end")
+                @test JuliaLibWrapping._text_uses_api("@api \"doc\" function f() end")
+                @test !JuliaLibWrapping._text_uses_api("# see the @api macro")
+                @test !JuliaLibWrapping._text_uses_api("run(`@apid`)")
+            end
+
+            # A package-directory entry is scanned through its `src/` tree,
+            # so `@api` there errors instead of silently degrading to the
+            # mechanical, ABI-derived façade names.
+            mktempdir() do dir
+                proj = mkpath(joinpath(dir, "proj"))
+                pkg = mkpath(joinpath(dir, "Pkg", "src"))
+                write(joinpath(dir, "Pkg", "src", "helper.jl"), "g(x) = x\n")
+                @test isnothing(
+                    JuliaLibWrapping._maybe_dump_api_metadata(
+                        joinpath(dir, "Pkg"), proj, dir, "lib"; verbose = false
+                    )
+                )
+                write(
+                    joinpath(pkg, "Pkg.jl"),
+                    "module Pkg\nusing JLWInterop\n@api function f(x::Float64)::Float64\n    x\nend\nend\n"
+                )
+                err = try
+                    JuliaLibWrapping._maybe_dump_api_metadata(
+                        joinpath(dir, "Pkg"), proj, dir, "lib"; verbose = false
+                    )
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin("no API metadata sidecar", err.msg)
+            end
+        end
+
+        @testset "sidecar leaves the Manifest as it found it" begin
+            # `Pkg.instantiate` in the metadata subprocess may create or
+            # re-resolve a Manifest; the sidecar must not rewrite anyone's
+            # lockfile.
+            interop = abspath(joinpath(@__DIR__, "..", "..", "JLWInterop"))
+            mktempdir() do dir
+                proj = mkpath(joinpath(dir, "proj"))
+                open(joinpath(proj, "Project.toml"), "w") do io
+                    TOML.print(
+                        io,
+                        Dict(
+                            "name" => "probe", "uuid" => "11111111-2222-3333-4444-555555555555",
+                            "deps" => Dict("JLWInterop" => "65e54657-ed21-41a3-96db-71ab7fa6d94b"),
+                            "sources" => Dict("JLWInterop" => Dict("path" => interop)),
+                        );
+                        sorted = true,
+                    )
+                end
+                entry = joinpath(dir, "probe.jl")
+                write(
+                    entry,
+                    "module probe\nusing JLWInterop\n@api \"Double it.\" function twice(x::Float64)::Float64\n    2x\nend\nend\n"
+                )
+
+                # No Manifest before: none may be left behind.
+                @test isempty(JuliaLibWrapping._manifest_files(proj))
+                sidecar = JuliaLibWrapping._maybe_dump_api_metadata(
+                    entry, proj, dir, "probe"; verbose = false
+                )
+                @test !isnothing(sidecar)
+                @test haskey(sidecar.metadata, "probe_twice")
+                @test isempty(JuliaLibWrapping._manifest_files(proj))
+
+                # A Manifest that was there is restored byte for byte. This
+                # one names no versions, so the subprocess re-resolves it —
+                # the branch that writes the saved bytes back. Whether the
+                # subprocess then succeeds is beside the point being pinned.
+                manifest = joinpath(proj, "Manifest.toml")
+                write(manifest, "# hand-edited\n")
+                before = read(manifest)
+                try
+                    JuliaLibWrapping._maybe_dump_api_metadata(entry, proj, dir, "probe"; verbose = false)
+                catch
+                end
+                @test read(manifest) == before
             end
         end
     end
@@ -292,6 +375,68 @@ end
                     cmd = `$python3 -c "import ast; ast.parse(open('$lowlevel').read())"`
                     @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 end
+            end
+        end
+    end
+
+    @testset "end-to-end over an `@api` entry" begin
+        # The other end-to-end fixture is hand-written `Base.@ccallable`, so
+        # nothing else asserts that a real build produces a sidecar and that
+        # the façade carries the `@api` names, keyword split and docstring.
+        # No Python needed to check it.
+        has_julia = !isnothing(Sys.which("julia"))
+        has_cc = !isnothing(Sys.which("gcc")) || !isnothing(Sys.which("clang"))
+        juliac_ok = has_julia && VERSION >= v"1.13.0-rc1" && has_cc
+        if !juliac_ok
+            @info "Skipping build_library @api end-to-end test" has_julia has_cc VERSION
+        else
+            interop = abspath(joinpath(@__DIR__, "..", "..", "JLWInterop"))
+            mktempdir() do dir
+                proj = mkpath(joinpath(dir, "twofn"))
+                open(joinpath(proj, "Project.toml"), "w") do io
+                    TOML.print(
+                        io,
+                        Dict(
+                            "name" => "twofn",
+                            "uuid" => "5f5c0e4a-1d6b-4f61-9f8f-2a0b2ec1d001",
+                            "version" => "0.1.0",
+                            "deps" => Dict("JLWInterop" => "65e54657-ed21-41a3-96db-71ab7fa6d94b"),
+                            "sources" => Dict("JLWInterop" => Dict("path" => interop)),
+                        );
+                        sorted = true,
+                    )
+                end
+                entry = joinpath(mkpath(joinpath(proj, "src")), "twofn.jl")
+                write(
+                    entry,
+                    """
+                    module twofn
+
+                    using JLWInterop
+
+                    @api "Scale it." function scale_one(x::Float64; factor::Float64 = 2.0)::Float64
+                        factor * x
+                    end
+
+                    @api function add_ints(a::Int64, b::Int64)::Int64
+                        a + b
+                    end
+
+                    end
+                    """
+                )
+                out = mkpath(joinpath(dir, "out"))
+                result = build_library(
+                    entry, [PythonTarget(out, "twofn_py", "twofn")];
+                    project = proj, libname = "twofn", libdir = out,
+                    cpu_target = "generic"
+                )
+                @test result.metadata_path == joinpath(out, "twofn.jlw.json")
+                @test isfile(result.metadata_path)
+                facade = read(joinpath(out, "twofn_py", "_facade.py"), String)
+                @test occursin("def scale_one(x, *, factor=2.0):", facade)
+                @test occursin("def add_ints(a, b):", facade)
+                @test occursin("\"\"\"Scale it.\"\"\"", facade)
             end
         end
     end

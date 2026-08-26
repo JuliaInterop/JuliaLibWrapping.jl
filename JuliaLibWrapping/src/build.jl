@@ -166,6 +166,11 @@ function build_library(
     isnothing(ext) &&
         throw(ArgumentError("JuliaC.jl is required — run `using JuliaC` before calling `build_library`."))
 
+    # `juliac --bundle` copies into `bundle_dir` and refuses to overwrite a
+    # file already there, so a second build into the same `libdir` fails
+    # unless the previous tree is cleared first.
+    bundle && ispath(bundle_dir) && rm(bundle_dir; recursive = true)
+
     ext._build_library_juliac(
         entry; project, libname, libdir, abi_path,
         trim, compile_ccallable, verbose,
@@ -336,11 +341,31 @@ _manifest_files(project::AbstractString) =
     filter(f -> startswith(f, "Manifest") && endswith(f, ".toml"), readdir(project)) :
     String[]
 
-# Report that no sidecar will be produced, and why. An entry file whose text
-# contains `@api` cannot go without one: the façade would silently fall back
-# to mechanical, ABI-derived names instead of the ones the author wrote.
+# Does this Julia source text call `@api`? The macro call is the first thing
+# on its line, so anchoring there keeps prose that merely names the macro —
+# `# see the @api docs` — from counting as a use.
+_text_uses_api(text::AbstractString) = occursin(r"(?m)^\s*@api\b", text)
+
+# The Julia sources `entry` names: the file itself, or every `.jl` under a
+# package directory's `src/`.
+function _entry_sources(entry::AbstractString)
+    isfile(entry) && return [String(entry)]
+    src = joinpath(entry, "src")
+    isdir(src) || return String[]
+    files = String[]
+    for (root, _, names) in walkdir(src), n in names
+        endswith(n, ".jl") && push!(files, joinpath(root, n))
+    end
+    return files
+end
+
+# Report that no sidecar will be produced, and why. An entry that uses `@api`
+# cannot go without one: the façade would silently fall back to mechanical,
+# ABI-derived names instead of the ones the author wrote. A package-directory
+# entry is scanned through its `src/` tree, so it gets the same error a
+# single-file entry does rather than degrading in silence.
 function _no_api_sidecar(entry::AbstractString, reason::AbstractString; verbose::Bool)
-    if isfile(entry) && occursin("@api", read(entry, String))
+    if any(f -> _text_uses_api(read(f, String)), _entry_sources(entry))
         error(
             "no API metadata sidecar for $entry, which uses `@api`: $reason. " *
                 "Without the sidecar every entrypoint gets the mechanical, ABI-derived " *
@@ -362,8 +387,8 @@ metadata sidecar into `libdir`; returns the sidecar's path and its parsed
 `exports` map. Returns `nothing` when `entry` is not a single file, `project`
 has no `JLWInterop` dependency, or the entry file registers no `@api`
 functions, in which case the empty sidecar is deleted. Each of those three
-is an error when the entry file's text contains `@api`, and an `@info` under
-`verbose` otherwise.
+is an error when the entry's sources call `@api` — a directory entry is
+scanned through its `src/` tree — and an `@info` under `verbose` otherwise.
 
 Paths reach the subprocess through `ARGS` rather than interpolation into the
 `-e` script, which would mangle the backslashes in a Windows path. The
