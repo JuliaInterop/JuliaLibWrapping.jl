@@ -43,11 +43,11 @@ function _zero_carrier(::Type{C}) where {C}
 end
 
 _zero_carrier(::Type{T}) where {T <: Union{Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32, Float64, Bool}} = zero(T)
-_zero_carrier(::Type{CString{owned}}) where {owned} = CString{owned}(Int32(0), Ptr{UInt8}(C_NULL))
+_zero_carrier(::Type{CString{owned}}) where {owned} = CString{owned}(Int64(0), Ptr{UInt8}(C_NULL))
 _zero_carrier(::Type{CStrArray{owned}}) where {owned} =
     CStrArray{owned}(Int64(0), Ptr{CString{owned}}(C_NULL))
 _zero_carrier(::Type{CDict{owned, V}}) where {owned, V} =
     CDict{owned, V}(Int64(0), Ptr{CString{owned}}(C_NULL), Ptr{V}(C_NULL))
 _zero_carrier(::Type{COpt{T}}) where {T} = COpt{T}(nothing)
 _zero_carrier(::Type{CArray{owned, T, N}}) where {owned, T, N} =
-    CArray{owned, T, N}(ntuple(_ -> Int32(0), Val(N)), Ptr{T}(C_NULL))
+    CArray{owned, T, N}(ntuple(_ -> Int64(0), Val(N)), Ptr{T}(C_NULL))

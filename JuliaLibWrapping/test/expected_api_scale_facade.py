@@ -17,12 +17,12 @@ from . import _lowlevel  # noqa: F401
 import numpy as np  # noqa: F401
 
 from ._lowlevel import (
-    JLWStatus,
     CVector_borrowed_Float64,
     CVector_owned_Float64,
-    JLWResult_CVector_owned_Float64,
     CString_borrowed,
     CString_owned,
+    JLWStatus,
+    JLWResult_CVector_owned_Float64,
     JLWError,
 )
 
@@ -39,4 +39,4 @@ def scale(x, *, factor=2.0, label):
         _r.value.free()
     return _out
 
-__all__ = ["JLWStatus", "CVector_borrowed_Float64", "CVector_owned_Float64", "JLWResult_CVector_owned_Float64", "CString_borrowed", "CString_owned", "JLWError", "scale"]
+__all__ = ["CVector_borrowed_Float64", "CVector_owned_Float64", "CString_borrowed", "CString_owned", "JLWStatus", "JLWResult_CVector_owned_Float64", "JLWError", "scale"]

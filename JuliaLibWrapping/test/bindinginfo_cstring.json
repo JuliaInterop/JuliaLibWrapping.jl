@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for a borrowed CString. Mirrors the layout juliac would emit for `struct CString{owned}; length::Int32; data::Ptr{UInt8}; end` instantiated at :borrowed, with one @ccallable function consuming a `CString{:borrowed}` and one returning one. Ownership is a leading Symbol type parameter carried in the ABI JSON name, and a name that states no ownership is not recognized at all. The Python emitter must recognize this shape by name + field layout and emit from_str / as_str / from_bytes / as_bytes helpers and no free(): the buffer belongs to the caller, so the facade converts str in and str out and releases nothing.",
+  "_comment": "Hand-authored fixture for a borrowed CString. Mirrors the layout juliac would emit for `struct CString{owned}; length::Int64; data::Ptr{UInt8}; end` instantiated at :borrowed, with one @ccallable function consuming a `CString{:borrowed}` and one returning one. Ownership is a leading Symbol type parameter carried in the ABI JSON name, and a name that states no ownership is not recognized at all. The Python emitter must recognize this shape by name + field layout and emit from_str / as_str / from_bytes / as_bytes helpers and no free(): the buffer belongs to the caller, so the facade converts str in and str out and releases nothing.",
   "types": [
     {
       "kind": "primitive",
@@ -31,9 +31,18 @@
       "id": 4,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "length", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 5,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
       "alignment": 8
     }
   ],

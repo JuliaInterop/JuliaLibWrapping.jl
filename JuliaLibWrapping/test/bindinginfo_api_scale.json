@@ -56,12 +56,12 @@
     },
     {
       "kind": "array",
-      "name": "NTuple{1, Int32}",
+      "name": "NTuple{1, Int64}",
       "id": 7,
-      "element_type_id": 1,
+      "element_type_id": 10,
       "count": 1,
-      "size": 4,
-      "alignment": 4
+      "size": 8,
+      "alignment": 8
     },
     {
       "kind": "struct",
@@ -117,7 +117,7 @@
       "id": 12,
       "size": 16,
       "fields": [
-        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 1 },
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 10 },
         { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 11 }
       ],
       "alignment": 8
@@ -128,7 +128,7 @@
       "id": 13,
       "size": 16,
       "fields": [
-        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 1 },
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 10 },
         { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 11 }
       ],
       "alignment": 8

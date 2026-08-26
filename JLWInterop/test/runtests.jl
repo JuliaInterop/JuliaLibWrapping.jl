@@ -57,7 +57,7 @@ using Test
         # Keep the borrowed buffer alive while using the view.
         buf = Float64[10.0, 20.0, 30.0, 40.0]
         GC.@preserve buf begin
-            v = CVector{:borrowed, Float64}(Int32(length(buf)), pointer(buf))
+            v = CVector{:borrowed, Float64}(Int64(length(buf)), pointer(buf))
 
             @test v isa AbstractVector{Float64}
             @test IndexStyle(typeof(v)) === IndexLinear()
@@ -87,7 +87,7 @@ using Test
 
     @testset "CString layout" begin
         @test fieldnames(CString{:borrowed}) == (:length, :data)
-        @test fieldtype(CString{:borrowed}, :length) === Int32
+        @test fieldtype(CString{:borrowed}, :length) === Int64
         @test fieldtype(CString{:borrowed}, :data) === Ptr{UInt8}
         @test isbitstype(CString{:borrowed})
         @test fieldoffset(CString{:borrowed}, 1) == 0
@@ -111,17 +111,17 @@ using Test
 
     @testset "CString constructors" begin
         # There is no ownership-defaulting constructor.
-        @test_throws MethodError CString(Int32(0), Ptr{UInt8}(0))
+        @test_throws MethodError CString(Int64(0), Ptr{UInt8}(0))
         @test_throws MethodError CString("hello")
 
         # Only :owned and :borrowed name an ownership.
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got :mine",
-            CString{:mine}(Int32(0), Ptr{UInt8}(0))
+            CString{:mine}(Int64(0), Ptr{UInt8}(0))
         )
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got 1",
-            CString{1}(Int32(0), Ptr{UInt8}(0))
+            CString{1}(Int64(0), Ptr{UInt8}(0))
         )
     end
 
@@ -142,7 +142,7 @@ using Test
     @testset "CString AbstractString interface" begin
         buf = codeunits("hello")
         GC.@preserve buf begin
-            s = CString{:borrowed}(Int32(length(buf)), pointer(buf))
+            s = CString{:borrowed}(Int64(length(buf)), pointer(buf))
 
             # AbstractString-derived methods.
             @test ncodeunits(s) === 5
@@ -164,7 +164,7 @@ using Test
         # Embedded NUL bytes are preserved (length-prefixed, not terminated).
         raw = UInt8[0x66, 0x00, 0x6f]  # "f\0o"
         GC.@preserve raw begin
-            s = CString{:borrowed}(Int32(length(raw)), pointer(raw))
+            s = CString{:borrowed}(Int64(length(raw)), pointer(raw))
             @test ncodeunits(s) === 3
             @test codeunit(s, 2) === 0x00
             @test String(s) == "f\0o"
@@ -173,7 +173,7 @@ using Test
         # Multi-byte UTF-8 ("café"): 4 characters, 5 bytes.
         utf8 = codeunits("café")
         GC.@preserve utf8 begin
-            s = CString{:borrowed}(Int32(length(utf8)), pointer(utf8))
+            s = CString{:borrowed}(Int64(length(utf8)), pointer(utf8))
             @test ncodeunits(s) === 5
             @test length(s) === 4
             @test collect(s) == ['c', 'a', 'f', 'é']
@@ -185,8 +185,8 @@ using Test
         a_buf = codeunits("apple")
         b_buf = codeunits("banana")
         GC.@preserve a_buf b_buf begin
-            a = CString{:borrowed}(Int32(length(a_buf)), pointer(a_buf))
-            b = CString{:borrowed}(Int32(length(b_buf)), pointer(b_buf))
+            a = CString{:borrowed}(Int64(length(a_buf)), pointer(a_buf))
+            b = CString{:borrowed}(Int64(length(b_buf)), pointer(b_buf))
             @test cmp(a, b) < 0
             @test cmp(b, a) > 0
             @test cmp(a, a) == 0
@@ -199,7 +199,7 @@ using Test
         # Column-major storage; verify both linear and Cartesian indexing.
         buf = Float64[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]  # 2x3, col-major
         GC.@preserve buf begin
-            m = CMatrix{:borrowed, Float64}(Int32(2), Int32(3), pointer(buf))
+            m = CMatrix{:borrowed, Float64}(Int64(2), Int64(3), pointer(buf))
 
             @test m isa AbstractMatrix{Float64}
             @test IndexStyle(typeof(m)) === IndexLinear()
@@ -275,28 +275,25 @@ using Test
         # C and Python emitters rely on this field layout.
         @test fieldnames(CArray) == (:dims, :data)
 
-        @test fieldtype(CVector{:borrowed, Float64}, :dims) === NTuple{1, Int32}
+        @test fieldtype(CVector{:borrowed, Float64}, :dims) === NTuple{1, Int64}
         @test fieldtype(CVector{:borrowed, Float64}, :data) === Ptr{Float64}
         @test isbitstype(CVector{:borrowed, Float64})
         @test iszero(fieldoffset(CVector{:borrowed, Float64}, 1))
-        # One Int32 (4 bytes) pads out to pointer alignment (8 bytes).
         @test fieldoffset(CVector{:borrowed, Float64}, 2) == 8
         @test sizeof(CVector{:borrowed, Float64}) == 16
 
-        @test fieldtype(CMatrix{:owned, Float64}, :dims) === NTuple{2, Int32}
+        @test fieldtype(CMatrix{:owned, Float64}, :dims) === NTuple{2, Int64}
         @test fieldtype(CMatrix{:owned, Float64}, :data) === Ptr{Float64}
         @test isbitstype(CMatrix{:owned, Float64})
         @test iszero(fieldoffset(CMatrix{:owned, Float64}, 1))
-        # Two Int32s pack tightly into 8 bytes, then data is pointer-aligned.
-        @test fieldoffset(CMatrix{:owned, Float64}, 2) == 8
-        @test sizeof(CMatrix{:owned, Float64}) == 16
+        @test fieldoffset(CMatrix{:owned, Float64}, 2) == 16
+        @test sizeof(CMatrix{:owned, Float64}) == 24
 
-        @test fieldtype(CArray{:borrowed, Float64, 3}, :dims) === NTuple{3, Int32}
+        @test fieldtype(CArray{:borrowed, Float64, 3}, :dims) === NTuple{3, Int64}
         @test isbitstype(CArray{:borrowed, Float64, 3})
         @test iszero(fieldoffset(CArray{:borrowed, Float64, 3}, 1))
-        # Three Int32s = 12 bytes, padded to 16 for pointer alignment.
-        @test fieldoffset(CArray{:borrowed, Float64, 3}, 2) == 16
-        @test sizeof(CArray{:borrowed, Float64, 3}) == 24
+        @test fieldoffset(CArray{:borrowed, Float64, 3}, 2) == 24
+        @test sizeof(CArray{:borrowed, Float64, 3}) == 32
 
         # Ownership is part of the type, so the two flavors are distinct types
         # with identical layout.
@@ -316,28 +313,28 @@ using Test
     end
 
     @testset "CArray constructors" begin
-        # Tuple dimensions convert to Int32; the ownership parameter is
+        # Tuple dimensions convert to Int64; the ownership parameter is
         # required at every entry point.
-        a = CArray{:borrowed, Float64}((Int32(2), Int32(3)), Ptr{Float64}(0))
+        a = CArray{:borrowed, Float64}((Int64(2), Int64(3)), Ptr{Float64}(0))
         @test a isa CMatrix{:borrowed, Float64}
-        @test a.dims === (Int32(2), Int32(3))
+        @test a.dims === (Int64(2), Int64(3))
 
         # `T` and `N` are both inferred from the pointer and dimensions.
         a2 = CArray{:borrowed}((2, 3), Ptr{Float64}(0))
         @test a2 isa CMatrix{:borrowed, Float64}
-        @test a2.dims === (Int32(2), Int32(3))
+        @test a2.dims === (Int64(2), Int64(3))
 
         a3 = CArray{:owned, Float64, 2}((2, 3), Ptr{Float64}(0))
         @test a3 isa CMatrix{:owned, Float64}
-        @test a3.dims === (Int32(2), Int32(3))
+        @test a3.dims === (Int64(2), Int64(3))
 
         # Scalar-form shortcuts for 1-D and 2-D.
-        v = CVector{:borrowed, Float64}(Int32(4), Ptr{Float64}(0))
-        @test v.dims === (Int32(4),)
+        v = CVector{:borrowed, Float64}(Int64(4), Ptr{Float64}(0))
+        @test v.dims === (Int64(4),)
         @test v.data === Ptr{Float64}(0)
 
         m = CMatrix{:owned, Float64}(2, 3, Ptr{Float64}(0))
-        @test m.dims === (Int32(2), Int32(3))
+        @test m.dims === (Int64(2), Int64(3))
 
         # There is no ownership-defaulting constructor.
         @test_throws MethodError CArray([1.0])
@@ -346,11 +343,11 @@ using Test
         # Only :owned and :borrowed name an ownership.
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got :mine",
-            CArray{:mine, Float64, 1}((Int32(1),), Ptr{Float64}(0))
+            CArray{:mine, Float64, 1}((Int64(1),), Ptr{Float64}(0))
         )
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got 1",
-            CArray{1, Float64, 1}((Int32(1),), Ptr{Float64}(0))
+            CArray{1, Float64, 1}((Int64(1),), Ptr{Float64}(0))
         )
     end
 
@@ -359,7 +356,7 @@ using Test
         src = [1.0 2.0; 3.0 4.0]  # 2x2, column-major
         a = CArray{:owned}(src)
         @test a isa CMatrix{:owned, Float64}
-        @test a.dims === (Int32(2), Int32(2))
+        @test a.dims === (Int64(2), Int64(2))
         @test collect(a) == src
         Libc.free(a.data)
 
@@ -373,7 +370,7 @@ using Test
         # borrowed carrier into an owning copy.
         buf = Float64[5.0, 6.0]
         GC.@preserve buf begin
-            borrowed = CVector{:borrowed, Float64}(Int32(2), pointer(buf))
+            borrowed = CVector{:borrowed, Float64}(Int64(2), pointer(buf))
             @test collect(borrowed) == [5.0, 6.0]
             copied = CArray{:owned}(borrowed)
             @test copied isa CVector{:owned, Float64}
@@ -390,20 +387,6 @@ using Test
         )
     end
 
-    @testset "CArray{:owned} narrows dims before allocating" begin
-        # `dims` is `NTuple{N,Int32}`, so a dimension past `typemax(Int32)` has
-        # no representation. The conversion must happen before the copy and the
-        # `malloc`: a throw after either one strands memory no one can free.
-        # `Base.OneTo` reports its size without holding storage.
-        huge = Base.OneTo(2^31)
-        @test_throws InexactError CArray{:owned}(huge)
-        allocated = @allocated try
-            CArray{:owned}(huge)
-        catch
-        end
-        @test allocated < 1024
-    end
-
     @testset "CArray{:borrowed} aliases dense arrays" begin
         # `DenseArray` storage is already contiguous and column-major, so the
         # constructor can alias it: `data` is `pointer(A)` and no copy is made.
@@ -412,7 +395,7 @@ using Test
         GC.@preserve buf begin
             v = CArray{:borrowed}(buf)
             @test v isa CVector{:borrowed, Float64}
-            @test v.dims === (Int32(3),)
+            @test v.dims === (Int64(3),)
             @test v.data === pointer(buf)
             # Genuine aliasing, in both directions.
             buf[2] = 20.0
@@ -425,7 +408,7 @@ using Test
         GC.@preserve M begin
             m = CArray{:borrowed}(M)
             @test m isa CMatrix{:borrowed, Float64}
-            @test m.dims === (Int32(2), Int32(2))
+            @test m.dims === (Int64(2), Int64(2))
             @test collect(m) == M
         end
 
@@ -451,14 +434,14 @@ using Test
         # so arrays whose axes do not start at 1 copy correctly.
         o = OffsetArray([10.0, 20.0, 30.0], -1:1)
         v = CArray{:owned}(o)
-        @test v.dims === (Int32(3),)
+        @test v.dims === (Int64(3),)
         @test size(v) == size(o)
         @test collect(v) == collect(o)
         Libc.free(v.data)
 
         o2 = OffsetArray([1.0 2.0; 3.0 4.0], 0:1, 5:6)
         m = CArray{:owned}(o2)
-        @test m.dims === (Int32(2), Int32(2))
+        @test m.dims === (Int64(2), Int64(2))
         @test size(m) == size(o2)
         @test collect(m) == collect(o2)
         Libc.free(m.data)
@@ -466,7 +449,7 @@ using Test
         # A non-contiguous view is densified by the copy.
         src = collect(1.0:6.0)
         w = CArray{:owned}(view(src, 2:2:6))
-        @test w.dims === (Int32(3),)
+        @test w.dims === (Int64(3),)
         @test collect(w) == [2.0, 4.0, 6.0]
         Libc.free(w.data)
     end
@@ -653,7 +636,7 @@ using Test
 
         # zero carriers for every carrier type
         @test iszero(JLWInterop._zero_carrier(Int64))
-        @test JLWInterop._zero_carrier(CString{:owned}).length == Int32(0)
+        @test JLWInterop._zero_carrier(CString{:owned}).length == Int64(0)
         @test JLWInterop._zero_carrier(CStrArray{:owned}).data == Ptr{CString{:owned}}(C_NULL)
         @test JLWInterop._zero_carrier(CDict{:owned, Float64}).keys == Ptr{CString{:owned}}(C_NULL)
         @test JLWInterop._zero_carrier(COpt{Float64}).has_value == Int32(0)

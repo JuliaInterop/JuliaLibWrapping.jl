@@ -9,7 +9,7 @@ module abi_stress
 # Kept in sync with JLWInterop.CArray so the recognizer still matches:
 # ownership is a leading Symbol type parameter and the layout is two fields.
 struct CArray{owned, T, N}
-    dims::NTuple{N, Int32}
+    dims::NTuple{N, Int64}
     data::Ptr{T}
 end
 const CVector{owned, T} = CArray{owned, T, 1}
@@ -28,7 +28,7 @@ struct MyTwoVec
     y::Int32
 end
 
-Base.@ccallable function tree_size(tree::CTree{Float64})::Int
+Base.@ccallable function tree_size(tree::CTree{Float64})::Int64
     n = 1
     for i in 1:tree.children.dims[1]
         n += tree_size(unsafe_load(tree.children.data, i))
@@ -58,10 +58,10 @@ end
 
 # Exercises the N=3 case: the JuliaLibWrapping wrapper emitters generate the
 # rank-agnostic CArray helpers, and juliac's "array" ABI kind carries the
-# `NTuple{3,Int32}` shape.
+# `NTuple{3,Int64}` shape.
 Base.@ccallable function sum3d(a::CArray{:borrowed, Float64, 3})::Float64
     s = 0.0
-    n = Int(a.dims[1]) * Int(a.dims[2]) * Int(a.dims[3])
+    n = a.dims[1] * a.dims[2] * a.dims[3]
     for i in 1:n
         s += unsafe_load(a.data, i)
     end

@@ -11,41 +11,32 @@
       "alignment": 1
     },
     {
-      "kind": "primitive",
-      "name": "Int32",
-      "id": 2,
-      "size": 4,
-      "bits": 32,
-      "signed": true,
-      "alignment": 4
-    },
-    {
       "kind": "pointer",
       "name": "Ptr{UInt8}",
-      "id": 3,
+      "id": 2,
       "pointee_type_id": 1
     },
     {
       "kind": "struct",
       "name": "CString{:owned}",
-      "id": 4,
+      "id": 3,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "length", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 2, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     },
     {
       "kind": "pointer",
       "name": "Ptr{CString{:owned}}",
-      "id": 5,
-      "pointee_type_id": 4
+      "id": 4,
+      "pointee_type_id": 3
     },
     {
       "kind": "primitive",
       "name": "Int64",
-      "id": 6,
+      "id": 5,
       "size": 8,
       "bits": 64,
       "signed": true,
@@ -54,13 +45,13 @@
     {
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 7,
+      "id": 6,
       "pointee_type_id": null
     }
   ],
   "functions": [
     {
-      "returns": { "type_id": 4 },
+      "returns": { "type_id": 3 },
       "name": "give_greeting()",
       "arguments": [],
       "symbol": "give_greeting"

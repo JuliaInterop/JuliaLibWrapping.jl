@@ -56,7 +56,7 @@ _jlw_loaded.add(_jlw_this_pkg)
 
 class CMatrix_borrowed_Float64(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 2)),
+        ("dims", (ctypes.c_int64 * 2)),
         ("data", ctypes.POINTER(ctypes.c_double)),
     ]
 
@@ -78,7 +78,7 @@ class CMatrix_borrowed_Float64(ctypes.Structure):
         expected_dtype = np.dtype("float64")
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float64, got {arr.dtype}")
-        obj = cls(dims=(ctypes.c_int32 * 2)(*arr.shape),
+        obj = cls(dims=(ctypes.c_int64 * 2)(*arr.shape),
                   data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
         obj._buffer = arr
         return obj

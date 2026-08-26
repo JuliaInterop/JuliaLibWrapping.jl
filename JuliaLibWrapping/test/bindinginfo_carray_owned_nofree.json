@@ -6,7 +6,7 @@
       "name": "give_vec()",
       "arguments": [
       ],
-      "returns": { "type_id": 6 }
+      "returns": { "type_id": 5 }
     }
   ],
   "types": [
@@ -22,15 +22,6 @@
     {
       "id": 2,
       "kind": "primitive",
-      "name": "Int32",
-      "signed": true,
-      "bits": 32,
-      "size": 4,
-      "alignment": 4
-    },
-    {
-      "id": 3,
-      "kind": "primitive",
       "name": "Int64",
       "signed": true,
       "bits": 64,
@@ -38,33 +29,33 @@
       "alignment": 8
     },
     {
-      "id": 4,
+      "id": 3,
       "kind": "pointer",
       "name": "Ptr{Float64}",
       "pointee_type_id": 1
     },
     {
-      "id": 5,
+      "id": 4,
       "kind": "array",
-      "name": "NTuple{1, Int32}",
+      "name": "NTuple{1, Int64}",
       "element_type_id": 2,
       "count": 1,
-      "size": 4,
-      "alignment": 4
+      "size": 8,
+      "alignment": 8
     },
     {
-      "id": 6,
+      "id": 5,
       "kind": "struct",
       "name": "CVector{:owned, Float64}",
       "size": 16,
       "alignment": 8,
       "fields": [
-        { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "dims", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
       ]
     },
     {
-      "id": 7,
+      "id": 6,
       "kind": "primitive",
       "name": "UInt8",
       "signed": false,
@@ -73,33 +64,33 @@
       "alignment": 1
     },
     {
-      "id": 8,
+      "id": 7,
       "kind": "pointer",
       "name": "Ptr{UInt8}",
-      "pointee_type_id": 7
+      "pointee_type_id": 6
     },
     {
-      "id": 9,
+      "id": 8,
       "kind": "struct",
       "name": "CString{:owned}",
       "size": 16,
       "alignment": 8,
       "fields": [
         { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 8, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 7, "offset": 8, "isptr": false, "isfieldatomic": false }
       ]
+    },
+    {
+      "id": 9,
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "pointee_type_id": 8
     },
     {
       "id": 10,
       "kind": "pointer",
-      "name": "Ptr{CString{:owned}}",
-      "pointee_type_id": 9
-    },
-    {
-      "id": 11,
-      "kind": "pointer",
       "name": "Ptr{Nothing}",
       "pointee_type_id": null
     }
-  ]
+]
 }

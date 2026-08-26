@@ -70,7 +70,7 @@ end
         dims_desc = typeinfo[tdesc.fields[1].type]
         @test dims_desc isa ArrayDesc
         @test dims_desc.count == 1
-        @test typeinfo[dims_desc.element_type].name == "Int32"
+        @test typeinfo[dims_desc.element_type].name == "Int64"
         @test iszero(tdesc.fields[1].offset)
         @test tdesc.fields[2].name == "data"
         @test typeinfo[tdesc.fields[2].type].name == "Ptr{Float32}"
@@ -290,7 +290,7 @@ end
             @test occursin("#include <stdint.h>", content)
             @test occursin("#include <stdbool.h>", content)
             @test occursin("typedef struct CVector_borrowed_Float32 {", content)
-            @test occursin("    int32_t dims[1];", content)
+            @test occursin("    int64_t dims[1];", content)
             @test occursin("    float* data;", content)
             @test occursin("CVector_borrowed_Float32 from;", content)
             @test occursin("CVector_borrowed_Float32 to;", content)
@@ -376,7 +376,7 @@ end
             @test occursin("_LIBRARY_ENV_VAR = \"LIBSIMPLE_LIBRARY\"", bindings)
             @test occursin("class CTree_Float64(ctypes.Structure):\n    pass", bindings)
             @test occursin("class CVector_borrowed_Float32(ctypes.Structure):", bindings)
-            @test occursin("(\"dims\", (ctypes.c_int32 * 1))", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int64 * 1))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_float))", bindings)
             # `from` is a Python keyword; it must be renamed to be reachable
             # via attribute access.
@@ -680,7 +680,7 @@ end
         # three-field pre-type-parameter layout. Plus a Bool-pointee CArray,
         # which is a structural match the Python adapter declines.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
-        primflt = PrimitiveTypeDesc("Float32", true, 32, 4, 4)
+        primflt = PrimitiveTypeDesc("Float32", false, 32, 4, 4)
         primbool = PrimitiveTypeDesc("Bool", false, 8, 1, 1)
         ptr_to_flt = PointerDesc("Ptr{Float32}", 2)
         arr_int32_1 = ArrayDesc("NTuple{1, Int32}", 1, 1, 4, 4)
@@ -1190,9 +1190,8 @@ end
 
     @testset "copt_struct_info" begin
         # Structural recognition of the COpt{T} shape: a struct named COpt
-        # with `has_value` (Int32 primitive) and `value` (any primitive)
-        # fields. The recognizer reports T's Julia name; `_python_copt_info`
-        # decides whether it is a supported payload type.
+        # with a signed 32- or 64-bit `has_value` and primitive `value`.
+        # `_python_copt_info` filters unsupported payload types.
         coinfo(desc, typeinfo) = JuliaLibWrapping.copt_struct_info(desc, typeinfo)
         pycoinfo(desc, typeinfo) = JuliaLibWrapping._python_copt_info(desc, typeinfo)
         abi = read_abi_info("bindinginfo_copt.json")
@@ -1229,7 +1228,7 @@ end
             ),
             7 => StructDesc(
                 "COptInt64HasValue", 16, 8, FieldDesc[
-                    FieldDesc("has_value", 2, 0),  # Int64 — not Int32
+                    FieldDesc("has_value", 2, 0),
                     FieldDesc("value", 3, 8),
                 ]
             ),
@@ -1265,7 +1264,7 @@ end
         )
         @test !isnothing(coinfo(ti[5], ti))
         @test isnothing(coinfo(ti[6], ti)) # wrong name prefix
-        @test isnothing(coinfo(ti[7], ti)) # has_value is Int64, not Int32
+        @test !isnothing(coinfo(ti[7], ti))
         @test isnothing(coinfo(ti[8], ti)) # wrong field names
         @test !isnothing(coinfo(ti[9], ti)) # value is a primitive: a structural match
         @test coinfo(ti[9], ti).value_type == "NotARealType"
@@ -1283,6 +1282,166 @@ end
             ]
         )
         @test !isnothing(coinfo(flipped, ti))
+    end
+
+    @testset "integer field width policy" begin
+        widths = (
+            Int32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4),
+            Int64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            Int16 = PrimitiveTypeDesc("Int16", true, 16, 2, 2),
+            UInt64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8),
+        )
+        accepted = (Int32 = true, Int64 = true, Int16 = false, UInt64 = false)
+        for name in keys(widths)
+            prim = widths[name]
+            # Keep the element CString at Int64 to isolate the container field.
+            ti = OrderedDict{Int, TypeDesc}(
+                1 => prim,
+                2 => PrimitiveTypeDesc("UInt8", false, 8, 1, 1),
+                3 => PrimitiveTypeDesc("Float64", false, 64, 8, 8),
+                4 => PointerDesc("Ptr{UInt8}", 2),
+                5 => PointerDesc("Ptr{Float64}", 3),
+                6 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+                7 => StructDesc(
+                    "CString{:borrowed}", 16, 8, FieldDesc[
+                        FieldDesc("length", 1, 0),
+                        FieldDesc("data", 4, 8),
+                    ]
+                ),
+                8 => StructDesc(
+                    "CString{:borrowed}", 16, 8, FieldDesc[
+                        FieldDesc("length", 6, 0),
+                        FieldDesc("data", 4, 8),
+                    ]
+                ),
+                9 => PointerDesc("Ptr{CString{:borrowed}}", 8),
+                10 => ArrayDesc("NTuple{1, $name}", 1, 1, prim.size, prim.alignment),
+                11 => StructDesc(
+                    "CVector{:borrowed, Float64}", 16, 8, FieldDesc[
+                        FieldDesc("dims", 10, 0),
+                        FieldDesc("data", 5, 8),
+                    ]
+                ),
+                12 => StructDesc(
+                    "CStrArray{:borrowed}", 16, 8, FieldDesc[
+                        FieldDesc("length", 1, 0),
+                        FieldDesc("data", 9, 8),
+                    ]
+                ),
+                13 => StructDesc(
+                    "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
+                        FieldDesc("length", 1, 0),
+                        FieldDesc("keys", 9, 8),
+                        FieldDesc("values", 5, 16),
+                    ]
+                ),
+                14 => StructDesc(
+                    "COpt{Float64}", 16, 8, FieldDesc[
+                        FieldDesc("has_value", 1, 0),
+                        FieldDesc("value", 3, 8),
+                    ]
+                ),
+                15 => ArrayDesc("NTuple{256, UInt8}", 2, 256, 256, 1),
+                16 => StructDesc(
+                    "JLWStatus", 264, 8, FieldDesc[
+                        FieldDesc("code", 1, 0),
+                        FieldDesc("message", 15, 4),
+                    ]
+                ),
+            )
+            ok = accepted[name]
+            @test !isnothing(JuliaLibWrapping.cstring_struct_info(ti[7], ti)) == ok
+            @test !isnothing(JuliaLibWrapping.carray_struct_info(ti[11], ti)) == ok
+            @test !isnothing(JuliaLibWrapping.cstrarray_struct_info(ti[12], ti)) == ok
+            @test !isnothing(JuliaLibWrapping.cdict_struct_info(ti[13], ti)) == ok
+            @test !isnothing(JuliaLibWrapping.copt_struct_info(ti[14], ti)) == ok
+            @test JuliaLibWrapping.is_jlwstatus_struct(ti[16], ti) == ok
+            ok || continue
+            @test JuliaLibWrapping.cstring_struct_info(ti[7], ti).length_type == String(name)
+            @test JuliaLibWrapping.cstring_struct_info(ti[7], ti).length_bits == prim.bits
+            @test JuliaLibWrapping.carray_struct_info(ti[11], ti).dims_type == String(name)
+            @test JuliaLibWrapping.carray_struct_info(ti[11], ti).dims_bits == prim.bits
+            @test JuliaLibWrapping.cstrarray_struct_info(ti[12], ti).length_bits == prim.bits
+            @test JuliaLibWrapping.cdict_struct_info(ti[13], ti).length_bits == prim.bits
+            @test JuliaLibWrapping.copt_struct_info(ti[14], ti).has_value_bits == prim.bits
+        end
+    end
+
+    @testset "32-bit length guards" begin
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Int32", true, 32, 4, 4),
+            2 => PrimitiveTypeDesc("UInt8", false, 8, 1, 1),
+            3 => PrimitiveTypeDesc("Float64", false, 64, 8, 8),
+            4 => PointerDesc("Ptr{UInt8}", 2),
+            5 => PointerDesc("Ptr{Float64}", 3),
+            6 => StructDesc(
+                "CString{:borrowed}", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
+            7 => ArrayDesc("NTuple{1, Int32}", 1, 1, 4, 4),
+            8 => StructDesc(
+                "CVector{:borrowed, Float64}", 16, 8, FieldDesc[
+                    FieldDesc("dims", 7, 0),
+                    FieldDesc("data", 5, 8),
+                ]
+            ),
+            9 => PointerDesc("Ptr{CString{:borrowed}}", 6),
+            10 => StructDesc(
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 9, 8),
+                ]
+            ),
+        )
+        abi = ABIInfo(
+            typeinfo, BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc(
+                    "take_str", "take_str(s::CString{:borrowed})", 1,
+                    JuliaLibWrapping.ArgDesc[JuliaLibWrapping.ArgDesc("s", 6, false)]
+                ),
+            ]
+        )
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "narrow_demo", "libnarrow"), abi)
+            bindings = read(joinpath(path, "narrow_demo", "_lowlevel.py"), String)
+
+            @test occursin(
+                "        n = len(b)\n        if n > 0x7fffffff:\n" *
+                    "            raise OverflowError(f\"string length {n} exceeds " *
+                    "the library's 32-bit length field\")",
+                bindings
+            )
+            @test occursin("if any(d > 0x7fffffff for d in arr.shape):", bindings)
+            @test occursin(
+                "raise OverflowError(f\"array shape {arr.shape} exceeds " *
+                    "the library's 32-bit dims field\")",
+                bindings
+            )
+            @test occursin("dims=(ctypes.c_int32 * 1)(*arr.shape)", bindings)
+            @test occursin(
+                "        for b in bufs:\n            if len(b) > 0x7fffffff:",
+                bindings
+            )
+            @test occursin("if len(bufs) > 0x7fffffff:", bindings)
+
+            python3 = Sys.which("python3")
+            if python3 !== nothing
+                script = joinpath(path, "narrow_demo", "_lowlevel.py")
+                cmd = `$python3 -c "import ast; ast.parse(open('$script').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+
+        # 64-bit fields need no guard.
+        for golden in ("expected_cstring_lowlevel.py", "expected_cstrarray_lowlevel.py",
+                "expected_cmatrix_lowlevel.py")
+            @test !occursin("OverflowError", read(joinpath(@__DIR__, golden), String))
+        end
     end
 
     @testset "jlwstatus_location" begin
@@ -1704,7 +1863,7 @@ end
 
             # Borrowed classes construct values but do not release them.
             @test occursin("class CString_borrowed(ctypes.Structure):", bindings)
-            @test occursin("(\"length\", ctypes.c_int32)", bindings)
+            @test occursin("(\"length\", ctypes.c_int64)", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_uint8))", bindings)
             @test occursin("def from_str(cls, s):", bindings)
             @test occursin("def from_bytes(cls, b):", bindings)
@@ -2296,7 +2455,7 @@ end
             # The struct class is emitted with the two-field layout and
             # decorated with the borrowed-flavored helpers.
             @test occursin("class CMatrix_borrowed_Float64(ctypes.Structure):", bindings)
-            @test occursin("(\"dims\", (ctypes.c_int32 * 2))", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int64 * 2))", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_double))", bindings)
             # Borrowed storage belongs to the caller: no ownership field, and
             # no `free()` to call on memory this side never allocated.
@@ -2309,7 +2468,7 @@ end
             @test occursin("if arr.ndim != 2:", bindings)
             @test occursin("if not arr.flags.f_contiguous:", bindings)
             @test occursin("expected_dtype = np.dtype(\"float64\")", bindings)
-            @test occursin("dims=(ctypes.c_int32 * 2)(*arr.shape)", bindings)
+            @test occursin("dims=(ctypes.c_int64 * 2)(*arr.shape)", bindings)
 
             # as_numpy returns a view with column-major strides.
             @test occursin("def as_numpy(self):", bindings)
@@ -2355,12 +2514,12 @@ end
             bindings = read(bindings_path, String)
 
             @test occursin("class CArray_borrowed_Float64_3(ctypes.Structure):", bindings)
-            @test occursin("(\"dims\", (ctypes.c_int32 * 3))", bindings)
+            @test occursin("(\"dims\", (ctypes.c_int64 * 3))", bindings)
             @test !occursin("owned", bindings)
             @test !occursin("def free(self):", bindings)
             @test occursin("if arr.ndim != 3:", bindings)
             @test occursin("if not arr.flags.f_contiguous:", bindings)
-            @test occursin("dims=(ctypes.c_int32 * 3)(*arr.shape)", bindings)
+            @test occursin("dims=(ctypes.c_int64 * 3)(*arr.shape)", bindings)
             @test occursin(
                 "np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T",
                 bindings

@@ -7,9 +7,9 @@ end
 struct PrimitiveTypeDesc
     name::String
     signed::Bool
-    bits::UInt
-    size::UInt
-    alignment::UInt
+    bits::Int
+    size::Int
+    alignment::Int
 end
 
 struct StructDesc
