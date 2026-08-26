@@ -266,6 +266,35 @@ function _python_copt_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
 end
 
 """
+    _unsupported_payload_reason(desc::StructDesc, typeinfo) -> Union{Nothing, String}
+
+Why a struct matching a carrier recognizer's *shape* still has no Python
+wrapping: its element, value or payload type lies outside
+[`numpy_dtypes`](@ref)/[`scalar_payload_types`](@ref). `nothing` when no
+recognizer shape-matched at all.
+
+The `_python_*_info` wrappers collapse both cases to `nothing`, so the façade
+classifiers re-run the raw recognizers through this to tell them apart. The
+distinction decides whether `pass_opaque` may wave the struct through: a
+struct no recognizer matched is a library-registered carrier that crosses the
+façade unconverted, while a shape-matched one holds Julia-allocated storage
+behind a pointer the façade can neither build nor release, so it must
+classify `:opaque` and ask for a hand-wrap.
+"""
+function _unsupported_payload_reason(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    ca = carray_struct_info(desc, typeinfo)
+    isnothing(ca) || return "`" * desc.name * "` is a CArray whose element type `" *
+        ca.eltype * "` has no numpy dtype"
+    cd = cdict_struct_info(desc, typeinfo)
+    isnothing(cd) || return "`" * desc.name * "` is a CDict whose value type `" *
+        cd.value_type * "` is not a supported scalar payload"
+    co = copt_struct_info(desc, typeinfo)
+    isnothing(co) || return "`" * desc.name * "` is a COpt whose payload type `" *
+        co.value_type * "` is not a supported scalar payload"
+    return nothing
+end
+
+"""
     _python_status_path(method::MethodDesc, typeinfo) -> Union{Nothing, String}
 
 [`jlwstatus_location`](@ref) as a Python attribute path from `_result` to
@@ -1090,8 +1119,10 @@ Classify a method argument for façade auto-wrapping. With `pass_opaque`, an
 argument outside the emitter's vocabulary — a raw pointer, or a struct a
 library registered with `JLWInterop.carrier_type` — classifies `:primitive`
 and crosses the façade as it stands, instead of classifying `:opaque`. Only
-an `@api` entrypoint sets it; see [`_facade_plan`](@ref). The return is one
-of:
+an `@api` entrypoint sets it; see [`_facade_plan`](@ref). A struct that
+matched a carrier recognizer's shape but carries an unsupported payload is
+excluded from that pass-through and stays `:opaque`
+([`_unsupported_payload_reason`](@ref)). The return is one of:
 - `(kind=:primitive,)` — pass-through
 - `(kind=:carray, classname=…)` — a borrowed `CArray`; wrap with
   `<class>.from_numpy(name)`
@@ -1152,6 +1183,13 @@ function _facade_classify_arg(
         elseif !isnothing(_python_copt_info(t, typeinfo))
             return (kind = :copt, classname = typedict[arg.type])
         else
+            # A carrier whose shape matched but whose payload is unsupported
+            # is not a library-registered struct: `pass_opaque` must not wave
+            # it through, or the argument crosses as a bare carrier no
+            # `from_*` helper can build.
+            unsupported = _unsupported_payload_reason(t, typeinfo)
+            isnothing(unsupported) ||
+                return (kind = :opaque, reason = "argument type " * unsupported * "; hand-wrap")
             pass_opaque && return (kind = :primitive,)
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
@@ -1171,7 +1209,9 @@ auto-wrapping. `method` is the entrypoint whose return type this is, or
 `nothing` when there is none, as in the recursive `JLWResult` call below.
 `release_present` is [`_release_symbols_present`](@ref)'s verdict for the
 surrounding library. `pass_opaque` is as in [`_facade_classify_arg`](@ref): a
-raw pointer or unrecognized struct return then classifies `:passthrough`. The
+raw pointer or unrecognized struct return then classifies `:passthrough`,
+except for a shape-matched carrier with an unsupported payload
+([`_unsupported_payload_reason`](@ref)), which stays `:opaque`. The
 return is one of:
 - `(kind=:passthrough,)` — primitive scalar (including `Cvoid`)
 - `(kind=:jlwresult_unwrap, inner=<NamedTuple>)` — a [`JLWInterop.JLWResult`](@ref)
@@ -1286,6 +1326,13 @@ function _classify_return_type(
                     "` with embedded JLWStatus; idiomatic shaping depends on the other fields",
             )
         else
+            # As in `_facade_classify_arg`: a shape-matched carrier whose
+            # payload this emitter cannot wrap owns storage the façade can
+            # neither read nor release, so `pass_opaque` must not let it
+            # cross as a plain value.
+            unsupported = _unsupported_payload_reason(rt, typeinfo)
+            isnothing(unsupported) ||
+                return (kind = :opaque, reason = "return type " * unsupported * "; hand-wrap")
             pass_opaque && return (kind = :passthrough,)
             return (kind = :opaque, reason = "returns unrecognized struct `" * rt.name * "`")
         end
@@ -1339,10 +1386,12 @@ form: the sidecar's name and kwargs split are what the wrapping adds, even
 for an otherwise primitive-only signature. The entry also sets `pass_opaque`
 on the classifiers, so a raw pointer or a struct outside the emitter's
 vocabulary crosses as it stands rather than degrading the whole function. If
-its return classifies as
-`:opaque` — an owning carrier in a library that exports no release
-entrypoints — this throws, naming `JLWInterop.@export_release_entrypoints`,
-rather than dropping the annotation's name, kwargs and docstring.
+an argument or the return still classifies as `:opaque` — an owning carrier
+in a library that exports no release entrypoints, or a carrier whose payload
+type this emitter cannot wrap — this throws rather than dropping the
+annotation's name, kwargs and docstring; the message carries the
+classification's own reason, naming the macro to add or the carrier to
+hand-wrap.
 
 Without a sidecar entry, a function is auto-wrapped (category `:auto`) only
 when every argument and return classifies as a recognized form *and* the
@@ -1369,9 +1418,15 @@ function _facade_plan(
     ]
     for (i, c) in enumerate(arg_classes)
         if c.kind === :opaque
+            reason = "`" * method.args[i].name * "`: " * c.reason
+            # Same rule as the return below: degrading an `@api` entrypoint
+            # would silently drop the Python name, keyword arguments and
+            # docstring the annotation asked for, so it is a build error.
+            isnothing(api_entry) || error(
+                "cannot wrap `@api` entrypoint '", method.symbol, "': ", reason
+            )
             return (
-                category = :mechanical,
-                reason = "`" * method.args[i].name * "`: " * c.reason,
+                category = :mechanical, reason = reason,
                 args = arg_classes, ret = (kind = :opaque,), uses_numpy = false,
                 api_entry = nothing,
             )

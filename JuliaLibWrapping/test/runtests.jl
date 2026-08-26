@@ -1531,6 +1531,85 @@ end
         @test_throws ErrorException JuliaLibWrapping._emit_value_unwrap(devnull, "_result", :opaque)
     end
 
+    @testset "shape-matched carrier with an unsupported payload" begin
+        # `Bool` matches `carray_struct_info`'s shape but has no numpy
+        # dtype, so the emitted carrier class gets neither `from_numpy` nor
+        # `as_numpy` nor `free`. The façade must decline it in both
+        # directions; `pass_opaque` waves through only structs no
+        # recognizer matched at all.
+        info = read_abi_info("bindinginfo_carray_bool.json")
+        typedict = Dict{Int, String}()
+        for (id, t) in pairs(info.typeinfo)
+            t isa StructDesc && JuliaLibWrapping.mangle_python!(typedict, id, info.typeinfo)
+        end
+        owned = onlymatch(
+            d -> d isa StructDesc && d.name == "CVector{:owned, Bool}",
+            collect(values(info.typeinfo))
+        )
+        @test isnothing(JuliaLibWrapping._python_carray_info(owned, info.typeinfo))
+        @test occursin(
+            "has no numpy dtype",
+            JuliaLibWrapping._unsupported_payload_reason(owned, info.typeinfo)
+        )
+        # A struct no recognizer matched reports nothing, which is what keeps
+        # a library-registered carrier crossing under `pass_opaque`.
+        cstr = onlymatch(
+            d -> d isa StructDesc && d.name == "CString{:owned}",
+            collect(values(info.typeinfo))
+        )
+        @test isnothing(JuliaLibWrapping._unsupported_payload_reason(cstr, info.typeinfo))
+
+        mask = onlymatch(m -> m.symbol == "mylib_mask", info.entrypoints)
+        count_true = onlymatch(m -> m.symbol == "mylib_count_true", info.entrypoints)
+        for pass_opaque in (false, true)
+            ret = JuliaLibWrapping._facade_classify_return(
+                mask, info.typeinfo, typedict, true; pass_opaque
+            )
+            @test ret.kind === :opaque
+            @test occursin("Bool", ret.reason)
+            arg = JuliaLibWrapping._facade_classify_arg(
+                only(count_true.args), info.typeinfo, typedict; pass_opaque
+            )
+            @test arg.kind === :opaque
+            @test occursin("Bool", arg.reason)
+        end
+
+        # With a sidecar entry each direction is a build error naming the
+        # symbol, not a wrapper that leaks on every call.
+        meta = Dict{String, Any}(
+            "mylib_mask" => Dict{String, Any}(
+                "name" => "mask", "args" => ["n"], "kwargs" => Any[], "doc" => "Boolean mask."
+            ),
+            "mylib_count_true" => Dict{String, Any}(
+                "name" => "count_true", "args" => ["v"], "kwargs" => Any[], "doc" => ""
+            ),
+        )
+        for sym in ("mylib_mask", "mylib_count_true")
+            mktempdir() do dir
+                dest = PythonTarget(dir, "mylib_py", "mylib")
+                err = try
+                    write_wrapper(dest, info; api_metadata = Dict{String, Any}(sym => meta[sym]))
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin(sym, err.msg)
+                @test occursin("Bool", err.msg)
+            end
+        end
+
+        # Without a sidecar both degrade to a mechanical re-export carrying
+        # the `TODO` that tells the author to hand-wrap.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test occursin("import mylib_mask  # TODO: hand-wrap", facade)
+            @test occursin("import mylib_count_true  # TODO: hand-wrap", facade)
+        end
+    end
+
     @testset "CString vocabulary" begin
         # Borrowed CString conversion requires no numpy or release function.
         abi = read_abi_info("bindinginfo_cstring.json")
