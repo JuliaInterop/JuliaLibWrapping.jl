@@ -38,6 +38,7 @@ function prepare_project()
     open(joinpath(tmp, "Project.toml"), "w") do io
         TOML.print(io, toml; sorted = true)
     end
+    cp(joinpath(HERE, "src"), joinpath(tmp, "src"))
     return tmp
 end
 

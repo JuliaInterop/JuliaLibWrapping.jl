@@ -1,0 +1,61 @@
+{
+  "functions": [
+    {
+      "symbol": "zero_first",
+      "name": "zero_first(p::Ptr{Nothing}, n::Int32)",
+      "arguments": [
+        { "name": "p", "type_id": 2 },
+        { "name": "n", "type_id": 1 }
+      ],
+      "returns": { "type_id": null }
+    },
+    {
+      "symbol": "next_chunk",
+      "name": "next_chunk(h::Handle)",
+      "arguments": [
+        { "name": "h", "type_id": 4 }
+      ],
+      "returns": { "type_id": 2 }
+    },
+    {
+      "symbol": "chunk_table",
+      "name": "chunk_table()",
+      "arguments": [
+      ],
+      "returns": { "type_id": 3 }
+    }
+  ],
+  "types": [
+    {
+      "id": 1,
+      "kind": "primitive",
+      "name": "Int32",
+      "signed": true,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 2,
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "pointee_type_id": null
+    },
+    {
+      "id": 3,
+      "kind": "pointer",
+      "name": "Ptr{Ptr{Nothing}}",
+      "pointee_type_id": 2
+    },
+    {
+      "id": 4,
+      "kind": "struct",
+      "name": "Handle",
+      "size": 8,
+      "alignment": 8,
+      "fields": [
+        { "name": "h", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false }
+      ]
+    }
+  ]
+}

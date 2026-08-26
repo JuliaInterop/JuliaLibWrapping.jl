@@ -6,21 +6,6 @@
 # in `python.jl`).
 
 """
-    _is_void_struct(desc::StructDesc) -> Bool
-
-Recognize the zero-field `Nothing` struct that `juliac` emits for `Cvoid`.
-Both the name and shape are checked, so ordinary structs named `Nothing` are
-not matched.
-
-`juliac` represents `Cvoid` as a struct rather than a primitive; if
-JuliaLang/JuliaC.jl#178 and JuliaLang/julia#62860 merge, this predicate and its
-call sites can be removed.
-"""
-function _is_void_struct(desc::StructDesc)
-    return desc.name == "Nothing" && isempty(desc.fields)
-end
-
-"""
     _match_fields(desc::StructDesc, names::NTuple{N,String}) where {N} -> Union{Nothing,NamedTuple}
 
 Return the fields named by `names`, in that order, when `desc` has exactly
@@ -66,6 +51,7 @@ Locate a `JLWStatus` in `method`'s return type: `nothing` when there is none,
 embedded field.
 """
 function jlwstatus_location(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    method.return_type === nothing && return nothing # `void` return
     rt = typeinfo[method.return_type]
     rt isa StructDesc || return nothing
     if is_jlwstatus_struct(rt, typeinfo)
@@ -103,6 +89,7 @@ function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
     (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return false
     data_type = typeinfo[data_field.type]
     data_type isa PointerDesc || return false
+    data_type.pointee_type === nothing && return false # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return false
     pointee.name == "UInt8" || return false
@@ -126,6 +113,7 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
     length_type isa PrimitiveTypeDesc && length_type.signed || return false
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return false
+    data_type.pointee_type === nothing && return false # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
     pointee isa StructDesc || return false
     cstring_struct_info(pointee, typeinfo) || return false
@@ -149,11 +137,13 @@ function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
     (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
     keys_type = typeinfo[m.keys.type]
     keys_type isa PointerDesc || return nothing
+    keys_type.pointee_type === nothing && return nothing # `void` pointee
     keys_pointee = typeinfo[keys_type.pointee_type]
     keys_pointee isa StructDesc || return nothing
     cstring_struct_info(keys_pointee, typeinfo) || return nothing
     values_type = typeinfo[m.values.type]
     values_type isa PointerDesc || return nothing
+    values_type.pointee_type === nothing && return nothing # `void` pointee
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
     owned_type = typeinfo[m.owned.type]
@@ -231,6 +221,7 @@ function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDes
     (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
+    data_type.pointee_type === nothing && return nothing # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
     return (; eltype = pointee.name, ndim = dims_type.count, ownership)
@@ -251,9 +242,9 @@ function raw_primitive_pointer_args(method::MethodDesc, typeinfo::OrderedDict{In
     for (i, arg) in pairs(method.args)
         t = typeinfo[arg.type]
         t isa PointerDesc || continue
+        t.pointee_type === nothing && continue # `Ptr{Cvoid}`
         pointee = typeinfo[t.pointee_type]
         pointee isa PrimitiveTypeDesc || continue
-        pointee.name == "Cvoid" && continue
         push!(out, i)
     end
     return out

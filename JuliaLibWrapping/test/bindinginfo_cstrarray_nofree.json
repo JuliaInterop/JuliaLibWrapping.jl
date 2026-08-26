@@ -1,97 +1,90 @@
 {
   "_comment": "Fixture identical to bindinginfo_cstrarray.json (including the `owned::Int32` ownership field) EXCEPT the two jlw_free*  release-entrypoint function entries are deleted (the `types` array — including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used — is left untouched deliberately). This models a library that defines the CStrArray carrier but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_strs` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, while the borrowed `take_strs` argument classification stays `:auto` (arg-side classification is unaffected by the gate).",
-  "types": [
-    {
-      "kind": "primitive",
-      "name": "UInt8",
-      "id": 1,
-      "size": 1,
-      "bits": 8,
-      "signed": false,
-      "alignment": 1
-    },
-    {
-      "kind": "primitive",
-      "name": "Int64",
-      "id": 2,
-      "size": 8,
-      "bits": 64,
-      "signed": true,
-      "alignment": 8
-    },
-    {
-      "kind": "pointer",
-      "name": "Ptr{UInt8}",
-      "id": 3,
-      "pointee_type_id": 1
-    },
-    {
-      "kind": "primitive",
-      "name": "Int32",
-      "id": 4,
-      "size": 4,
-      "bits": 32,
-      "signed": true,
-      "alignment": 4
-    },
-    {
-      "kind": "struct",
-      "name": "CString",
-      "id": 5,
-      "size": 16,
-      "fields": [
-        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
-      ],
-      "alignment": 8
-    },
-    {
-      "kind": "pointer",
-      "name": "Ptr{CString}",
-      "id": 6,
-      "pointee_type_id": 5
-    },
-    {
-      "kind": "struct",
-      "name": "CStrArray",
-      "id": 7,
-      "size": 24,
-      "fields": [
-        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
-        { "name": "owned", "type_id": 4, "offset": 16, "isptr": false, "isfieldatomic": false }
-      ],
-      "alignment": 8
-    },
-    {
-      "kind": "struct",
-      "name": "Nothing",
-      "id": 8,
-      "size": 0,
-      "fields": [],
-      "alignment": 1
-    },
-    {
-      "kind": "pointer",
-      "name": "Ptr{Nothing}",
-      "id": 9,
-      "pointee_type_id": 8
-    }
-  ],
   "functions": [
     {
-      "returns": { "type_id": 2 },
+      "symbol": "take_strs",
       "name": "take_strs(a::CStrArray)",
       "arguments": [
         { "name": "a", "type_id": 7 }
       ],
-      "symbol": "take_strs"
+      "returns": { "type_id": 2 }
     },
     {
-      "returns": { "type_id": 7 },
+      "symbol": "give_strs",
       "name": "give_strs()",
-      "arguments": [],
-      "symbol": "give_strs"
+      "arguments": [
+      ],
+      "returns": { "type_id": 7 }
+    }
+  ],
+  "types": [
+    {
+      "id": 1,
+      "kind": "primitive",
+      "name": "UInt8",
+      "signed": false,
+      "bits": 8,
+      "size": 1,
+      "alignment": 1
+    },
+    {
+      "id": 2,
+      "kind": "primitive",
+      "name": "Int64",
+      "signed": true,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 3,
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "pointee_type_id": 1
+    },
+    {
+      "id": 4,
+      "kind": "primitive",
+      "name": "Int32",
+      "signed": true,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 5,
+      "kind": "struct",
+      "name": "CString",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 6,
+      "kind": "pointer",
+      "name": "Ptr{CString}",
+      "pointee_type_id": 5
+    },
+    {
+      "id": 7,
+      "kind": "struct",
+      "name": "CStrArray",
+      "size": 24,
+      "alignment": 8,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
+        { "name": "owned", "type_id": 4, "offset": 16, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 8,
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "pointee_type_id": null
     }
   ]
 }

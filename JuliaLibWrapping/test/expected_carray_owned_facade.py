@@ -17,7 +17,6 @@ from . import _lowlevel  # noqa: F401
 import numpy as np  # noqa: F401
 
 from ._lowlevel import (
-    Nothing,
     CString,
     CVector_owned_Float64,
 )
@@ -30,4 +29,4 @@ def give_vec():
         _result.free()
     return _out
 
-__all__ = ["Nothing", "CString", "CVector_owned_Float64", "give_vec"]
+__all__ = ["CString", "CVector_owned_Float64", "give_vec"]

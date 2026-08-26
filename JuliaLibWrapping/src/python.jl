@@ -114,10 +114,6 @@ Return a Python expression naming the ctypes type for `type_id`. Struct names
 go through `sanitize_for_c` (whose output is also a valid Python identifier)
 with a `_<id>` collision suffix matching `mangle_c!`. Pointer types render
 inline as `ctypes.POINTER(...)`; `Ptr{Cvoid}` collapses to `ctypes.c_void_p`
-— both when the pointee arrives as a `PrimitiveTypeDesc` named `"Cvoid"`
-and when it arrives as juliac's zero-field `Nothing` struct (see
-[`_is_void_struct`](@ref); the latter is what `Ptr{Nothing}` actually looks
-like in a real ABI JSON). Array types render inline as `(<eltype> * N)`.
 Results are memoized in `typedict`.
 """
 function mangle_python!(
@@ -135,10 +131,7 @@ function mangle_python!(
         end
         return pytypes[type.name]
     elseif type isa PointerDesc
-        pointee = typeinfo[type.pointee_type]
-        if pointee isa PrimitiveTypeDesc && pointee.name == "Cvoid"
-            mangled = "ctypes.c_void_p"
-        elseif pointee isa StructDesc && _is_void_struct(pointee)
+        if type.pointee_type === nothing
             mangled = "ctypes.c_void_p"
         else
             inner = mangle_python!(typedict, type.pointee_type, typeinfo)
@@ -918,10 +911,8 @@ function _write_bindings(
     # Function bindings.
     for method in entrypoints
         argexprs = String[mangle_python!(typedict, a.type, typeinfo) for a in method.args]
-        return_desc = typeinfo[method.return_type]
-        # ctypes represents a bare Cvoid return as `None`, not the generated
-        # zero-field `Nothing` class used in other type positions.
-        rt = return_desc isa StructDesc && _is_void_struct(return_desc) ?
+        # ctypes represents a `void` return as a `None` restype.
+        rt = method.return_type === nothing ?
             "None" : mangle_python!(typedict, method.return_type, typeinfo)
         println(f, "_lib.", method.symbol, ".argtypes = [", join(argexprs, ", "), "]")
         println(f, "_lib.", method.symbol, ".restype = ", rt)
@@ -1067,6 +1058,7 @@ function _facade_classify_return(
         typedict::Dict{Int, String},
         release_present::Bool
     )
+    method.return_type === nothing && return (kind = :passthrough,)
     rt = typeinfo[method.return_type]
     if rt isa PrimitiveTypeDesc
         return (kind = :passthrough,)

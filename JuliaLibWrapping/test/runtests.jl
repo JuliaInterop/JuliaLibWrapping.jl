@@ -80,6 +80,70 @@ end
         @test name2idx["CVectorPair{Float32}"] > name2idx["CVector{:borrowed, Float32}"]
     end
 
+    @testset "parse_abi_info: null Cvoid encoding" begin
+        # JuliaC (JuliaLang/JuliaC.jl#122) encodes `Cvoid` returns and
+        # `Ptr{Cvoid}` pointees as `null` type ids instead of a type node —
+        # mirroring C, where `void` is not a type. The importer keeps that
+        # shape: a `nothing` return type / pointee, and no `Cvoid` entry in
+        # the type dictionary.
+        abi = read_abi_info("bindinginfo_cvoid.json")
+        (; entrypoints, typeinfo) = abi
+
+        @test length(typeinfo) == 4
+        @test !any(
+            desc isa PrimitiveTypeDesc && desc.name == "Cvoid"
+            for desc in values(typeinfo)
+        )
+
+        # `zero_first(p::Ptr{Cvoid}, n::Int32)::Cvoid`: null return and null
+        # pointee both map to `nothing`.
+        zero_first = onlymatch(md -> md.symbol == "zero_first", entrypoints)
+        @test zero_first.return_type === nothing
+        p_desc = typeinfo[zero_first.args[1].type]
+        @test p_desc isa PointerDesc
+        @test p_desc.pointee_type === nothing
+
+        # `chunk_table()::Ptr{Ptr{Cvoid}}`: only the innermost pointee is
+        # null; the outer pointer still references the inner one by id.
+        chunk_table = onlymatch(md -> md.symbol == "chunk_table", entrypoints)
+        rt_desc = typeinfo[chunk_table.return_type]
+        @test rt_desc isa PointerDesc
+        inner_desc = typeinfo[rt_desc.pointee_type]
+        @test inner_desc isa PointerDesc
+        @test inner_desc.pointee_type === nothing
+
+        # The C emitter renders `nothing` as `void`, including for a
+        # `Ptr{Cvoid}` struct field (which must not pick up a bogus
+        # `struct ` prefix).
+        mktempdir() do path
+            dest = CTarget(path, "libcvoid")
+            write_wrapper(dest, abi)
+            content = read(joinpath(path, "libcvoid.h"), String)
+            @test occursin("void zero_first(void* p, int32_t n);", content)
+            @test occursin("void* next_chunk(Handle h);", content)
+            @test occursin("void** chunk_table();", content)
+            @test occursin("void* h;", content)
+            @test !occursin("struct void", content)
+            @test !occursin("Nothing", content)
+        end
+
+        # The Python emitter renders a `nothing` return as a `None` restype
+        # and collapses a `nothing` pointee to `ctypes.c_void_p`.
+        mktempdir() do path
+            dest = PythonTarget(path, "libcvoid", "libcvoid")
+            write_wrapper(dest, abi)
+            bindings = read(joinpath(path, "libcvoid", "_lowlevel.py"), String)
+            @test occursin("_lib.zero_first.argtypes = [ctypes.c_void_p, ctypes.c_int32]", bindings)
+            @test occursin("_lib.zero_first.restype = None", bindings)
+            @test occursin("_lib.next_chunk.restype = ctypes.c_void_p", bindings)
+            @test occursin(
+                "_lib.chunk_table.restype = ctypes.POINTER(ctypes.c_void_p)",
+                bindings
+            )
+            @test occursin("(\"h\", ctypes.c_void_p)", bindings)
+        end
+    end
+
     @testset "parse_abi_info: malformed input" begin
         # Int32 id exercises the platform-tolerant integer handling (this is what
         # 32-bit Julia hands you for an unannotated `1` literal).
@@ -461,6 +525,24 @@ end
             @test JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo) == "Foo"
             @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "Foo_3"
             @test JuliaLibWrapping.mangle_python!(typedict, 3, typeinfo) == "Foo_4"
+        end
+
+        @testset "void pointee collapse" begin
+            # A `nothing` pointee (`Ptr{Cvoid}`) must collapse to
+            # `ctypes.c_void_p` in every position — NOT render as a distinct
+            # named pointer type, which is what broke `jlw_free`'s argtype
+            # (ctypes refuses a `c_void_p` argument for one).
+            typedict = Dict{Int, String}()
+            typeinfo = OrderedDict{Int, TypeDesc}(
+                1 => StructDesc("Handle", 8, 8, FieldDesc[FieldDesc("x", 3, 0)]),
+                2 => PointerDesc("Ptr{Nothing}", nothing),
+                3 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            )
+            @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "ctypes.c_void_p"
+            # An ordinary pointer is unaffected — still a typed pointer.
+            typeinfo[4] = PointerDesc("Ptr{Handle}", 1)
+            @test JuliaLibWrapping.mangle_python!(typedict, 4, typeinfo) ==
+                "ctypes.POINTER(Handle)"
         end
 
         @testset "sanitize_python_argname" begin
@@ -1158,116 +1240,6 @@ end
         @test JuliaLibWrapping._python_status_path(method, ti) == ".lambda_"
     end
 
-    @testset "_is_void_struct" begin
-        # juliac's ABI JSON represents `Cvoid` as a zero-field `struct
-        # Nothing`, not a PrimitiveTypeDesc named "Cvoid" — in EVERY
-        # position: a bare return (routed to a Python `None` restype
-        # instead of a real, zero-size, libffi-incompatible
-        # ctypes.Structure class) AND a pointer's pointee (`Ptr{Nothing}`
-        # routed to `ctypes.c_void_p` instead of `ctypes.POINTER(Nothing)`,
-        # which ctypes refuses to accept a `c_void_p` argument for). This
-        # predicate is the shared gate both call sites use.
-        is_void = JuliaLibWrapping._is_void_struct
-        @test is_void(StructDesc("Nothing", 0, 1, FieldDesc[])) === true
-        # Name alone is not enough: a real struct literally named Nothing
-        # with fields must not be swallowed.
-        @test is_void(StructDesc("Nothing", 8, 8, FieldDesc[FieldDesc("x", 1, 0)])) === false
-        # Fields alone is not enough either: an unrelated empty struct.
-        @test is_void(StructDesc("Empty", 0, 1, FieldDesc[])) === false
-        # Sanity: the real synthetic node from the CStrArray fixture.
-        abi = read_abi_info("bindinginfo_cstrarray.json")
-        findtype(descs, name) = (
-            k = collect(keys(descs));
-            k[findfirst((id) -> descs[id].name === name, k)]
-        )
-        nothing_desc = abi.typeinfo[findtype(abi.typeinfo, "Nothing")]
-        @test is_void(nothing_desc) === true
-    end
-
-    @testset "mangle_python! Ptr{Nothing} collapse" begin
-        # A PointerDesc whose pointee is the zero-field `Nothing` struct
-        # (juliac's real representation of `Ptr{Cvoid}`, per
-        # `_is_void_struct`) must collapse to `ctypes.c_void_p`, same
-        # as the pre-existing `Ptr{Cvoid}`-as-primitive special case —
-        # NOT render as `ctypes.POINTER(Nothing)`, which is what broke
-        # `jlw_free`'s argtype (ctypes refuses a `c_void_p` argument where
-        # a distinct named pointer type is declared).
-        typedict = Dict{Int, String}()
-        typeinfo = OrderedDict{Int, TypeDesc}(
-            1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
-            2 => PointerDesc("Ptr{Nothing}", 1),
-        )
-        @test JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo) == "ctypes.c_void_p"
-        # The struct itself, referenced directly (not through a pointer),
-        # still mangles to its real class name — unaffected, still needed
-        # wherever the class definition itself is emitted.
-        typedict2 = Dict{Int, String}()
-        @test JuliaLibWrapping.mangle_python!(typedict2, 1, typeinfo) == "Nothing"
-        # A pointer to a REAL (non-void) empty-named-Nothing struct with
-        # fields is not swallowed — still a typed pointer.
-        typedict3 = Dict{Int, String}()
-        typeinfo3 = OrderedDict{Int, TypeDesc}(
-            1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
-            2 => StructDesc("Nothing", 8, 8, FieldDesc[FieldDesc("x", 1, 0)]),
-            3 => PointerDesc("Ptr{Nothing}", 2),
-        )
-        @test JuliaLibWrapping.mangle_python!(typedict3, 3, typeinfo3) == "ctypes.POINTER(Nothing)"
-    end
-
-    @testset "mangle_python! Nothing type_id sweep" begin
-        # Pins behavior at EVERY position `mangle_python!` can reach the
-        # zero-field `Nothing` struct type_id from, not just the two fixed
-        # call sites (bare return, pointer pointee) — so a gap is a
-        # failing assertion, not a silent assumption. See
-        # `_is_void_struct`'s docstring for the per-position rationale.
-
-        # Struct FIELD typed as a POINTER to Nothing (Ptr{Cvoid} field) —
-        # this goes through the same fixed PointerDesc branch as an
-        # argument/return would, so it correctly collapses too.
-        let typedict = Dict{Int, String}()
-            typeinfo = OrderedDict{Int, TypeDesc}(
-                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
-                2 => PointerDesc("Ptr{Nothing}", 1),
-            )
-            field_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
-            @test field_type == "ctypes.c_void_p"
-        end
-
-        # Struct FIELD typed as the BARE Nothing struct (not a pointer) —
-        # left unhandled BY DESIGN: a ctypes `_fields_` entry needs a real
-        # ctypes type object, and `None` is not one, so this must keep
-        # rendering the class name. Pinned so a future change to
-        # `_is_void_struct`'s call sites can't silently start emitting an
-        # invalid `("x", None)` field tuple.
-        let typedict = Dict{Int, String}()
-            typeinfo = OrderedDict{Int, TypeDesc}(
-                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
-            )
-            field_type = JuliaLibWrapping.mangle_python!(typedict, 1, typeinfo)
-            @test field_type == "Nothing"
-        end
-
-        # Bare Nothing array elements retain the generated struct type.
-        let typedict = Dict{Int, String}()
-            typeinfo = OrderedDict{Int, TypeDesc}(
-                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
-                2 => ArrayDesc("NTuple{3, Nothing}", 1, 3, 0, 1),
-            )
-            arr_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
-            @test arr_type == "(Nothing * 3)"
-        end
-
-        # Ptr{Nothing} returns use the normal pointer mapping.
-        let typedict = Dict{Int, String}()
-            typeinfo = OrderedDict{Int, TypeDesc}(
-                1 => StructDesc("Nothing", 0, 1, FieldDesc[]),
-                2 => PointerDesc("Ptr{Nothing}", 1),
-            )
-            return_type = JuliaLibWrapping.mangle_python!(typedict, 2, typeinfo)
-            @test return_type == "ctypes.c_void_p"
-        end
-    end
-
     @testset "CString vocabulary" begin
         # CString conversion does not require numpy.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -1353,13 +1325,11 @@ end
             # below for the argtypes/restype shape).
             @test !occursin("def jlw_free(", bindings)
             @test !occursin("def jlw_free_strings(", bindings)
-            # juliac's ABI JSON represents `Cvoid` as a zero-field
-            # `Nothing` StructDesc, not a PrimitiveTypeDesc, in EVERY
-            # position — both the bare-return case and the
-            # `Ptr{Nothing}`-argument case. Mishandling either would
-            # silently reintroduce `ffi_prep_cif failed` / `TypeError:
-            # expected LP_Nothing instance instead of c_void_p` at the
-            # first real call.
+            # `Cvoid` is a `null` type id in the ABI JSON — both the
+            # bare-return case and the `Ptr{Nothing}`-argument case.
+            # Mishandling either would silently reintroduce
+            # `ffi_prep_cif failed` / `TypeError: expected LP_Nothing
+            # instance instead of c_void_p` at the first real call.
             @test !occursin("_lib.jlw_free.restype = Nothing", bindings)
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)

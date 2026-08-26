@@ -21,7 +21,7 @@ end
 
 struct PointerDesc
     name::String
-    pointee_type::Int # type of pointee
+    pointee_type::Union{Int, Nothing} # type of pointee (`void *` stores `nothing`)
 end
 
 struct ArrayDesc
@@ -41,7 +41,7 @@ end
 struct MethodDesc
     symbol::String # exported C symbol
     name::String   # full method name w/ args
-    return_type::Int
+    return_type::Union{Int, Nothing} # `nothing` = `void` (see `PointerDesc`)
     args::Vector{ArgDesc}
 end
 
@@ -127,7 +127,7 @@ function build_type_graph(typedescs::OrderedDict{Int, TypeDesc};
                 add_edge!(g, field.type, id)
             end
         elseif desc isa PointerDesc
-            if pointer_filter(id)
+            if desc.pointee_type !== nothing && pointer_filter(id)
                 add_edge!(g, desc.pointee_type, id)
             else
                 # Pointee types do not affect pointer layout.
@@ -181,10 +181,12 @@ function sort_declarations!(typedescs::OrderedDict{Int, TypeDesc})
         desc isa StructDesc || continue
         for field in desc.fields
             dep = field.type
-            while typedescs[dep] isa PointerDesc
+            while dep !== nothing && typedescs[dep] isa PointerDesc
                 # Follow pointer chains.
                 dep = (typedescs[dep]::PointerDesc).pointee_type
             end
+            # A `void *` has no declaration to forward-declare for its pointee.
+            dep === nothing && continue
             order_to_emit[id] ≥ order_to_emit[dep] && continue
             # Forward-declare dependencies emitted later.
             push!(forwarddecls, dep)
