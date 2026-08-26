@@ -5,7 +5,7 @@ module ols
 # `fit` returns a struct embedding a `JLWStatus` (so its façade wrapper is
 # the hand-edited path), `predict` returns `JLWStatus` directly (the
 # auto-wrapped path that raises `JLWError` on failure), and `summary_report`
-# writes into a caller-allocated `CString` buffer.
+# writes into a caller-allocated `CString{:borrowed}` buffer.
 
 using JLWInterop
 using LinearAlgebra
@@ -78,7 +78,7 @@ Base.@ccallable function predict(coeffs::CVector{:borrowed, Float64},
     return jlw_ok()
 end
 
-Base.@ccallable function summary_report(result::FitResult, buf::CString)::JLWStatus
+Base.@ccallable function summary_report(result::FitResult, buf::CString{:borrowed})::JLWStatus
     if result.status.code != 0
         return jlw_error(101, "result has non-zero status; nothing to report")
     end

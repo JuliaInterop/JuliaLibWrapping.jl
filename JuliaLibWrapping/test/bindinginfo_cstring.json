@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for the CString vocabulary type. Mirrors the layout juliac would emit for `struct CString; length::Int32; data::Ptr{UInt8}; end`, with one @ccallable function consuming a CString and one returning one. The Python emitter must recognize this shape by name + field layout and emit from_str / as_str / from_bytes / as_bytes helpers.",
+  "_comment": "Hand-authored fixture for a borrowed CString. Mirrors the layout juliac would emit for `struct CString{owned}; length::Int32; data::Ptr{UInt8}; end` instantiated at :borrowed, with one @ccallable function consuming a `CString{:borrowed}` and one returning one. Ownership is a leading Symbol type parameter carried in the ABI JSON name, and a name that states no ownership is not recognized at all. The Python emitter must recognize this shape by name + field layout and emit from_str / as_str / from_bytes / as_bytes helpers and no free(): the buffer belongs to the caller, so the facade converts str in and str out and releases nothing.",
   "types": [
     {
       "kind": "primitive",
@@ -27,7 +27,7 @@
     },
     {
       "kind": "struct",
-      "name": "CString",
+      "name": "CString{:borrowed}",
       "id": 4,
       "size": 16,
       "fields": [
@@ -40,7 +40,7 @@
   "functions": [
     {
       "returns": { "type_id": 2 },
-      "name": "greeting_length(s::CString)",
+      "name": "greeting_length(s::CString{:borrowed})",
       "arguments": [
         { "name": "s", "type_id": 4 }
       ],

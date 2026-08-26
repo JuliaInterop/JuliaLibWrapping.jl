@@ -1,4 +1,4 @@
-"""carray_owned_nofree_demo idiomatic façade.
+"""cstring_owned_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -17,9 +17,14 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     CString_owned,
-    CVector_owned_Float64,
 )
 
-from ._lowlevel import give_vec  # TODO: hand-wrap — owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
+def give_greeting():
+    _result = _lowlevel.give_greeting()
+    try:
+        _out = _result.as_str()
+    finally:
+        _result.free()
+    return _out
 
-__all__ = ["CString_owned", "CVector_owned_Float64", "give_vec"]
+__all__ = ["CString_owned", "give_greeting"]

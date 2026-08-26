@@ -112,9 +112,9 @@ package directory:
   regenerated** on every `write_wrapper` call.
 - `_facade.py` — the package's public API. JuliaLibWrapping creates this
   file only if it does not exist. Its initial version wraps entrypoints whose
-  arguments and return are recognized —
-  primitive scalars, `CVector{owned,T}`, `CMatrix{owned,T}`, `CString`, or a
-  direct `JLWStatus` return — is auto-wrapped to accept and return
+  arguments and return are recognized — primitive scalars,
+  `CVector{owned,T}`, `CMatrix{owned,T}`, `CString{owned}`, or a direct
+  `JLWStatus` return — is auto-wrapped to accept and return
   idiomatic Python objects (numpy arrays, `str`). Entrypoints with a
   raw pointer, an unrecognized struct, or an embedded `JLWStatus`
   field are re-exported with a `# TODO: hand-wrap` comment. Delete the file and
@@ -124,7 +124,8 @@ package directory:
 Users normally import the package-level API from `_facade`. The generated
 bindings remain available under `pkg._lowlevel` when direct access is needed.
 
-Recognition of `CArray`, `CString`, and `JLWStatus` is structural. Use
+Recognition of `CArray`, `CString`, and `JLWStatus` matches the type name,
+ownership parameter (where present), and field layout. Use
 [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
 for their canonical definitions.
 

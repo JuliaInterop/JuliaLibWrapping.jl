@@ -2,7 +2,7 @@
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
-(primitives, `CArray{owned,T,N}`, `CString`, direct `JLWStatus`)
+(primitives, `CArray{owned,T,N}`, `CString{owned}`, direct `JLWStatus`)
 are wrapped to accept and return idiomatic Python objects (numpy
 arrays, `str`). Anything else is re-exported from `_lowlevel`
 with a `TODO` comment naming what needs hand-wrapping.
@@ -16,15 +16,15 @@ on every `write_wrapper` call.
 from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
-    CString,
+    CString_borrowed,
 )
 
 def greeting_length(s):
-    _s = CString.from_str(s)
+    _s = CString_borrowed.from_str(s)
     return _lowlevel.greeting_length(_s)
 
 def greeting():
     _result = _lowlevel.greeting()
     return _result.as_str()
 
-__all__ = ["CString", "greeting_length", "greeting"]
+__all__ = ["CString_borrowed", "greeting_length", "greeting"]

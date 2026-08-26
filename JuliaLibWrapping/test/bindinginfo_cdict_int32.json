@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixture identical in shape to bindinginfo_cdict.json, but instantiated at V=Int32 instead of V=Float64 \u2014 proves cdict_struct_info's value-type parameterization (and the helper codegen that substitutes the matching ctypes name) varies correctly beyond a single value type. Field offsets (0, 8, 16, size 24) are IDENTICAL to the Float64 case: `values` is a pointer field (8 bytes) regardless of what it points at, so the pointee's own size never affects CDict's own layout. `keys`/`jlw_free_strings` are unaffected by the value type (always Ptr{CString}); only `values`'s pointee type and the Float64->Int32 substitution in from_dict/as_dict's value ctype differ from bindinginfo_cdict.json.",
+  "_comment": "Fixture identical in shape to bindinginfo_cdict.json, but instantiated at V=Int32 instead of V=Float64 \u2014 proves cdict_struct_info's value-type parameterization (and the helper codegen that substitutes the matching ctypes name) varies correctly beyond a single value type. Field offsets (0, 8, 16, size 24) are IDENTICAL to the Float64 case: `values` is a pointer field (8 bytes) regardless of what it points at, so the pointee's own size never affects CDict's own layout. `keys`/`jlw_free_strings` are unaffected by the value type (always Ptr{CString{owned}} for the owning dictionary); only `values`'s pointee type and the Float64->Int32 substitution in from_dict/as_dict's value ctype differ from bindinginfo_cdict.json.",
   "types": [
     {
       "kind": "primitive",
@@ -36,7 +36,7 @@
     },
     {
       "kind": "struct",
-      "name": "CString",
+      "name": "CString{:borrowed}",
       "id": 5,
       "size": 16,
       "fields": [
@@ -47,7 +47,7 @@
     },
     {
       "kind": "pointer",
-      "name": "Ptr{CString}",
+      "name": "Ptr{CString{:borrowed}}",
       "id": 6,
       "pointee_type_id": 5
     },
@@ -76,7 +76,7 @@
       "size": 24,
       "fields": [
         { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "keys", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false },
+        { "name": "keys", "type_id": 12, "offset": 8, "isptr": false, "isfieldatomic": false },
         { "name": "values", "type_id": 7, "offset": 16, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
@@ -86,6 +86,23 @@
       "name": "Ptr{Nothing}",
       "id": 9,
       "pointee_type_id": null
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 11,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 1, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 12,
+      "pointee_type_id": 11
     }
   ],
   "functions": [
@@ -113,9 +130,9 @@
     },
     {
       "returns": { "type_id": null },
-      "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
       "arguments": [
-        { "name": "p", "type_id": 6 },
+        { "name": "p", "type_id": 12 },
         { "name": "n", "type_id": 2 }
       ],
       "symbol": "jlw_free_strings"

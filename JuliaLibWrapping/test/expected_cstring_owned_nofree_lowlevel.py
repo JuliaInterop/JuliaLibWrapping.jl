@@ -5,8 +5,8 @@ import sys
 import pathlib
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcstring"
-_LIBRARY_ENV_VAR = "CSTRING_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcstringownednofree"
+_LIBRARY_ENV_VAR = "CSTRING_OWNED_NOFREE_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -53,34 +53,11 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CString_borrowed(ctypes.Structure):
+class CString_owned(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
-
-    @classmethod
-    def from_str(cls, s):
-        """Return a CString whose buffer holds the UTF-8 encoding of `s`.
-
-        Allocates a fresh ctypes buffer and copies the bytes into it; the
-        returned object holds a reference to that buffer, so the caller
-        must keep it alive for the duration of any C call that uses it."""
-        if not isinstance(s, str):
-            raise TypeError(f"expected str, got {type(s).__name__}")
-        return cls.from_bytes(s.encode("utf-8"))
-
-    @classmethod
-    def from_bytes(cls, b):
-        """Return a CString whose buffer holds a copy of the bytes `b`."""
-        if not isinstance(b, (bytes, bytearray)):
-            raise TypeError(f"expected bytes-like, got {type(b).__name__}")
-        n = len(b)
-        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()
-        obj = cls(length=n,
-                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
-        obj._buffer = buf
-        return obj
 
     def as_bytes(self):
         """Return a copy of the underlying bytes as a Python `bytes` object."""
@@ -90,13 +67,17 @@ class CString_borrowed(ctypes.Structure):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
 
-_lib.greeting_length.argtypes = [CString_borrowed]
-_lib.greeting_length.restype = ctypes.c_int32
-def greeting_length(s):
-    return _lib.greeting_length(s)
+    def free(self):
+        """Free the Julia-allocated buffer.
 
-_lib.greeting.argtypes = []
-_lib.greeting.restype = CString_borrowed
-def greeting():
-    return _lib.greeting()
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
+            return
+        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
+
+_lib.give_greeting.argtypes = []
+_lib.give_greeting.restype = CString_owned
+def give_greeting():
+    return _lib.give_greeting()
 

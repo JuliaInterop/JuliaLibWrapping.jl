@@ -54,34 +54,11 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CString(ctypes.Structure):
+class CString_owned(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
-
-    @classmethod
-    def from_str(cls, s):
-        """Return a CString whose buffer holds the UTF-8 encoding of `s`.
-
-        Allocates a fresh ctypes buffer and copies the bytes into it; the
-        returned object holds a reference to that buffer, so the caller
-        must keep it alive for the duration of any C call that uses it."""
-        if not isinstance(s, str):
-            raise TypeError(f"expected str, got {type(s).__name__}")
-        return cls.from_bytes(s.encode("utf-8"))
-
-    @classmethod
-    def from_bytes(cls, b):
-        """Return a CString whose buffer holds a copy of the bytes `b`."""
-        if not isinstance(b, (bytes, bytearray)):
-            raise TypeError(f"expected bytes-like, got {type(b).__name__}")
-        n = len(b)
-        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()
-        obj = cls(length=n,
-                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
-        obj._buffer = buf
-        return obj
 
     def as_bytes(self):
         """Return a copy of the underlying bytes as a Python `bytes` object."""
@@ -90,6 +67,16 @@ class CString(ctypes.Structure):
     def as_str(self):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
+            return
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self._freed = True
 
 class CVector_owned_Float64(ctypes.Structure):
     _fields_ = [
@@ -119,6 +106,6 @@ def give_vec():
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None
 
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString_owned), ctypes.c_int64]
 _lib.jlw_free_strings.restype = None
 

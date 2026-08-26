@@ -1,5 +1,5 @@
 {
-  "_comment": "Synthetic fixture for the CDict vocabulary type. Mirrors the layout juliac would emit for `struct CDict{owned,V}; length::Int64; keys::Ptr{CString}; values::Ptr{V}; end` (JLWInterop) instantiated at V=Float64, with one @ccallable function taking a `CDict{:borrowed, Float64}` argument and one returning a `CDict{:owned, Float64}`, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints so the owning return is `:auto`, not `:mechanical`. `keys` and `values` are two SEPARATE allocations: keys are length-prefixed `CString`s freed with `jlw_free_strings`, values a dense buffer freed with `jlw_free`. Ownership is a leading Symbol type parameter carried in the ABI JSON name, so the two ownerships are two distinct 24-byte structs with an identical `(length, keys, values)` layout. `jlw_free` takes a `Ptr{Nothing}` (a pointer with a null pointee id) and both release entrypoints return void (a null return type id), mirroring juliac's actual ABI JSON rendering. The Python emitter must emit `from_dict`/`as_dict` on the borrowed class, `as_dict`/`free` on the owning class, and an owning-return convert-then-free facade wrapper.",
+  "_comment": "Synthetic fixture for the CDict vocabulary type. Mirrors the layout juliac would emit for `struct CDict{owned,V}; length::Int64; keys::Ptr{CString{owned}}; values::Ptr{V}; end` (JLWInterop) instantiated at V=Float64, with one @ccallable function taking a `CDict{:borrowed, Float64}` argument and one returning a `CDict{:owned, Float64}`, plus the macro-emitted `jlw_free`/`jlw_free_strings` release entrypoints so the owning return is `:auto`, not `:mechanical`. `keys` and `values` are two SEPARATE allocations: keys are length-prefixed `CString`s carrying the dictionary's ownership (so the two dictionaries point at two distinct `CString` structs) and freed with `jlw_free_strings`, values a dense buffer freed with `jlw_free`. Ownership is a leading Symbol type parameter carried in the ABI JSON name, so the two ownerships are two distinct 24-byte structs with an identical `(length, keys, values)` layout. `jlw_free` takes a `Ptr{Nothing}` (a pointer with a null pointee id) and both release entrypoints return void (a null return type id), mirroring juliac's actual ABI JSON rendering. The Python emitter must emit `from_dict`/`as_dict` on the borrowed class, `as_dict`/`free` on the owning class, and an owning-return convert-then-free facade wrapper.",
   "types": [
     {
       "kind": "primitive",
@@ -45,7 +45,7 @@
     },
     {
       "kind": "struct",
-      "name": "CString",
+      "name": "CString{:borrowed}",
       "id": 6,
       "size": 16,
       "fields": [
@@ -56,7 +56,7 @@
     },
     {
       "kind": "pointer",
-      "name": "Ptr{CString}",
+      "name": "Ptr{CString{:borrowed}}",
       "id": 7,
       "pointee_type_id": 6
     },
@@ -85,7 +85,7 @@
       "size": 24,
       "fields": [
         { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "keys", "type_id": 7, "offset": 8, "isptr": false, "isfieldatomic": false },
+        { "name": "keys", "type_id": 13, "offset": 8, "isptr": false, "isfieldatomic": false },
         { "name": "values", "type_id": 8, "offset": 16, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
@@ -95,6 +95,23 @@
       "name": "Ptr{Nothing}",
       "id": 10,
       "pointee_type_id": null
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 12,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 13,
+      "pointee_type_id": 12
     }
   ],
   "functions": [
@@ -122,9 +139,9 @@
     },
     {
       "returns": { "type_id": null },
-      "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
       "arguments": [
-        { "name": "p", "type_id": 7 },
+        { "name": "p", "type_id": 13 },
         { "name": "n", "type_id": 2 }
       ],
       "symbol": "jlw_free_strings"

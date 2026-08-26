@@ -16,7 +16,7 @@ types:
 | `CMatrix{:borrowed,Float64}` | design matrix `X`                  |
 | `CVector{:borrowed,Float64}` | response `y`, coefficients, predictions |
 | `Float64` (primitive)      | `r_squared`                          |
-| `CString`                  | output buffer for `summary_report`   |
+| `CString{:borrowed}`       | output buffer for `summary_report`   |
 | `JLWStatus` (direct)       | return of `predict`                  |
 | `JLWStatus` (embedded)     | `FitResult.status` field             |
 
@@ -54,14 +54,14 @@ Base.@ccallable function predict(coeffs::CVector{:borrowed, Float64},
                                   out::CVector{:borrowed, Float64})::JLWStatus
 
 Base.@ccallable function summary_report(result::FitResult,
-                                         buf::CString)::JLWStatus
+                                         buf::CString{:borrowed})::JLWStatus
 ```
 
 See `examples/ols/src/ols.jl` for the complete implementation.
 
 `coeffs_buf` and `out` are *caller-allocated* buffers: the library writes into
 them but does not own them, which is what the `:borrowed` parameter records.
-`CString` borrows likewise.
+`summary_report`'s `CString{:borrowed}` buffer works the same way.
 
 Errors travel back as a `JLWStatus`,
 either returned directly (`predict`, `summary_report`) or embedded in
@@ -267,13 +267,14 @@ method; this returns the pieces directly to keep the example short.
 
 `summary_report` is also a hand-wrap case (its `FitResult` argument
 is an unrecognized struct). The caller allocates a writable
-`CString` buffer, passes it in, and decodes the bytes after the call:
+`CString{:borrowed}` buffer, passes it in, and decodes the bytes after the
+call:
 
 ```python
 def summary_report(result_struct, capacity=256):
     import ctypes
     buf_bytes = (ctypes.c_uint8 * capacity)()
-    buf = _lowlevel.CString(
+    buf = _lowlevel.CString_borrowed(
         length=capacity,
         data=ctypes.cast(buf_bytes, ctypes.POINTER(ctypes.c_uint8)),
     )
