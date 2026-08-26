@@ -5,8 +5,8 @@ import sys
 import pathlib
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcdict"
-_LIBRARY_ENV_VAR = "CDICT_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libcdictnofree"
+_LIBRARY_ENV_VAR = "CDICT_NOFREE_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -139,9 +139,7 @@ class CDict_owned_Float64(ctypes.Structure):
         façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
         if getattr(self, "_freed", False):
             return
-        _lib.jlw_free_strings(self.keys, self.length)
-        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
-        self._freed = True
+        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 
 _lib.take_dict.argtypes = [CDict_borrowed_Float64]
 _lib.take_dict.restype = ctypes.c_int64
@@ -152,10 +150,4 @@ _lib.give_dict.argtypes = []
 _lib.give_dict.restype = CDict_owned_Float64
 def give_dict():
     return _lib.give_dict()
-
-_lib.jlw_free.argtypes = [ctypes.c_void_p]
-_lib.jlw_free.restype = None
-
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
-_lib.jlw_free_strings.restype = None
 

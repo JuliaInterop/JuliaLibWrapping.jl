@@ -626,7 +626,9 @@ end
         @test info4.ownership === :owned
 
         # Ownership token parsing, independent of layout.
-        ownership = JuliaLibWrapping._carray_ownership
+        ownership(name) = JuliaLibWrapping._carrier_ownership(
+            name, ("CArray{", "CVector{", "CMatrix{")
+        )
         @test ownership("CVector{:owned, Float64}") === :owned
         @test ownership("CMatrix{:borrowed, Float32}") === :borrowed
         @test ownership("CArray{:owned, Float64, 3}") === :owned
@@ -803,21 +805,17 @@ end
     end
 
     @testset "cstrarray_struct_info" begin
-        # Structural recognition of the CStrArray shape: a struct named
-        # CStrArray with `length` (signed primitive integer), `data`
-        # (Ptr{CString} — the length-prefixed CString struct, recognized
-        # via `cstring_struct_info` applied to the pointee), and `owned`
-        # (an Int32 explicit-ownership discriminant) fields. The name is
-        # only the first gate; the pointee's own shape and the `owned`
-        # field's presence/type must also match.
+        # Recognition requires an ownership parameter and the CStrArray layout.
         csainfo = JuliaLibWrapping.cstrarray_struct_info
         abi = read_abi_info("bindinginfo_cstrarray.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
             k[findfirst((id) -> descs[id].name === name, k)]
         )
-        csa = abi.typeinfo[findtype(abi.typeinfo, "CStrArray")]
-        @test csainfo(csa, abi.typeinfo) === true
+        csa = abi.typeinfo[findtype(abi.typeinfo, "CStrArray{:borrowed}")]
+        @test csainfo(csa, abi.typeinfo).ownership === :borrowed
+        csa_owned = abi.typeinfo[findtype(abi.typeinfo, "CStrArray{:owned}")]
+        @test csainfo(csa_owned, abi.typeinfo).ownership === :owned
 
         # Hand-built rejections.
         primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -850,92 +848,83 @@ end
             8 => cstring_ok, 9 => cstring_bad,
             10 => ptr_to_cstring, 11 => ptr_to_not_cstring,
             12 => StructDesc(
-                "CStrArray", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             13 => StructDesc(
-                "NotACStrArray", 24, 8, FieldDesc[
+                "NotACStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             14 => StructDesc(
-                "CStrArrayBadPointee", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 11, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             15 => StructDesc(
-                "CStrArrayBadNames", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("size", 2, 0),
                     FieldDesc("data", 10, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             16 => StructDesc(
-                "CStrArrayUnsignedLen", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 3, 0),  # UInt64 — not signed
                     FieldDesc("data", 10, 8),
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             17 => StructDesc(
-                "CStrArraySinglePtr", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 6, 8),  # Ptr{UInt8} — pointee isn't a struct at all
-                    FieldDesc("owned", 1, 16),
                 ]
             ),
             18 => StructDesc(
-                "CStrArrayMissingOwned", 16, 8, FieldDesc[
+                "CStrArray", 16, 8, FieldDesc[   # no ownership token
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
-                    # no `owned` field at all — otherwise identical to ti[12]
                 ]
             ),
             19 => StructDesc(
-                "CStrArrayOwnedWrongType", 24, 8, FieldDesc[
+                "CStrArray{:borrowed}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("data", 10, 8),
-                    FieldDesc("owned", 2, 16),  # Int64, not Int32
+                    FieldDesc("owned", 1, 16),   # runtime flag: no longer part of the layout
+                ]
+            ),
+            20 => StructDesc(
+                "CStrArray{:owned}", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 10, 8),
                 ]
             ),
         )
-        @test csainfo(ti[12], ti) === true
-        @test csainfo(ti[13], ti) === false  # wrong name prefix
-        @test csainfo(ti[14], ti) === false  # data's pointee isn't CString-shaped
-        @test csainfo(ti[15], ti) === false  # wrong field names
-        @test csainfo(ti[16], ti) === false  # unsigned length
-        @test csainfo(ti[17], ti) === false  # data isn't a pointer-to-struct at all
-        @test csainfo(ti[18], ti) === false  # missing `owned` field entirely
-        @test csainfo(ti[19], ti) === false  # `owned` present but not Int32
+        @test csainfo(ti[12], ti).ownership === :borrowed
+        @test isnothing(csainfo(ti[13], ti))  # wrong name prefix
+        @test isnothing(csainfo(ti[14], ti))  # data's pointee isn't CString-shaped
+        @test isnothing(csainfo(ti[15], ti))  # wrong field names
+        @test isnothing(csainfo(ti[16], ti))  # unsigned length
+        @test isnothing(csainfo(ti[17], ti))  # data isn't a pointer-to-struct at all
+        @test isnothing(csainfo(ti[18], ti))  # name states no ownership
+        @test isnothing(csainfo(ti[19], ti))  # three-field layout rejected
+        @test csainfo(ti[20], ti).ownership === :owned
 
-        # Field order may be any permutation.
+        # Field order may be either way.
         flipped = StructDesc(
-            "CStrArray", 24, 8, FieldDesc[
-                FieldDesc("owned", 1, 16),
-                FieldDesc("data", 10, 0),
-                FieldDesc("length", 2, 8),
+            "CStrArray{:owned}", 16, 8, FieldDesc[
+                FieldDesc("data", 10, 8),
+                FieldDesc("length", 2, 0),
             ]
         )
-        @test csainfo(flipped, ti) === true
+        @test csainfo(flipped, ti).ownership === :owned
     end
 
     @testset "cdict_struct_info" begin
-        # Structural recognition of the CDict{V} shape: a struct named CDict
-        # with `length` (primitive integer), `keys` (Ptr{CString} — same
-        # shape as CStrArray's `data`, recognized via `cstring_struct_info`
-        # applied to the pointee), `values` (Ptr{<primitive>}), and `owned`
-        # (an Int32 explicit-ownership discriminant) fields. The name is
-        # only the first gate; the full 4-field shape and the keys pointee's
-        # own shape must also match. The recognizer reports V's Julia name;
-        # `_python_cdict_info` decides whether it is a supported payload
-        # type.
+        # Recognition requires ownership and value parameters and the CDict layout.
         cdinfo(desc, typeinfo) = JuliaLibWrapping.cdict_struct_info(desc, typeinfo)
         pycdinfo(desc, typeinfo) = JuliaLibWrapping._python_cdict_info(desc, typeinfo)
         abi = read_abi_info("bindinginfo_cdict.json")
@@ -943,13 +932,19 @@ end
             k = collect(keys(descs));
             k[findfirst((id) -> descs[id].name === name, k)]
         )
-        cd = abi.typeinfo[findtype(abi.typeinfo, "CDict{Float64}")]
+        cd = abi.typeinfo[findtype(abi.typeinfo, "CDict{:borrowed, Float64}")]
         info = cdinfo(cd, abi.typeinfo)
         @test !isnothing(info)
         @test info.value_type == "Float64"
+        @test info.ownership === :borrowed
         pyinfo = pycdinfo(cd, abi.typeinfo)
         @test pyinfo.value_type == "Float64"
+        @test pyinfo.ownership === :borrowed
         @test pyinfo.ctype == "ctypes.c_double"
+
+        cd_owned = abi.typeinfo[findtype(abi.typeinfo, "CDict{:owned, Float64}")]
+        @test cdinfo(cd_owned, abi.typeinfo).ownership === :owned
+        @test pycdinfo(cd_owned, abi.typeinfo).ownership === :owned
 
         # Hand-built rejections.
         primi32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -987,73 +982,66 @@ end
             11 => ptr_to_cstring, 12 => ptr_to_not_cstring,
             13 => ptr_to_f64, 14 => ptr_to_notreal,
             15 => StructDesc(
-                "CDict{Float64}", 32, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             16 => StructDesc(
-                "NotACDict", 32, 8, FieldDesc[
+                "NotACDict{:borrowed, Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             17 => StructDesc(
-                "CDictBadKeysPointee", 32, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 12, 8),  # Ptr{NotCString} — pointee isn't CString-shaped
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             18 => StructDesc(
-                "CDictBadNames", 32, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
                     FieldDesc("len", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             19 => StructDesc(
-                "CDictTwoFields", 16, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                 ]
             ),
             20 => StructDesc(
-                "CDictUnsupportedValue", 32, 8, FieldDesc[
+                "CDict{:borrowed, NotARealType}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 14, 16),  # Ptr{NotARealType} — not in scalar_payload_types
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             21 => StructDesc(
-                "CDictSinglePtrKeys", 32, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 7, 8),  # Ptr{UInt8} — pointee isn't a struct at all
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 1, 24),
                 ]
             ),
             22 => StructDesc(
-                "CDictMissingOwned", 24, 8, FieldDesc[
+                "CDict{Float64}", 24, 8, FieldDesc[   # no ownership token
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
-                    # no `owned` field at all — otherwise identical to ti[15]
                 ]
             ),
             23 => StructDesc(
-                "CDictOwnedWrongType", 32, 8, FieldDesc[
+                "CDict{:borrowed, Float64}", 32, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 13, 16),
-                    FieldDesc("owned", 2, 24),  # Int64, not Int32
+                    FieldDesc("owned", 1, 24),   # runtime flag: no longer part of the layout
                 ]
             ),
             24 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 1),
@@ -1062,11 +1050,17 @@ end
                 # `values` points to `Cvoid`: matches the CDict shape, but
                 # `Cvoid` is absent from `scalar_payload_types` (`None` is
                 # not a valid ctypes field type).
-                "CDictCvoidValue", 32, 8, FieldDesc[
+                "CDict{:borrowed, Cvoid}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
                     FieldDesc("keys", 11, 8),
                     FieldDesc("values", 25, 16),
-                    FieldDesc("owned", 1, 24),
+                ]
+            ),
+            27 => StructDesc(
+                "CDict{:owned, Float64}", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 11, 8),
+                    FieldDesc("values", 13, 16),
                 ]
             ),
         )
@@ -1079,22 +1073,22 @@ end
         @test cdinfo(ti[20], ti).value_type == "NotARealType"
         @test isnothing(pycdinfo(ti[20], ti)) # ...but not a supported payload type
         @test isnothing(cdinfo(ti[21], ti)) # keys isn't a pointer-to-struct at all
-        @test isnothing(cdinfo(ti[22], ti)) # missing `owned` field entirely
-        @test isnothing(cdinfo(ti[23], ti)) # `owned` present but not Int32
-        @test !isnothing(cdinfo(ti[26], ti)) # CDict{Cvoid} matches structurally
+        @test isnothing(cdinfo(ti[22], ti)) # name states no ownership
+        @test isnothing(cdinfo(ti[23], ti)) # four-field layout rejected
+        @test !isnothing(cdinfo(ti[26], ti)) # a Cvoid value type matches structurally
         @test cdinfo(ti[26], ti).value_type == "Cvoid"
         @test isnothing(pycdinfo(ti[26], ti)) # ...but Cvoid is not a scalar payload type
+        @test cdinfo(ti[27], ti).ownership === :owned
 
         # Field order may be any permutation.
         permuted = StructDesc(
-            "CDict{Float64}", 32, 8, FieldDesc[
-                FieldDesc("owned", 1, 24),
+            "CDict{:owned, Float64}", 24, 8, FieldDesc[
                 FieldDesc("values", 13, 16),
                 FieldDesc("length", 2, 0),
                 FieldDesc("keys", 11, 8),
             ]
         )
-        @test !isnothing(cdinfo(permuted, ti))
+        @test cdinfo(permuted, ti).ownership === :owned
     end
 
     @testset "copt_struct_info" begin
@@ -1334,16 +1328,20 @@ end
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
-            # Explicit ownership: `from_list` always builds a caller-owned
-            # (owned=0) value — it never allocated the buffer it borrows.
-            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
-            @test occursin("owned=0)", bindings)
-            # A `.free()` escape hatch for callers who bypass the façade:
-            # a genuine no-op at owned=0, frees iff owned=1 then clears the
-            # flag — idempotent (`_emit_free_method`'s shared shape).
-            @test occursin("def free(self):", bindings)
-            @test occursin("if self.owned != 1:\n            return", bindings)
-            @test occursin("self.owned = 0", bindings)
+            # Borrowed classes construct values; owned classes release them.
+            @test !occursin("(\"owned\", ctypes.c_int32)", bindings)
+            @test occursin("class CStrArray_borrowed(ctypes.Structure):", bindings)
+            @test occursin("class CStrArray_owned(ctypes.Structure):", bindings)
+            borrowed_body, owned_body = split(
+                bindings, "class CStrArray_owned(ctypes.Structure):"
+            )
+            @test occursin("def from_list(cls, items):", borrowed_body)
+            @test !occursin("def free(self):", borrowed_body)
+            @test !occursin("def from_list(cls, items):", owned_body)
+            # Low-level release is idempotent.
+            @test occursin("def free(self):", owned_body)
+            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
+            @test occursin("self._freed = True", owned_body)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1357,10 +1355,8 @@ end
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            # The owning-return result is freed via `.free()` in a
-            # `try`/`finally` — idempotent, so correct for the pass-through
-            # (owned=0) case too, with no manual `owned` check in the façade
-            # itself (that lives inside `.free()`).
+            # The owning-return result is converted, then freed via
+            # `.free()` in a `finally`.
             @test occursin("try:\n        _out = _result.as_list()\n    finally:\n        _result.free()", facade)
             @test !occursin("if _result.owned", facade)
             @test !occursin("_lowlevel._lib.jlw_free", facade)
@@ -1418,15 +1414,19 @@ end
             @test !occursin("_lib.jlw_free_strings.restype = Nothing", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
 
-            # Explicit ownership: `from_dict` always builds a caller-owned
-            # (owned=0) value, and a `.free()` escape hatch is a genuine
-            # no-op at owned=0, frees iff owned=1 then clears the flag —
-            # idempotent (`_emit_free_method`'s shared shape).
-            @test occursin("(\"owned\", ctypes.c_int32)", bindings)
-            @test occursin("owned=0)", bindings)
-            @test occursin("def free(self):", bindings)
-            @test occursin("if self.owned != 1:\n            return", bindings)
-            @test occursin("self.owned = 0", bindings)
+            # Borrowed classes construct values; owned classes release them.
+            @test !occursin("(\"owned\", ctypes.c_int32)", bindings)
+            @test occursin("class CDict_borrowed_Float64(ctypes.Structure):", bindings)
+            @test occursin("class CDict_owned_Float64(ctypes.Structure):", bindings)
+            borrowed_body, owned_body = split(
+                bindings, "class CDict_owned_Float64(ctypes.Structure):"
+            )
+            @test occursin("def from_dict(cls, d):", borrowed_body)
+            @test !occursin("def free(self):", borrowed_body)
+            @test !occursin("def from_dict(cls, d):", owned_body)
+            @test occursin("def free(self):", owned_body)
+            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
+            @test occursin("self._freed = True", owned_body)
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
@@ -1437,10 +1437,9 @@ end
             @test !occursin("import jlw_free", facade)
             @test !occursin("\"jlw_free\"", facade)
             @test !occursin("\"jlw_free_strings\"", facade)
-            # The owning-return result is freed via `.free()` in a
-            # `try`/`finally` — idempotent, so correct for the pass-through
-            # (owned=0) case too, with no manual `owned` check or `ctypes`
-            # import in the façade itself.
+            # The owning-return result is converted, then freed via
+            # `.free()` in a `finally`, with no manual `owned` check or
+            # `ctypes` import in the façade itself.
             @test occursin("try:\n        _out = _result.as_dict()\n    finally:\n        _result.free()", facade)
             @test !occursin("if _result.owned", facade)
             @test !occursin("_lowlevel._lib.jlw_free", facade)
@@ -1478,7 +1477,8 @@ end
             bindings_path = joinpath(path, "cdict_int32_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
 
-            @test occursin("class CDict_Int32(ctypes.Structure):", bindings)
+            @test occursin("class CDict_borrowed_Int32(ctypes.Structure):", bindings)
+            @test occursin("class CDict_owned_Int32(ctypes.Structure):", bindings)
             @test occursin("(\"length\", ctypes.c_int64)", bindings)
             @test occursin(
                 "(\"keys\", ctypes.POINTER(CString))", bindings
@@ -1491,8 +1491,8 @@ end
             )
             @test !occursin("ctypes.c_double", bindings)
 
-            @test occursin("_lib.take_dict_i32.argtypes = [CDict_Int32]", bindings)
-            @test occursin("_lib.give_dict_i32.restype = CDict_Int32", bindings)
+            @test occursin("_lib.take_dict_i32.argtypes = [CDict_borrowed_Int32]", bindings)
+            @test occursin("_lib.give_dict_i32.restype = CDict_owned_Int32", bindings)
             # Round-2 fix re-exercised on an independent fixture.
             @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
             @test occursin("_lib.jlw_free.restype = None", bindings)
@@ -1613,12 +1613,7 @@ end
     end
 
     @testset "CStrArray without release symbols" begin
-        # A library that defines the CStrArray carrier but has
-        # not exported the release entrypoints (no jlw_free/jlw_free_strings
-        # among its functions) must not have its owning return auto-wrapped
-        # — that would emit a call to a symbol the shared library does not
-        # export. take_strs (a borrowed argument) is unaffected; give_strs (owning
-        # return) falls back to a mechanical TODO naming the macro to add.
+        # Owning returns require release entrypoints; borrowed arguments do not.
         abi = read_abi_info("bindinginfo_cstrarray_nofree.json")
         @test JuliaLibWrapping._release_symbols_present(abi) === false
         mktempdir() do path
@@ -1627,13 +1622,7 @@ end
 
             bindings_path = joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
-            # No jlw_free* entrypoints in this fixture's `functions` list at
-            # all, so nothing gets bound on `_lib` (argtypes/restype) for
-            # them. `CStrArray.free()` is still emitted (the bypass escape
-            # hatch keeps the same API shape either way), but its body is a
-            # clear `RuntimeError` instead of a call to a symbol `_lib` never
-            # bound — calling it would otherwise raise a bare, confusing
-            # `AttributeError` at runtime.
+            # Keep the low-level API shape, but report missing release symbols.
             @test !occursin("_lib.jlw_free_strings.argtypes", bindings)
             @test !occursin("_lib.jlw_free_strings.restype", bindings)
             @test !occursin("_lib.jlw_free.argtypes", bindings)
@@ -1645,22 +1634,19 @@ end
                     "add JLWInterop.@export_release_entrypoints to the library\")",
                 bindings
             )
-            @test occursin("_lib.take_strs.argtypes = [CStrArray]", bindings)
-            @test occursin("_lib.give_strs.restype = CStrArray", bindings)
+            @test occursin("_lib.take_strs.argtypes = [CStrArray_borrowed]", bindings)
+            @test occursin("_lib.give_strs.restype = CStrArray_owned", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_nofree_lowlevel.py"), String)
             @test bindings == golden
 
             facade = read(joinpath(path, "cstrarray_nofree_demo", "_facade.py"), String)
-            # take_strs (a borrowed argument) is still auto-wrapped — the release-
-            # symbol gate applies only to owning RETURNS.
+            # Borrowed arguments remain auto-wrapped.
             @test occursin(
-                "def take_strs(a):\n    _a = CStrArray.from_list(a)\n" *
+                "def take_strs(a):\n    _a = CStrArray_borrowed.from_list(a)\n" *
                     "    return _lowlevel.take_strs(_a)", facade
             )
-            # give_strs (owning return) is NOT auto-wrapped: no free call
-            # exists to emit safely, so it falls back to a mechanical
-            # re-export with a TODO naming the fix.
+            # Owning returns fall back to a TODO re-export.
             @test !occursin("def give_strs():", facade)
             @test occursin(
                 "from ._lowlevel import give_strs  # TODO: hand-wrap — " *
@@ -1676,6 +1662,59 @@ end
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CDict without release symbols" begin
+        # Owning returns require release entrypoints; borrowed arguments do not.
+        abi = read_abi_info("bindinginfo_cdict_nofree.json")
+        @test JuliaLibWrapping._release_symbols_present(abi) === false
+        mktempdir() do path
+            dest = PythonTarget(path, "cdict_nofree_demo", "libcdictnofree")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cdict_nofree_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test !occursin("_lib.jlw_free_strings.argtypes", bindings)
+            @test !occursin("_lib.jlw_free.argtypes", bindings)
+            @test occursin("def free(self):", bindings)
+            @test !occursin("_lib.jlw_free_strings(self.keys, self.length)", bindings)
+            @test occursin(
+                "raise RuntimeError(\"this library does not export release entrypoints; " *
+                    "add JLWInterop.@export_release_entrypoints to the library\")",
+                bindings
+            )
+            @test occursin("_lib.take_dict.argtypes = [CDict_borrowed_Float64]", bindings)
+            @test occursin("_lib.give_dict.restype = CDict_owned_Float64", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cdict_nofree_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "cdict_nofree_demo", "_facade.py"), String)
+            @test occursin(
+                "def take_dict(d):\n    _d = CDict_borrowed_Float64.from_dict(d)\n" *
+                    "    return _lowlevel.take_dict(_d)", facade
+            )
+            @test !occursin("def give_dict():", facade)
+            @test occursin(
+                "from ._lowlevel import give_dict  # TODO: hand-wrap — " *
+                    "owning return needs release entrypoints; add " *
+                    "JLWInterop.@export_release_entrypoints to the library",
+                facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cdict_nofree_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cdict_nofree_demo", "_facade.py")
                 cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
                 @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")

@@ -241,13 +241,13 @@ end
 [`cdict_struct_info`](@ref) with this emitter's type tables applied:
 `nothing` unless the struct matches the `CDict` shape and its value type
 has a [`scalar_payload_types`](@ref) entry; otherwise
-`(; value_type, ctype)`.
+`(; value_type, ownership, ctype)`.
 """
 function _python_cdict_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     info = cdict_struct_info(desc, typeinfo)
     info === nothing && return nothing
     haskey(scalar_payload_types, info.value_type) || return nothing
-    return (; info.value_type, ctype = scalar_payload_types[info.value_type])
+    return (; info.value_type, info.ownership, ctype = scalar_payload_types[info.value_type])
 end
 
 """
@@ -431,76 +431,38 @@ function write_wrapper(dest::PythonTarget, abi_info::ABIInfo)
 end
 
 """
-    _emit_free_method(f, buffers_desc, pronoun, free_lines, release_present)
+    _emit_owned_free_method(f, buffers_desc, free_lines, release_present)
 
-Emit the shared `.free()` method body used by `CStrArray`/`CDict`'s generated
-`ctypes.Structure` classes, whose ownership is a runtime `owned` field.
-Idempotent and a genuine no-op when `self.owned` is `0` — regardless of
-`release_present` — since a value that was never owned needs no release
-capability to safely no-op; only escalates to a `RuntimeError` when actually
-asked to release an owned (`owned == 1`) buffer the library gave no way to
-release. This is also what makes it safe for the façade to call
-unconditionally from a `finally` block (see `_emit_facade_autowrapper`): a
-pass-through/borrowed result's `.free()` call never raises.
+Emit the `.free()` method for an `:owned` carrier class. Ownership is a type
+parameter, so the struct carries no ownership field and idempotence rides on
+a Python-side `_freed` attribute set after the release call. Borrowed classes
+get no `free()` at all.
 
-`CArray` carries its ownership in its type instead, and gets
-[`_emit_carray_free_method`](@ref).
+Without release entrypoints the body raises a `RuntimeError`; the façade never
+reaches it, since an owning return is demoted to a mechanical re-export in
+that case (see [`_facade_classify_return`](@ref)), but a `_lowlevel` caller
+gets a clear diagnosis instead of an `AttributeError`.
 
-`buffers_desc`/`pronoun` fill in "buffer"/"it" or "buffers"/"them" in the
-docstring; `free_lines` are the release-call statements (already indented to
-8 spaces) emitted only when `release_present`.
+`buffers_desc` fills in "buffer" or "buffers" in the docstring; `free_lines`
+are the release-call statements (already indented to 8 spaces) emitted only
+when `release_present`.
 """
-function _emit_free_method(
-        f::IO, buffers_desc::AbstractString, pronoun::AbstractString,
+function _emit_owned_free_method(
+        f::IO, buffers_desc::AbstractString,
         free_lines::Vector{String}, release_present::Bool
     )
     println(f, "")
     println(f, "    def free(self):")
-    println(
-        f, "        \"\"\"Free the Julia-allocated ", buffers_desc,
-        " iff this object owns ", pronoun, " (owned is 1)."
-    )
-    println(f, "")
-    println(f, "        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a")
-    println(f, "        no-op. For callers who bypass the façade's convert-then-free wrapper and")
-    println(f, "        talk to `_lowlevel` directly.\"\"\"")
-    println(f, "        if self.owned != 1:")
-    println(f, "            return")
-    if release_present
-        for line in free_lines
-            println(f, line)
-        end
-        return println(f, "        self.owned = 0")
-    else
-        return println(
-            f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
-            "add JLWInterop.@export_release_entrypoints to the library\")"
-        )
-    end
-end
-
-"""
-    _emit_carray_free_method(f, release_present)
-
-Emit the `.free()` method for a `CArray{:owned,...}` class. The struct
-carries no ownership field, so idempotence rides on a Python-side `_freed`
-attribute set after the release call. Without release entrypoints the body
-raises the same `RuntimeError` as [`_emit_free_method`](@ref); the façade
-never reaches it, since an owning return is demoted to a mechanical
-re-export in that case (see [`_facade_classify_return`](@ref)), but a
-`_lowlevel` caller gets a clear diagnosis instead of an `AttributeError`.
-"""
-function _emit_carray_free_method(f::IO, release_present::Bool)
-    println(f, "")
-    println(f, "    def free(self):")
-    println(f, "        \"\"\"Free the Julia-allocated buffer.")
+    println(f, "        \"\"\"Free the Julia-allocated ", buffers_desc, ".")
     println(f, "")
     println(f, "        Idempotent: a second call is a no-op. For callers who bypass the")
     println(f, "        façade's convert-then-free wrapper and talk to `_lowlevel` directly.\"\"\"")
     println(f, "        if getattr(self, \"_freed\", False):")
     println(f, "            return")
     if release_present
-        println(f, "        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))")
+        for line in free_lines
+            println(f, line)
+        end
         return println(f, "        self._freed = True")
     else
         return println(
@@ -582,7 +544,11 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
         println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
     end
     cainfo.ownership === :owned || return nothing
-    return _emit_carray_free_method(f, release_present)
+    return _emit_owned_free_method(
+        f, "buffer",
+        ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
+        release_present
+    )
 end
 
 function _write_cstring_helpers(f::IO)
@@ -655,21 +621,30 @@ function _emit_cstring_array(
     )
 end
 
-function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, release_present::Bool)
-    # `from_list` borrows ctypes buffers. `.free()` releases only owning
-    # values and reports a missing release entrypoint clearly.
-    println(f, "")
-    println(f, "    @classmethod")
-    println(f, "    def from_list(cls, items):")
-    println(f, "        if not isinstance(items, (list, tuple)):")
-    println(f, "            raise TypeError(\"expected a list of str\")")
-    _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
-    println(
-        f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(",
-        cstring_classname, ")), owned=0)"
+"""
+    _write_cstrarray_helpers(f, csainfo, cstring_classname, release_present)
+
+Emit the conversion methods on a recognized `CStrArray` `ctypes` class. The
+borrowed class gets `from_list` and `as_list`; the owned class gets `as_list`
+and `free()`.
+"""
+function _write_cstrarray_helpers(
+        f::IO, csainfo, cstring_classname::AbstractString, release_present::Bool
     )
-    println(f, "        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern")
-    println(f, "        return obj")
+    if csainfo.ownership === :borrowed
+        println(f, "")
+        println(f, "    @classmethod")
+        println(f, "    def from_list(cls, items):")
+        println(f, "        if not isinstance(items, (list, tuple)):")
+        println(f, "            raise TypeError(\"expected a list of str\")")
+        _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
+        println(
+            f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(",
+            cstring_classname, ")))"
+        )
+        println(f, "        obj._buffer = (bufs, arr)   # keep buffers alive")
+        println(f, "        return obj")
+    end
     println(f, "")
     println(f, "    def as_list(self):")
     println(f, "        out = []")
@@ -677,27 +652,37 @@ function _write_cstrarray_helpers(f::IO, cstring_classname::AbstractString, rele
     println(f, "            e = self.data[i]")
     println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
     println(f, "        return out")
-    return _emit_free_method(
-        f, "buffer", "it",
+    csainfo.ownership === :owned || return nothing
+    return _emit_owned_free_method(
+        f, "buffer",
         ["        _lib.jlw_free_strings(self.data, self.length)"],
         release_present
     )
 end
 
-function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool)
-    # `from_dict` borrows ctypes key and value buffers.
+"""
+    _write_cdict_helpers(f, cdinfo, cstring_classname, release_present)
+
+Emit the conversion methods on a recognized `CDict` `ctypes` class. The
+borrowed class gets `from_dict` and `as_dict`; the owned class gets `as_dict`
+and `free()`.
+"""
+function _write_cdict_helpers(
+        f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool
+    )
     ctype = cdinfo.ctype
-    println(f, "")
-    println(f, "    @classmethod")
-    println(f, "    def from_dict(cls, d):")
-    _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname)
-    println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
-    println(f, "        obj = cls(length=len(keys),")
-    println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
-    println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")),")
-    println(f, "                  owned=0)")
-    println(f, "        obj._buffer = (keys, karr, varr)")
-    println(f, "        return obj")
+    if cdinfo.ownership === :borrowed
+        println(f, "")
+        println(f, "    @classmethod")
+        println(f, "    def from_dict(cls, d):")
+        _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname)
+        println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
+        println(f, "        obj = cls(length=len(keys),")
+        println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
+        println(f, "                  values=ctypes.cast(varr, ctypes.POINTER(", ctype, ")))")
+        println(f, "        obj._buffer = (keys, karr, varr)")
+        println(f, "        return obj")
+    end
     println(f, "")
     println(f, "    def as_dict(self):")
     println(f, "        out = {}")
@@ -706,8 +691,9 @@ function _write_cdict_helpers(f::IO, cdinfo, cstring_classname::AbstractString, 
     println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
     println(f, "            out[k] = self.values[i]")
     println(f, "        return out")
-    return _emit_free_method(
-        f, "buffers", "them",
+    cdinfo.ownership === :owned || return nothing
+    return _emit_owned_free_method(
+        f, "buffers",
         [
             "        _lib.jlw_free_strings(self.keys, self.length)",
             "        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))",
@@ -884,6 +870,7 @@ function _write_bindings(
                 println(f, "    ]")
             end
             cainfo = _python_carray_info(type, typeinfo)
+            csainfo = cstrarray_struct_info(type, typeinfo)
             cdinfo = _python_cdict_info(type, typeinfo)
             coinfo = _python_copt_info(type, typeinfo)
             if cainfo !== nothing
@@ -892,10 +879,10 @@ function _write_bindings(
             elseif cstring_struct_info(type, typeinfo)
                 # Emit CString conversion helpers.
                 _write_cstring_helpers(f)
-            elseif cstrarray_struct_info(type, typeinfo)
+            elseif !isnothing(csainfo)
                 # Emit CStrArray conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
-                _write_cstrarray_helpers(f, cs_classname, release_present)
+                _write_cstrarray_helpers(f, csainfo, cs_classname, release_present)
             elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
@@ -978,8 +965,10 @@ Classify a method argument for façade auto-wrapping. The return is one of:
 - `(kind=:carray, classname=…)` — a borrowed `CArray`; wrap with
   `<class>.from_numpy(name)`
 - `(kind=:cstring, classname=…)` — wrap with `<class>.from_str(name)`
-- `(kind=:cstrarray, classname=…)` — wrap with `<class>.from_list(name)`
-- `(kind=:cdict, classname=…)` — wrap with `<class>.from_dict(name)`
+- `(kind=:cstrarray, classname=…)` — a borrowed `CStrArray`; wrap with
+  `<class>.from_list(name)`
+- `(kind=:cdict, classname=…)` — a borrowed `CDict`; wrap with
+  `<class>.from_dict(name)`
 - `(kind=:copt, classname=…)` — wrap with `<class>.from_optional(name)`
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
@@ -993,6 +982,8 @@ function _facade_classify_arg(
         return (kind = :primitive,)
     elseif t isa StructDesc
         cainfo = _python_carray_info(t, typeinfo)
+        csainfo = cstrarray_struct_info(t, typeinfo)
+        cdinfo = _python_cdict_info(t, typeinfo)
         if !isnothing(cainfo)
             # An owning CArray argument hands Julia-allocated storage into the
             # library, which then owns the release. numpy cannot supply that.
@@ -1003,9 +994,20 @@ function _facade_classify_arg(
             return (kind = :carray, classname = typedict[arg.type])
         elseif cstring_struct_info(t, typeinfo)
             return (kind = :cstring, classname = typedict[arg.type])
-        elseif cstrarray_struct_info(t, typeinfo)
+        elseif !isnothing(csainfo)
+            # An owning CStrArray argument hands Julia-allocated storage into
+            # the library, which then owns the release. Python cannot supply
+            # that.
+            csainfo.ownership === :owned && return (
+                kind = :opaque,
+                reason = "argument transfers CStrArray ownership into the library; hand-wrap",
+            )
             return (kind = :cstrarray, classname = typedict[arg.type])
-        elseif !isnothing(_python_cdict_info(t, typeinfo))
+        elseif !isnothing(cdinfo)
+            cdinfo.ownership === :owned && return (
+                kind = :opaque,
+                reason = "argument transfers CDict ownership into the library; hand-wrap",
+            )
             return (kind = :cdict, classname = typedict[arg.type])
         elseif !isnothing(_python_copt_info(t, typeinfo))
             return (kind = :copt, classname = typedict[arg.type])
@@ -1035,15 +1037,19 @@ The return is one of:
   copy=True)`) FIRST — never hand back a view over memory about to be freed
   — then a `finally` calls `_result.free()`.
 - `(kind=:cstring_unwrap, classname=…)` — return `_result.as_str()`
-- `(kind=:cstrarray_unwrap, classname=…)` — inside a `try`: `_out =
-  _result.as_list()` (a real copy, independent of the buffer); a `finally`
-  then calls `_result.free()` unconditionally — a no-op when the value is
-  borrowed (e.g. a pass-through of a borrowed argument), releasing `data`
-  via `jlw_free_strings` only when owned
-- `(kind=:cdict_unwrap, classname=…)` — inside a `try`: `_out =
-  _result.as_dict()`; a `finally` then calls `_result.free()`
-  unconditionally, releasing `keys` via `jlw_free_strings` AND `values` via
-  `jlw_free` (two separate allocations) only when owned
+- `(kind=:cstrarray_convert, classname=…)` — a borrowed `CStrArray` return:
+  `return _result.as_list()`. `as_list` copies, so the result outlives the
+  buffer; nothing is released. Not gated on `release_present`.
+- `(kind=:cstrarray_unwrap, classname=…)` — an owning `CStrArray` return:
+  inside a `try`, `_out = _result.as_list()` (a real copy, independent of the
+  buffer); a `finally` then calls `_result.free()`, releasing `data` via
+  `jlw_free_strings`.
+- `(kind=:cdict_convert, classname=…)` — a borrowed `CDict` return:
+  `return _result.as_dict()`, no release.
+- `(kind=:cdict_unwrap, classname=…)` — an owning `CDict` return: inside a
+  `try`, `_out = _result.as_dict()`; a `finally` then calls `_result.free()`,
+  releasing `keys` via `jlw_free_strings` AND `values` via `jlw_free` (two
+  separate allocations).
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
@@ -1064,6 +1070,8 @@ function _facade_classify_return(
         return (kind = :passthrough,)
     elseif rt isa StructDesc
         cainfo = _python_carray_info(rt, typeinfo)
+        csainfo = cstrarray_struct_info(rt, typeinfo)
+        cdinfo = _python_cdict_info(rt, typeinfo)
         if is_jlwstatus_struct(rt, typeinfo)
             return (kind = :jlwstatus_discard,)
         elseif !isnothing(cainfo)
@@ -1076,13 +1084,17 @@ function _facade_classify_return(
             return (kind = :carray_unwrap, classname = typedict[method.return_type])
         elseif cstring_struct_info(rt, typeinfo)
             return (kind = :cstring_unwrap, classname = typedict[method.return_type])
-        elseif cstrarray_struct_info(rt, typeinfo)
+        elseif !isnothing(csainfo)
+            csainfo.ownership === :borrowed &&
+                return (kind = :cstrarray_convert, classname = typedict[method.return_type])
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
             )
             return (kind = :cstrarray_unwrap, classname = typedict[method.return_type])
-        elseif !isnothing(_python_cdict_info(rt, typeinfo))
+        elseif !isnothing(cdinfo)
+            cdinfo.ownership === :borrowed &&
+                return (kind = :cdict_convert, classname = typedict[method.return_type])
             release_present || return (
                 kind = :opaque,
                 reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
@@ -1147,8 +1159,9 @@ function _facade_plan(
         ret.kind in (:carray_view, :carray_unwrap)
     adds_value = any(c -> c.kind !== :primitive, arg_classes) ||
         ret.kind in (
-        :carray_view, :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap,
-        :cdict_unwrap, :copt_unwrap, :jlwstatus_discard,
+        :carray_view, :carray_unwrap, :cstring_unwrap,
+        :cstrarray_convert, :cstrarray_unwrap, :cdict_convert, :cdict_unwrap,
+        :copt_unwrap, :jlwstatus_discard,
     )
     if !adds_value
         # Primitive-only signatures need no conversion; re-export them directly.
@@ -1219,26 +1232,28 @@ function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     elseif ret.kind === :cstring_unwrap
         println(f, "    _result = ", call)
         println(f, "    return _result.as_str()")
+    elseif ret.kind === :cstrarray_convert
+        # The storage belongs to the caller; `as_list` copies, so there is
+        # nothing to release.
+        println(f, "    _result = ", call)
+        println(f, "    return _result.as_list()")
     elseif ret.kind === :cstrarray_unwrap
-        # `data` may be Julia-allocated (`owned == 1`)
-        # or a pass-through of a borrowed argument (`owned == 0`, e.g. a
-        # function that returns one of its own CStrArray arguments
-        # unchanged): convert to the idiomatic `list[str]` first (a real
-        # copy, independent of the buffer), THEN free via `.free()` in
-        # `finally` — idempotent and a no-op when `owned == 0`, so this is
-        # correct for the pass-through case too.
+        # Convert to the idiomatic `list[str]` first (a real copy,
+        # independent of the buffer), THEN free `data` via `jlw_free_strings`
+        # in `finally`.
         println(f, "    _result = ", call)
         println(f, "    try:")
         println(f, "        _out = _result.as_list()")
         println(f, "    finally:")
         println(f, "        _result.free()")
         println(f, "    return _out")
+    elseif ret.kind === :cdict_convert
+        println(f, "    _result = ", call)
+        println(f, "    return _result.as_dict()")
     elseif ret.kind === :cdict_unwrap
-        # `keys` and `values` are two SEPARATE buffers, owned or
-        # pass-through exactly as for CStrArray above: convert to `dict`
+        # `keys` and `values` are two SEPARATE buffers: convert to `dict`
         # first, then free both (`.free()` releases `keys` via
-        # `jlw_free_strings` AND `values` via `jlw_free`) in `finally` —
-        # idempotent and a no-op when `owned == 0`.
+        # `jlw_free_strings` AND `values` via `jlw_free`) in `finally`.
         println(f, "    _result = ", call)
         println(f, "    try:")
         println(f, "        _out = _result.as_dict()")

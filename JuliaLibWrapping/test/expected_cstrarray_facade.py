@@ -17,11 +17,12 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     CString,
-    CStrArray,
+    CStrArray_borrowed,
+    CStrArray_owned,
 )
 
 def take_strs(a):
-    _a = CStrArray.from_list(a)
+    _a = CStrArray_borrowed.from_list(a)
     return _lowlevel.take_strs(_a)
 
 def give_strs():
@@ -32,4 +33,4 @@ def give_strs():
         _result.free()
     return _out
 
-__all__ = ["CString", "CStrArray", "take_strs", "give_strs"]
+__all__ = ["CString", "CStrArray_borrowed", "CStrArray_owned", "take_strs", "give_strs"]

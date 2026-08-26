@@ -90,11 +90,10 @@ class CString(ctypes.Structure):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
 
-class CStrArray(ctypes.Structure):
+class CStrArray_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(CString)),
-        ("owned", ctypes.c_int32),
     ]
 
     @classmethod
@@ -104,8 +103,8 @@ class CStrArray(ctypes.Structure):
         bufs = [s.encode("utf-8") for s in items]
         arr = (CString * len(bufs))(
             *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)), owned=0)
-        obj._buffer = (bufs, arr)   # keepalive — the from_numpy pattern
+        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)))
+        obj._buffer = (bufs, arr)   # keep buffers alive
         return obj
 
     def as_list(self):
@@ -115,23 +114,35 @@ class CStrArray(ctypes.Structure):
             out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
         return out
 
-    def free(self):
-        """Free the Julia-allocated buffer iff this object owns it (owned is 1).
+class CStrArray_owned(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("data", ctypes.POINTER(CString)),
+    ]
 
-        Idempotent: a second call, or a call on a borrowed (owned is 0) value, is a
-        no-op. For callers who bypass the façade's convert-then-free wrapper and
-        talk to `_lowlevel` directly."""
-        if self.owned != 1:
+    def as_list(self):
+        out = []
+        for i in range(self.length):
+            e = self.data[i]
+            out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
+        return out
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
             return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 
-_lib.take_strs.argtypes = [CStrArray]
+_lib.take_strs.argtypes = [CStrArray_borrowed]
 _lib.take_strs.restype = ctypes.c_int64
 def take_strs(a):
     return _lib.take_strs(a)
 
 _lib.give_strs.argtypes = []
-_lib.give_strs.restype = CStrArray
+_lib.give_strs.restype = CStrArray_owned
 def give_strs():
     return _lib.give_strs()
 

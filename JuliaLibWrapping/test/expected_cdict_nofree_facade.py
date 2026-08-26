@@ -1,4 +1,4 @@
-"""cdict_int32_demo idiomatic façade.
+"""cdict_nofree_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -17,20 +17,14 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     CString,
-    CDict_borrowed_Int32,
-    CDict_owned_Int32,
+    CDict_borrowed_Float64,
+    CDict_owned_Float64,
 )
 
-def take_dict_i32(d):
-    _d = CDict_borrowed_Int32.from_dict(d)
-    return _lowlevel.take_dict_i32(_d)
+from ._lowlevel import give_dict  # TODO: hand-wrap — owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
 
-def give_dict_i32():
-    _result = _lowlevel.give_dict_i32()
-    try:
-        _out = _result.as_dict()
-    finally:
-        _result.free()
-    return _out
+def take_dict(d):
+    _d = CDict_borrowed_Float64.from_dict(d)
+    return _lowlevel.take_dict(_d)
 
-__all__ = ["CString", "CDict_borrowed_Int32", "CDict_owned_Int32", "take_dict_i32", "give_dict_i32"]
+__all__ = ["CString", "CDict_borrowed_Float64", "CDict_owned_Float64", "take_dict", "give_dict"]

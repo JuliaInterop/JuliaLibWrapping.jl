@@ -28,7 +28,7 @@ Column-major N-D buffer for `@ccallable` boundaries. `data` points to
 # Ownership contract
 
 `owned` is `:owned` or `:borrowed`, so whether a value must be released is a
-property of its type rather than of the value.
+property of its type.
 
 `CArray{:owned,T,N}` holds Julia-allocated storage, produced by
 `CArray{:owned}(::AbstractArray)`. The consumer releases `data` exactly once,
@@ -315,32 +315,49 @@ function jlw_error(code::Integer, msg::AbstractString)
 end
 
 """
-    CStrArray
+    CStrArray{owned}
 
 Array of length-prefixed UTF-8 [`CString`](@ref)s for C ABI boundaries.
 
 # Ownership contract
 
-`owned == 0` denotes borrowed storage. `owned == 1` denotes storage allocated
-by `CStrArray(::Vector{String})`; release it once with `_free_strings` or the
-`jlw_free_strings` entrypoint. Converting to `Vector{String}` copies without
+`owned` is `:owned` or `:borrowed`, so whether a value must be released is a
+property of its type rather than of the value.
+
+`CStrArray{:owned}` holds Julia-allocated storage, produced by
+`CStrArray{:owned}(::Vector{String})`. The consumer releases it exactly once
+with `_free_strings` or the `jlw_free_strings` entrypoint emitted by
+[`@export_release_entrypoints`](@ref).
+
+`CStrArray{:borrowed}` wraps memory the caller owns and keeps alive; the
+consumer never releases it. Converting to `Vector{String}` copies without
 freeing the source.
+
+There is no default ownership or constructor that borrows a `Vector{String}`;
+borrowed carriers arrive across the ABI.
 
 # Example
 
 ```julia
 using JLWInterop
 
-a = CStrArray(["hello", "world"])
-a.owned == Int32(1)
+a = CStrArray{:owned}(["hello", "world"])
 Vector{String}(a) == ["hello", "world"]
 JLWInterop._free_strings(a.data, a.length)
 ```
 """
-struct CStrArray
+struct CStrArray{owned}
     length::Int64
     data::Ptr{CString}     # each element a length-prefixed CString
-    owned::Int32            # 0 = caller-owned/borrowed; 1 = allocated by CStrArray(::Vector{String})
+
+    function CStrArray{owned}(length, data) where {owned}
+        owned === :owned || owned === :borrowed || throw(
+            ArgumentError(
+                "ownership parameter must be :owned or :borrowed, got $(repr(owned))"
+            )
+        )
+        return new{owned}(length, data)
+    end
 end
 
 # Copy without freeing the source.
@@ -352,8 +369,8 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Allocate an owning copy.
-function CStrArray(v::Vector{String})
+# Allocate a copy of `v` as length-prefixed CStrings.
+function CStrArray{:owned}(v::Vector{String})
     n = length(v)
     data = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
     for i in 1:n
@@ -363,7 +380,7 @@ function CStrArray(v::Vector{String})
         GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
         unsafe_store!(data, CString(Int32(nb), p), i)
     end
-    return CStrArray(Int64(n), data, Int32(1))
+    return CStrArray{:owned}(Int64(n), data)
 end
 
 """
@@ -371,7 +388,7 @@ end
 
 Free `n` string buffers pointed to by the `CString`s at `p` (each one's
 `.data`), then free `p` itself. Matches the allocation made by
-[`CStrArray(::Vector{String})`](@ref). Internal; exposed at a `@ccallable`
+`CStrArray{:owned}(::Vector{String})`. Internal; exposed at a `@ccallable`
 boundary as `jlw_free_strings` by [`@export_release_entrypoints`](@ref).
 """
 function _free_strings(p::Ptr{CString}, n::Int64)
@@ -385,7 +402,7 @@ end
 """
     CDICT_VALUE_TYPES
 
-Supported value types for [`CDict{V}`](@ref). The closed list permits concrete,
+Supported value types for [`CDict`](@ref). The closed list permits concrete,
 trim-safe conversion methods; other value types throw `MethodError`.
 """
 const CDICT_VALUE_TYPES = (
@@ -394,7 +411,7 @@ const CDICT_VALUE_TYPES = (
 )
 
 """
-    CDict{V}
+    CDict{owned,V}
 
 String-keyed dictionary for C ABI boundaries. Keys are length-prefixed
 [`CString`](@ref)s and values are a parallel array of a type in
@@ -402,34 +419,54 @@ String-keyed dictionary for C ABI boundaries. Keys are length-prefixed
 
 # Ownership contract
 
-`owned == 0` denotes borrowed storage. `owned == 1` denotes storage allocated
-by `CDict(::Dict)`: release `keys` with `_free_strings` and `values` with
-`Libc.free`, or use the corresponding exported entrypoints. Converting to a
-`Dict` copies without freeing the source.
+`owned` is `:owned` or `:borrowed`, so whether a value must be released is a
+property of its type.
+
+`CDict{:owned,V}` holds Julia-allocated storage, produced by
+`CDict{:owned}(::Dict)`. The consumer releases `keys` with `_free_strings` and
+`values` with `Libc.free`, or uses the corresponding entrypoints emitted by
+[`@export_release_entrypoints`](@ref), exactly once.
+
+`CDict{:borrowed,V}` wraps memory the caller owns and keeps alive; the consumer
+never releases it. Converting to a `Dict` copies without freeing the source.
+
+There is no default ownership or constructor that borrows a `Dict`; borrowed
+carriers arrive across the ABI.
 
 # Example
 
 ```julia
 using JLWInterop
 
-c = CDict(Dict("a" => 1.5, "b" => -2.0))
-c.owned == Int32(1)
+c = CDict{:owned}(Dict("a" => 1.5, "b" => -2.0))
 Dict{String,Float64}(c) == Dict("a" => 1.5, "b" => -2.0)
 JLWInterop._free_strings(c.keys, c.length)
 Libc.free(c.values)
 ```
 """
-struct CDict{V}
+struct CDict{owned, V}
     length::Int64
     keys::Ptr{CString}
     values::Ptr{V}
-    owned::Int32   # 0 = caller-owned/borrowed; 1 = allocated by CDict(::Dict{String,V})
+
+    function CDict{owned, V}(length, keys, values) where {owned, V}
+        owned === :owned || owned === :borrowed || throw(
+            ArgumentError(
+                "ownership parameter must be :owned or :borrowed, got $(repr(owned))"
+            )
+        )
+        return new{owned, V}(length, keys, values)
+    end
 end
+
+# Infer `V` from the value pointer.
+CDict{owned}(length, keys, values::Ptr{V}) where {owned, V} =
+    CDict{owned, V}(length, keys, values)
 
 # Concrete methods keep conversion trim-safe and reject unsupported values.
 for V in CDICT_VALUE_TYPES
     @eval begin
-        function Base.Dict{String, $V}(d::CDict{$V})
+        function Base.Dict{String, $V}(d::CDict{owned, $V}) where {owned}
             out = Dict{String, $V}()
             sizehint!(out, d.length)
             for i in 1:d.length
@@ -437,7 +474,7 @@ for V in CDICT_VALUE_TYPES
             end
             return out
         end
-        function CDict(dict::Dict{String, $V})
+        function CDict{:owned}(dict::Dict{String, $V})
             n = length(dict)
             kp = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
@@ -450,7 +487,7 @@ for V in CDICT_VALUE_TYPES
                 unsafe_store!(kp, CString(Int32(nb), p), i)
                 unsafe_store!(vp, v, i)
             end
-            return CDict{$V}(Int64(n), kp, vp, Int32(1))
+            return CDict{:owned, $V}(Int64(n), kp, vp)
         end
     end
 end
