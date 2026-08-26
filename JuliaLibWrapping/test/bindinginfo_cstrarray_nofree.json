@@ -36,7 +36,7 @@
     },
     {
       "kind": "struct",
-      "name": "CString",
+      "name": "CString{:borrowed}",
       "id": 5,
       "size": 16,
       "fields": [
@@ -47,7 +47,7 @@
     },
     {
       "kind": "pointer",
-      "name": "Ptr{CString}",
+      "name": "Ptr{CString{:borrowed}}",
       "id": 6,
       "pointee_type_id": 5
     },
@@ -69,7 +69,7 @@
       "size": 16,
       "fields": [
         { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 6, "offset": 8, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 11, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     },
@@ -78,6 +78,23 @@
       "name": "Ptr{Nothing}",
       "id": 8,
       "pointee_type_id": null
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 10,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 4, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 11,
+      "pointee_type_id": 10
     }
   ],
   "functions": [

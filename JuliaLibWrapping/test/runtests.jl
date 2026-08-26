@@ -16,6 +16,16 @@ function onlymatch(f, collection)
     return matches[1]
 end
 
+# The body of one emitted `ctypes.Structure` class, up to the next class.
+function classbody(bindings::AbstractString, name::AbstractString)
+    header = "class " * name * "(ctypes.Structure):"
+    range = findfirst(header, bindings)
+    isnothing(range) && error("no class named `", name, "` in the emitted bindings")
+    rest = SubString(bindings, last(range) + 1)
+    stop = findfirst("\nclass ", rest)
+    return isnothing(stop) ? rest : SubString(rest, 1, first(stop) - 1)
+end
+
 @testset "JuliaLibWrapping.jl" begin
     @testset "parse_abi_info" begin
         abi_info = parse_abi_info(parsefile("bindinginfo_libsimple.json"))
@@ -287,6 +297,20 @@ end
             @test occursin("float copyto_and_sum(CVectorPair_Float32 fromto);", content)
             @test occursin("int32_t countsame(MyTwoVec* list, int32_t n);", content)
         end
+
+        # The two CString ownerships are two distinct C typedefs, so whether a
+        # buffer must be freed is visible in the signature.
+        mktempdir() do path
+            dest = CTarget(path, "libcstrarray")
+            write_wrapper(dest, read_abi_info("bindinginfo_cstrarray.json"))
+
+            content = read(joinpath(dest.dir, dest.headerbase * ".h"), String)
+            @test occursin("typedef struct CString_borrowed {", content)
+            @test occursin("typedef struct CString_owned {", content)
+            @test occursin("    CString_borrowed* data;", content)
+            @test occursin("    CString_owned* data;", content)
+            @test occursin("void jlw_free_strings(CString_owned* p, int64_t n);", content)
+        end
     end
 
     @testset "mangle_c!" begin
@@ -320,6 +344,16 @@ end
         @test mangle_c!(typedict, 1, typeinfo) == "Foo"
         @test mangle_c!(typedict, 2, typeinfo) == "Foo_3"
         @test mangle_c!(typedict, 3, typeinfo) == "Foo_4"
+
+        # Ownership parameters sanitize to distinct, valid C identifiers
+        # rather than colliding on a shared prefix.
+        typedict = Dict{Int, String}()
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => StructDesc("CString{:borrowed}", 16, 8, FieldDesc[]),
+            2 => StructDesc("CString{:owned}", 16, 8, FieldDesc[]),
+        )
+        @test mangle_c!(typedict, 1, typeinfo) == "CString_borrowed"
+        @test mangle_c!(typedict, 2, typeinfo) == "CString_owned"
     end
 
     @testset "PythonTarget" begin
@@ -745,15 +779,18 @@ end
     end
 
     @testset "cstring_struct_info" begin
-        # Recognize the CString layout structurally.
+        # Recognition requires an ownership parameter and the CString layout.
         csinfo = JuliaLibWrapping.cstring_struct_info
-        abi = read_abi_info("bindinginfo_cstring.json")
         findtype(descs, name) = (
             k = collect(keys(descs));
             k[findfirst((id) -> descs[id].name === name, k)]
         )
-        cs = abi.typeinfo[findtype(abi.typeinfo, "CString")]
-        @test csinfo(cs, abi.typeinfo) === true
+        abi = read_abi_info("bindinginfo_cstring.json")
+        cs = abi.typeinfo[findtype(abi.typeinfo, "CString{:borrowed}")]
+        @test csinfo(cs, abi.typeinfo).ownership === :borrowed
+        abi_owned = read_abi_info("bindinginfo_cstring_owned.json")
+        cs_owned = abi_owned.typeinfo[findtype(abi_owned.typeinfo, "CString{:owned}")]
+        @test csinfo(cs_owned, abi_owned.typeinfo).ownership === :owned
 
         # Hand-built rejections.
         primint = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -765,43 +802,57 @@ end
             1 => primint, 2 => primu8, 3 => primu16,
             4 => ptr_to_u8, 5 => ptr_to_u16,
             6 => StructDesc(
-                "CString", 16, 8, FieldDesc[
+                "CString{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 1, 0),
                     FieldDesc("data", 4, 8),
                 ]
             ),
             7 => StructDesc(
-                "NotACString", 16, 8, FieldDesc[
+                "NotACString{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 1, 0),
                     FieldDesc("data", 4, 8),
                 ]
             ),
             8 => StructDesc(
-                "CStringU16", 16, 8, FieldDesc[
+                "CString{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 1, 0),
                     FieldDesc("data", 5, 8),  # Ptr{UInt16} — not UInt8
                 ]
             ),
             9 => StructDesc(
-                "CStringBadNames", 16, 8, FieldDesc[
+                "CString{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("size", 1, 0),
                     FieldDesc("data", 4, 8),
                 ]
             ),
+            10 => StructDesc(
+                "CString", 16, 8, FieldDesc[   # no ownership token
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
+            11 => StructDesc(
+                "CString{:owned}", 16, 8, FieldDesc[
+                    FieldDesc("length", 1, 0),
+                    FieldDesc("data", 4, 8),
+                ]
+            ),
         )
-        @test csinfo(ti[6], ti) === true
-        @test csinfo(ti[7], ti) === false  # wrong name prefix
-        @test csinfo(ti[8], ti) === false  # non-UInt8 pointee
-        @test csinfo(ti[9], ti) === false  # wrong field names
+        @test csinfo(ti[6], ti).ownership === :borrowed
+        @test isnothing(csinfo(ti[7], ti))  # wrong name prefix
+        @test isnothing(csinfo(ti[8], ti))  # non-UInt8 pointee
+        @test isnothing(csinfo(ti[9], ti))  # wrong field names
+        @test isnothing(csinfo(ti[10], ti)) # name states no ownership
+        @test csinfo(ti[11], ti).ownership === :owned
 
         # Field order may be either way.
         flipped = StructDesc(
-            "CString", 16, 8, FieldDesc[
+            "CString{:owned}", 16, 8, FieldDesc[
                 FieldDesc("data", 4, 0),
                 FieldDesc("length", 1, 8),
             ]
         )
-        @test csinfo(flipped, ti) === true
+        @test csinfo(flipped, ti).ownership === :owned
     end
 
     @testset "cstrarray_struct_info" begin
@@ -826,7 +877,7 @@ end
         ptr_to_u8 = PointerDesc("Ptr{UInt8}", 4)
         ptr_to_u16 = PointerDesc("Ptr{UInt16}", 5)
         cstring_ok = StructDesc(
-            "CString", 16, 8, FieldDesc[
+            "CString{:borrowed}", 16, 8, FieldDesc[
                 FieldDesc("length", 1, 0),
                 FieldDesc("data", 6, 8),
             ]
@@ -834,19 +885,26 @@ end
         cstring_bad = StructDesc(
             # `data` points to UInt16, not UInt8 — `cstring_struct_info`
             # rejects this, so it must not be accepted as a CString pointee.
-            "NotCString", 16, 8, FieldDesc[
+            "CString{:borrowed}", 16, 8, FieldDesc[
                 FieldDesc("length", 1, 0),
                 FieldDesc("data", 7, 8),
             ]
         )
-        ptr_to_cstring = PointerDesc("Ptr{CString}", 8)
-        ptr_to_not_cstring = PointerDesc("Ptr{NotCString}", 9)
+        cstring_owned = StructDesc(
+            "CString{:owned}", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 6, 8),
+            ]
+        )
+        ptr_to_cstring = PointerDesc("Ptr{CString{:borrowed}}", 8)
+        ptr_to_bad_cstring = PointerDesc("Ptr{CString{:borrowed}}", 9)
+        ptr_to_cstring_owned = PointerDesc("Ptr{CString{:owned}}", 21)
         ti = OrderedDict{Int, TypeDesc}(
             1 => primi32, 2 => primi64, 3 => primu64,
             4 => primu8, 5 => primu16,
             6 => ptr_to_u8, 7 => ptr_to_u16,
             8 => cstring_ok, 9 => cstring_bad,
-            10 => ptr_to_cstring, 11 => ptr_to_not_cstring,
+            10 => ptr_to_cstring, 11 => ptr_to_bad_cstring,
             12 => StructDesc(
                 "CStrArray{:borrowed}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
@@ -899,7 +957,20 @@ end
             20 => StructDesc(
                 "CStrArray{:owned}", 16, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("data", 10, 8),
+                    FieldDesc("data", 22, 8),
+                ]
+            ),
+            21 => cstring_owned, 22 => ptr_to_cstring_owned,
+            23 => StructDesc(
+                "CStrArray{:owned}", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 10, 8),  # borrowed elements in an owning container
+                ]
+            ),
+            24 => StructDesc(
+                "CStrArray{:borrowed}", 16, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("data", 22, 8),  # owned elements in a borrowed container
                 ]
             ),
         )
@@ -912,11 +983,13 @@ end
         @test isnothing(csainfo(ti[18], ti))  # name states no ownership
         @test isnothing(csainfo(ti[19], ti))  # three-field layout rejected
         @test csainfo(ti[20], ti).ownership === :owned
+        @test isnothing(csainfo(ti[23], ti))  # element ownership must match the container's
+        @test isnothing(csainfo(ti[24], ti))  # ...in either direction
 
         # Field order may be either way.
         flipped = StructDesc(
             "CStrArray{:owned}", 16, 8, FieldDesc[
-                FieldDesc("data", 10, 8),
+                FieldDesc("data", 22, 8),
                 FieldDesc("length", 2, 0),
             ]
         )
@@ -958,7 +1031,7 @@ end
         ptr_to_f64 = PointerDesc("Ptr{Float64}", 5)
         ptr_to_notreal = PointerDesc("Ptr{NotARealType}", 6)
         cstring_ok = StructDesc(
-            "CString", 16, 8, FieldDesc[
+            "CString{:borrowed}", 16, 8, FieldDesc[
                 FieldDesc("length", 1, 0),
                 FieldDesc("data", 7, 8),
             ]
@@ -966,20 +1039,27 @@ end
         cstring_bad = StructDesc(
             # `data` points to UInt16, not UInt8 — `cstring_struct_info`
             # rejects this, so it must not be accepted as a CString pointee.
-            "NotCString", 16, 8, FieldDesc[
+            "CString{:borrowed}", 16, 8, FieldDesc[
                 FieldDesc("length", 1, 0),
                 FieldDesc("data", 8, 8),
             ]
         )
-        ptr_to_cstring = PointerDesc("Ptr{CString}", 9)
-        ptr_to_not_cstring = PointerDesc("Ptr{NotCString}", 10)
+        cstring_owned = StructDesc(
+            "CString{:owned}", 16, 8, FieldDesc[
+                FieldDesc("length", 1, 0),
+                FieldDesc("data", 7, 8),
+            ]
+        )
+        ptr_to_cstring = PointerDesc("Ptr{CString{:borrowed}}", 9)
+        ptr_to_bad_cstring = PointerDesc("Ptr{CString{:borrowed}}", 10)
+        ptr_to_cstring_owned = PointerDesc("Ptr{CString{:owned}}", 28)
         ti = OrderedDict{Int, TypeDesc}(
             1 => primi32, 2 => primi64,
             3 => primu8, 4 => primu16, 5 => primf64,
             6 => primnotreal,
             7 => ptr_to_u8, 8 => ptr_to_u16,
             9 => cstring_ok, 10 => cstring_bad,
-            11 => ptr_to_cstring, 12 => ptr_to_not_cstring,
+            11 => ptr_to_cstring, 12 => ptr_to_bad_cstring,
             13 => ptr_to_f64, 14 => ptr_to_notreal,
             15 => StructDesc(
                 "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
@@ -1059,7 +1139,22 @@ end
             27 => StructDesc(
                 "CDict{:owned, Float64}", 24, 8, FieldDesc[
                     FieldDesc("length", 2, 0),
-                    FieldDesc("keys", 11, 8),
+                    FieldDesc("keys", 29, 8),
+                    FieldDesc("values", 13, 16),
+                ]
+            ),
+            28 => cstring_owned, 29 => ptr_to_cstring_owned,
+            30 => StructDesc(
+                "CDict{:owned, Float64}", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 11, 8),  # borrowed keys in an owning dictionary
+                    FieldDesc("values", 13, 16),
+                ]
+            ),
+            31 => StructDesc(
+                "CDict{:borrowed, Float64}", 24, 8, FieldDesc[
+                    FieldDesc("length", 2, 0),
+                    FieldDesc("keys", 29, 8),  # owned keys in a borrowed dictionary
                     FieldDesc("values", 13, 16),
                 ]
             ),
@@ -1079,13 +1174,15 @@ end
         @test cdinfo(ti[26], ti).value_type == "Cvoid"
         @test isnothing(pycdinfo(ti[26], ti)) # ...but Cvoid is not a scalar payload type
         @test cdinfo(ti[27], ti).ownership === :owned
+        @test isnothing(cdinfo(ti[30], ti)) # key ownership must match the dictionary's
+        @test isnothing(cdinfo(ti[31], ti)) # ...in either direction
 
         # Field order may be any permutation.
         permuted = StructDesc(
             "CDict{:owned, Float64}", 24, 8, FieldDesc[
                 FieldDesc("values", 13, 16),
                 FieldDesc("length", 2, 0),
-                FieldDesc("keys", 11, 8),
+                FieldDesc("keys", 29, 8),
             ]
         )
         @test cdinfo(permuted, ti).ownership === :owned
@@ -1235,7 +1332,7 @@ end
     end
 
     @testset "CString vocabulary" begin
-        # CString conversion does not require numpy.
+        # Borrowed CString conversion requires no numpy or release function.
         abi = read_abi_info("bindinginfo_cstring.json")
         mktempdir() do path
             dest = PythonTarget(path, "cstring_demo", "libcstring")
@@ -1249,8 +1346,8 @@ end
             pyproject = read(joinpath(path, "pyproject.toml"), String)
             @test !occursin("numpy", pyproject)
 
-            # Struct + helpers.
-            @test occursin("class CString(ctypes.Structure):", bindings)
+            # Borrowed classes construct values but do not release them.
+            @test occursin("class CString_borrowed(ctypes.Structure):", bindings)
             @test occursin("(\"length\", ctypes.c_int32)", bindings)
             @test occursin("(\"data\", ctypes.POINTER(ctypes.c_uint8))", bindings)
             @test occursin("def from_str(cls, s):", bindings)
@@ -1260,10 +1357,11 @@ end
             @test occursin("s.encode(\"utf-8\")", bindings)
             @test occursin("ctypes.string_at(self.data, self.length)", bindings)
             @test occursin(".decode(\"utf-8\")", bindings)
+            @test !occursin("def free(self):", bindings)
 
             # Round-trip-direction entrypoints are emitted as bare bindings.
-            @test occursin("_lib.greeting_length.argtypes = [CString]", bindings)
-            @test occursin("_lib.greeting.restype = CString", bindings)
+            @test occursin("_lib.greeting_length.argtypes = [CString_borrowed]", bindings)
+            @test occursin("_lib.greeting.restype = CString_borrowed", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstring_lowlevel.py"), String)
             @test bindings == golden
@@ -1271,18 +1369,112 @@ end
             # Façade auto-wrap: CString args/returns become str in/out.
             facade = read(joinpath(path, "cstring_demo", "_facade.py"), String)
             @test occursin(
-                "def greeting_length(s):\n    _s = CString.from_str(s)\n" *
+                "def greeting_length(s):\n    _s = CString_borrowed.from_str(s)\n" *
                     "    return _lowlevel.greeting_length(_s)", facade
             )
             @test occursin(
                 "def greeting():\n    _result = _lowlevel.greeting()\n" *
                     "    return _result.as_str()", facade
             )
+            @test !occursin("_result.free()", facade)
             golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
             @test facade == golden_facade
 
             python3 = Sys.which("python3")
             if python3 !== nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CString owned-return vocabulary" begin
+        # The consumer releases an owning return with `jlw_free`.
+        abi = read_abi_info("bindinginfo_cstring_owned.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "cstring_owned_demo", "libcstringowned")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cstring_owned_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+
+            # Owning classes have an idempotent `free()` but no constructors.
+            @test occursin("class CString_owned(ctypes.Structure):", bindings)
+            @test !occursin("def from_str(cls, s):", bindings)
+            @test !occursin("def from_bytes(cls, b):", bindings)
+            @test occursin("def as_bytes(self):", bindings)
+            @test occursin("def as_str(self):", bindings)
+            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
+            @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
+            @test occursin("        self._freed = True", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_cstring_owned_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Façade auto-wrap: decode to `str` first, then free in `finally`.
+            facade = read(joinpath(path, "cstring_owned_demo", "_facade.py"), String)
+            @test occursin(
+                "def give_greeting():\n    _result = _lowlevel.give_greeting()\n" *
+                    "    try:\n        _out = _result.as_str()\n" *
+                    "    finally:\n        _result.free()\n    return _out",
+                facade
+            )
+            @test !occursin("_lowlevel._lib.jlw_free", facade)
+            golden_facade = read(joinpath(@__DIR__, "expected_cstring_owned_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "cstring_owned_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "CString owning return without release symbols" begin
+        # Same gate as CArray/CStrArray/CDict: an owning return with no
+        # release entrypoints falls back to a mechanical TODO naming the macro
+        # to add, rather than emitting a call to an absent symbol.
+        abi = read_abi_info("bindinginfo_cstring_owned_nofree.json")
+        @test JuliaLibWrapping._release_symbols_present(abi) === false
+        mktempdir() do path
+            dest = PythonTarget(path, "cstring_owned_nofree_demo", "libcstringownednofree")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "cstring_owned_nofree_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test !occursin("_lib.jlw_free.argtypes", bindings)
+            @test occursin("def free(self):", bindings)
+            @test !occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
+            @test occursin(
+                "raise RuntimeError(\"this library does not export release entrypoints; " *
+                    "add JLWInterop.@export_release_entrypoints to the library\")",
+                bindings
+            )
+
+            golden = read(joinpath(@__DIR__, "expected_cstring_owned_nofree_lowlevel.py"), String)
+            @test bindings == golden
+
+            facade = read(joinpath(path, "cstring_owned_nofree_demo", "_facade.py"), String)
+            @test !occursin("def give_greeting():", facade)
+            @test occursin(
+                "from ._lowlevel import give_greeting  # TODO: hand-wrap — " *
+                    "owning return needs release entrypoints; add " *
+                    "JLWInterop.@export_release_entrypoints to the library",
+                facade
+            )
+            golden_facade = read(joinpath(@__DIR__, "expected_cstring_owned_nofree_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
                 cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
                 @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
             elseif haskey(ENV, "CI")
@@ -1332,9 +1524,8 @@ end
             @test !occursin("(\"owned\", ctypes.c_int32)", bindings)
             @test occursin("class CStrArray_borrowed(ctypes.Structure):", bindings)
             @test occursin("class CStrArray_owned(ctypes.Structure):", bindings)
-            borrowed_body, owned_body = split(
-                bindings, "class CStrArray_owned(ctypes.Structure):"
-            )
+            borrowed_body = classbody(bindings, "CStrArray_borrowed")
+            owned_body = classbody(bindings, "CStrArray_owned")
             @test occursin("def from_list(cls, items):", borrowed_body)
             @test !occursin("def free(self):", borrowed_body)
             @test !occursin("def from_list(cls, items):", owned_body)
@@ -1418,9 +1609,8 @@ end
             @test !occursin("(\"owned\", ctypes.c_int32)", bindings)
             @test occursin("class CDict_borrowed_Float64(ctypes.Structure):", bindings)
             @test occursin("class CDict_owned_Float64(ctypes.Structure):", bindings)
-            borrowed_body, owned_body = split(
-                bindings, "class CDict_owned_Float64(ctypes.Structure):"
-            )
+            borrowed_body = classbody(bindings, "CDict_borrowed_Float64")
+            owned_body = classbody(bindings, "CDict_owned_Float64")
             @test occursin("def from_dict(cls, d):", borrowed_body)
             @test !occursin("def free(self):", borrowed_body)
             @test !occursin("def from_dict(cls, d):", owned_body)
@@ -1480,8 +1670,13 @@ end
             @test occursin("class CDict_borrowed_Int32(ctypes.Structure):", bindings)
             @test occursin("class CDict_owned_Int32(ctypes.Structure):", bindings)
             @test occursin("(\"length\", ctypes.c_int64)", bindings)
+            # Keys carry the dictionary's ownership, so the two dictionaries
+            # point at two distinct CString classes.
             @test occursin(
-                "(\"keys\", ctypes.POINTER(CString))", bindings
+                "(\"keys\", ctypes.POINTER(CString_borrowed))", bindings
+            )
+            @test occursin(
+                "(\"keys\", ctypes.POINTER(CString_owned))", bindings
             )
             @test occursin("(\"values\", ctypes.POINTER(ctypes.c_int32))", bindings)
             # The value ctype substitution varies: Int32 here, not Float64.
@@ -2000,6 +2195,52 @@ end
         cls = classify_arg(arg_o, owned.typeinfo, td_o)
         @test cls.kind === :opaque
         @test cls.reason == "argument transfers CArray ownership into the library; hand-wrap"
+    end
+
+    @testset "CString façade classification by ownership" begin
+        # CString follows the CArray ownership rules.
+        classify_arg = JuliaLibWrapping._facade_classify_arg
+        classify_ret = JuliaLibWrapping._facade_classify_return
+        findtype(descs, name) = (
+            k = collect(keys(descs));
+            k[findfirst((id) -> descs[id].name === name, k)]
+        )
+        premangled(abi) = (
+            d = Dict{Int, String}();
+            for (id, type) in pairs(abi.typeinfo)
+                type isa StructDesc && JuliaLibWrapping.mangle_python!(d, id, abi.typeinfo)
+            end;
+            d
+        )
+
+        borrowed = read_abi_info("bindinginfo_cstring.json")
+        td_b = premangled(borrowed)
+        cs_id = findtype(borrowed.typeinfo, "CString{:borrowed}")
+
+        # A borrowed argument arrives as a Python `str`.
+        arg_b = JuliaLibWrapping.ArgDesc("s", cs_id, false)
+        @test classify_arg(arg_b, borrowed.typeinfo, td_b).kind === :cstring
+
+        # A borrowed return needs no release entrypoint.
+        m_borrowed = onlymatch(md -> md.symbol == "greeting", borrowed.entrypoints)
+        @test classify_ret(m_borrowed, borrowed.typeinfo, td_b, false).kind === :cstring_convert
+
+        owned = read_abi_info("bindinginfo_cstring_owned.json")
+        td_o = premangled(owned)
+        cso_id = findtype(owned.typeinfo, "CString{:owned}")
+        m_owned = onlymatch(md -> md.symbol == "give_greeting", owned.entrypoints)
+
+        # An owning return requires release entrypoints.
+        @test classify_ret(m_owned, owned.typeinfo, td_o, true).kind === :cstring_unwrap
+        demoted = classify_ret(m_owned, owned.typeinfo, td_o, false)
+        @test demoted.kind === :opaque
+        @test occursin("owning return needs release entrypoints", demoted.reason)
+
+        # Owning arguments require a manual wrapper.
+        arg_o = JuliaLibWrapping.ArgDesc("s", cso_id, false)
+        cls = classify_arg(arg_o, owned.typeinfo, td_o)
+        @test cls.kind === :opaque
+        @test cls.reason == "argument transfers CString ownership into the library; hand-wrap"
     end
 
     @testset "raw primitive pointer docstring" begin

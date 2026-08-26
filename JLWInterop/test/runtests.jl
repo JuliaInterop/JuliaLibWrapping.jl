@@ -86,19 +86,63 @@ using Test
     end
 
     @testset "CString layout" begin
-        @test fieldnames(CString) == (:length, :data)
-        @test fieldtype(CString, :length) === Int32
-        @test fieldtype(CString, :data) === Ptr{UInt8}
-        @test isbitstype(CString)
-        @test fieldoffset(CString, 1) == 0
-        @test fieldoffset(CString, 2) == 8
-        @test CString <: AbstractString
+        @test fieldnames(CString{:borrowed}) == (:length, :data)
+        @test fieldtype(CString{:borrowed}, :length) === Int32
+        @test fieldtype(CString{:borrowed}, :data) === Ptr{UInt8}
+        @test isbitstype(CString{:borrowed})
+        @test fieldoffset(CString{:borrowed}, 1) == 0
+        @test fieldoffset(CString{:borrowed}, 2) == 8
+        @test CString{:borrowed} <: AbstractString
+
+        # Ownership is part of the type, so the two flavors are distinct types
+        # with identical layout.
+        @test CString{:owned} !== CString{:borrowed}
+        @test sizeof(CString{:owned}) == sizeof(CString{:borrowed}) == 16
+    end
+
+    @testset "CString ABI names" begin
+        # `juliac` writes the ABI JSON's struct names with
+        # `repr(dt; context = :compact => true)`, and JuliaLibWrapping's
+        # recognizer parses the ownership back out of that text.
+        compact(T) = repr(T; context = :compact => true)
+        @test compact(CString{:owned}) == "CString{:owned}"
+        @test compact(CString{:borrowed}) == "CString{:borrowed}"
+    end
+
+    @testset "CString constructors" begin
+        # There is no ownership-defaulting constructor.
+        @test_throws MethodError CString(Int32(0), Ptr{UInt8}(0))
+        @test_throws MethodError CString("hello")
+
+        # Only :owned and :borrowed name an ownership.
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got :mine",
+            CString{:mine}(Int32(0), Ptr{UInt8}(0))
+        )
+        @test_throws(
+            "ownership parameter must be :owned or :borrowed, got 1",
+            CString{1}(Int32(0), Ptr{UInt8}(0))
+        )
+    end
+
+    @testset "CString owning round-trip" begin
+        s = CString{:owned}("hé\0llo")   # incl. multi-byte UTF-8 and an embedded NUL
+        @test s isa CString{:owned}
+        @test s.length == 7
+        @test String(s) == "hé\0llo"
+        Libc.free(s.data)                       # tests own the free
+
+        empty = CString{:owned}("")
+        @test empty.length == 0
+        @test empty.data != C_NULL   # empty string still mallocs a real, freeable pointer
+        @test String(empty) == ""
+        Libc.free(empty.data)
     end
 
     @testset "CString AbstractString interface" begin
         buf = codeunits("hello")
         GC.@preserve buf begin
-            s = CString(Int32(length(buf)), pointer(buf))
+            s = CString{:borrowed}(Int32(length(buf)), pointer(buf))
 
             # AbstractString-derived methods.
             @test ncodeunits(s) === 5
@@ -120,7 +164,7 @@ using Test
         # Embedded NUL bytes are preserved (length-prefixed, not terminated).
         raw = UInt8[0x66, 0x00, 0x6f]  # "f\0o"
         GC.@preserve raw begin
-            s = CString(Int32(length(raw)), pointer(raw))
+            s = CString{:borrowed}(Int32(length(raw)), pointer(raw))
             @test ncodeunits(s) === 3
             @test codeunit(s, 2) === 0x00
             @test String(s) == "f\0o"
@@ -129,7 +173,7 @@ using Test
         # Multi-byte UTF-8 ("café"): 4 characters, 5 bytes.
         utf8 = codeunits("café")
         GC.@preserve utf8 begin
-            s = CString(Int32(length(utf8)), pointer(utf8))
+            s = CString{:borrowed}(Int32(length(utf8)), pointer(utf8))
             @test ncodeunits(s) === 5
             @test length(s) === 4
             @test collect(s) == ['c', 'a', 'f', 'é']
@@ -141,8 +185,8 @@ using Test
         a_buf = codeunits("apple")
         b_buf = codeunits("banana")
         GC.@preserve a_buf b_buf begin
-            a = CString(Int32(length(a_buf)), pointer(a_buf))
-            b = CString(Int32(length(b_buf)), pointer(b_buf))
+            a = CString{:borrowed}(Int32(length(a_buf)), pointer(a_buf))
+            b = CString{:borrowed}(Int32(length(b_buf)), pointer(b_buf))
             @test cmp(a, b) < 0
             @test cmp(b, a) > 0
             @test cmp(a, a) == 0
@@ -416,7 +460,7 @@ using Test
     @testset "CStrArray layout" begin
         @test fieldnames(CStrArray{:owned}) === (:length, :data)
         @test fieldtype(CStrArray{:owned}, :length) === Int64
-        @test fieldtype(CStrArray{:owned}, :data) === Ptr{CString}
+        @test fieldtype(CStrArray{:owned}, :data) === Ptr{CString{:owned}}
         @test isbitstype(CStrArray{:owned})
         @test iszero(fieldoffset(CStrArray{:owned}, 1))
         @test fieldoffset(CStrArray{:owned}, 2) == 8
@@ -438,7 +482,7 @@ using Test
     end
 
     @testset "CStrArray constructors" begin
-        a = CStrArray{:borrowed}(Int64(0), Ptr{CString}(0))
+        a = CStrArray{:borrowed}(Int64(0), Ptr{CString{:borrowed}}(0))
         @test a isa CStrArray{:borrowed}
         @test a.length === Int64(0)
 
@@ -450,11 +494,11 @@ using Test
         # Only :owned and :borrowed name an ownership.
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got :mine",
-            CStrArray{:mine}(Int64(0), Ptr{CString}(0))
+            CStrArray{:mine}(Int64(0), Ptr{CString{:owned}}(0))
         )
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got 1",
-            CStrArray{1}(Int64(0), Ptr{CString}(0))
+            CStrArray{1}(Int64(0), Ptr{CString{:owned}}(0))
         )
     end
 
@@ -478,7 +522,7 @@ using Test
     @testset "CDict layout" begin
         @test fieldnames(CDict{:owned, Float64}) === (:length, :keys, :values)
         @test fieldtype(CDict{:owned, Float64}, :length) === Int64
-        @test fieldtype(CDict{:owned, Float64}, :keys) === Ptr{CString}
+        @test fieldtype(CDict{:owned, Float64}, :keys) === Ptr{CString{:owned}}
         @test fieldtype(CDict{:owned, Float64}, :values) === Ptr{Float64}
         @test isbitstype(CDict{:owned, Float64})
         @test iszero(fieldoffset(CDict{:owned, Float64}, 1))
@@ -498,7 +542,7 @@ using Test
 
     @testset "CDict constructors" begin
         # `V` is inferred from the value pointer.
-        c = CDict{:borrowed}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+        c = CDict{:borrowed}(Int64(0), Ptr{CString{:borrowed}}(0), Ptr{Float64}(0))
         @test c isa CDict{:borrowed, Float64}
 
         # There is no ownership-defaulting constructor, and no Julia-side
@@ -508,11 +552,11 @@ using Test
 
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got :mine",
-            CDict{:mine, Float64}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+            CDict{:mine, Float64}(Int64(0), Ptr{CString{:owned}}(0), Ptr{Float64}(0))
         )
         @test_throws(
             "ownership parameter must be :owned or :borrowed, got 1",
-            CDict{1, Float64}(Int64(0), Ptr{CString}(0), Ptr{Float64}(0))
+            CDict{1, Float64}(Int64(0), Ptr{CString{:owned}}(0), Ptr{Float64}(0))
         )
     end
 

@@ -1,0 +1,69 @@
+{
+  "_comment": "Fixture identical to bindinginfo_cstring_owned.json EXCEPT the two jlw_free* release-entrypoint function entries are deleted (the `types` array \u2014 including the `Ptr{Nothing}` and `Ptr{CString{:owned}}` those functions used \u2014 is left untouched deliberately). This models a library that returns an owning `CString{:owned}` but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. The generator must demote `give_greeting`, whose return would need `jlw_free`, to a mechanical re-export naming the macro to add. The owning class's `.free()` is still emitted but raises RuntimeError, for callers who bypass the facade and talk to `_lowlevel` directly.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 1,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 2,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 4,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 5,
+      "pointee_type_id": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 6,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 7,
+      "pointee_type_id": null
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 4 },
+      "name": "give_greeting()",
+      "arguments": [],
+      "symbol": "give_greeting"
+    }
+  ]
+}

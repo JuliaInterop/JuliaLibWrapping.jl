@@ -53,7 +53,7 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CString(ctypes.Structure):
+class CString_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
@@ -93,18 +93,18 @@ class CString(ctypes.Structure):
 class CDict_borrowed_Int32(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("keys", ctypes.POINTER(CString)),
+        ("keys", ctypes.POINTER(CString_borrowed)),
         ("values", ctypes.POINTER(ctypes.c_int32)),
     ]
 
     @classmethod
     def from_dict(cls, d):
         keys = [k.encode("utf-8") for k in d.keys()]
-        karr = (CString * len(keys))(
-            *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
+        karr = (CString_borrowed * len(keys))(
+            *[CString_borrowed(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
         varr = (ctypes.c_int32 * len(keys))(*d.values())
         obj = cls(length=len(keys),
-                  keys=ctypes.cast(karr, ctypes.POINTER(CString)),
+                  keys=ctypes.cast(karr, ctypes.POINTER(CString_borrowed)),
                   values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
         obj._buffer = (keys, karr, varr)
         return obj
@@ -117,10 +117,34 @@ class CDict_borrowed_Int32(ctypes.Structure):
             out[k] = self.values[i]
         return out
 
+class CString_owned(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int32),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
+    ]
+
+    def as_bytes(self):
+        """Return a copy of the underlying bytes as a Python `bytes` object."""
+        return ctypes.string_at(self.data, self.length)
+
+    def as_str(self):
+        """Return the underlying bytes decoded as UTF-8."""
+        return self.as_bytes().decode("utf-8")
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
+            return
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self._freed = True
+
 class CDict_owned_Int32(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("keys", ctypes.POINTER(CString)),
+        ("keys", ctypes.POINTER(CString_owned)),
         ("values", ctypes.POINTER(ctypes.c_int32)),
     ]
 
@@ -156,6 +180,6 @@ def give_dict_i32():
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None
 
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString_owned), ctypes.c_int64]
 _lib.jlw_free_strings.restype = None
 

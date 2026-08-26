@@ -1,0 +1,86 @@
+{
+  "_comment": "Hand-authored fixture for an owning CString return. Mirrors the layout juliac would emit for `struct CString{owned}; length::Int32; data::Ptr{UInt8}; end` instantiated at :owned, with one @ccallable function returning a freshly allocated `CString{:owned}`, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so the owning return is `:auto` (decode, then free in a `finally`), not `:mechanical`. The two ownerships are two distinct 16-byte structs with an identical `(length, data)` layout, so only the name distinguishes them; bindinginfo_cstring.json covers the borrowed side. `jlw_free` takes a `Ptr{Nothing}` (a pointer with a null pointee id) and both release entrypoints return void (a null return type id), mirroring juliac's actual ABI JSON rendering. The Python emitter must emit as_str/as_bytes and an idempotent free() on the owning class, and no from_str/from_bytes: Python has no Julia allocation to hand over.",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 1,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 2,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 3,
+      "pointee_type_id": 1
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 4,
+      "size": 16,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 3, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 5,
+      "pointee_type_id": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 6,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 7,
+      "pointee_type_id": null
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 4 },
+      "name": "give_greeting()",
+      "arguments": [],
+      "symbol": "give_greeting"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 7 }
+      ],
+      "symbol": "jlw_free"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 5 },
+        { "name": "n", "type_id": 6 }
+      ],
+      "symbol": "jlw_free_strings"
+    }
+  ]
+}

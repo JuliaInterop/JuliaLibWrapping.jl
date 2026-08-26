@@ -53,7 +53,7 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
-class CString(ctypes.Structure):
+class CString_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
@@ -93,7 +93,7 @@ class CString(ctypes.Structure):
 class CStrArray_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(CString)),
+        ("data", ctypes.POINTER(CString_borrowed)),
     ]
 
     @classmethod
@@ -101,9 +101,9 @@ class CStrArray_borrowed(ctypes.Structure):
         if not isinstance(items, (list, tuple)):
             raise TypeError("expected a list of str")
         bufs = [s.encode("utf-8") for s in items]
-        arr = (CString * len(bufs))(
-            *[CString(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString)))
+        arr = (CString_borrowed * len(bufs))(
+            *[CString_borrowed(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
+        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString_borrowed)))
         obj._buffer = (bufs, arr)   # keep buffers alive
         return obj
 
@@ -114,10 +114,34 @@ class CStrArray_borrowed(ctypes.Structure):
             out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
         return out
 
+class CString_owned(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int32),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
+    ]
+
+    def as_bytes(self):
+        """Return a copy of the underlying bytes as a Python `bytes` object."""
+        return ctypes.string_at(self.data, self.length)
+
+    def as_str(self):
+        """Return the underlying bytes decoded as UTF-8."""
+        return self.as_bytes().decode("utf-8")
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. For callers who bypass the
+        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
+        if getattr(self, "_freed", False):
+            return
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self._freed = True
+
 class CStrArray_owned(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(CString)),
+        ("data", ctypes.POINTER(CString_owned)),
     ]
 
     def as_list(self):
@@ -150,6 +174,6 @@ def give_strs():
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None
 
-_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString), ctypes.c_int64]
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString_owned), ctypes.c_int64]
 _lib.jlw_free_strings.restype = None
 

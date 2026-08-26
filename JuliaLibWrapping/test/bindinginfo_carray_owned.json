@@ -18,7 +18,7 @@
     },
     {
       "symbol": "jlw_free_strings",
-      "name": "jlw_free_strings(p::Ptr{CString}, n::Int64)",
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
       "arguments": [
         { "name": "p", "type_id": 10 },
         { "name": "n", "type_id": 3 }
@@ -98,7 +98,7 @@
     {
       "id": 9,
       "kind": "struct",
-      "name": "CString",
+      "name": "CString{:owned}",
       "size": 16,
       "alignment": 8,
       "fields": [
@@ -109,7 +109,7 @@
     {
       "id": 10,
       "kind": "pointer",
-      "name": "Ptr{CString}",
+      "name": "Ptr{CString{:owned}}",
       "pointee_type_id": 9
     },
     {

@@ -186,44 +186,71 @@ Base.@propagate_inbounds function Base.setindex!(a::CArray{owned, T}, x, i::Int)
 end
 
 """
-    CString
+    CString{owned}
 
-Non-owning UTF-8 string descriptor for `@ccallable` boundaries. It contains
-`length` bytes at `data`; embedded NUL bytes are allowed.
-The caller must keep the buffer alive while the descriptor is in use.
+Length-prefixed UTF-8 string descriptor for `@ccallable` boundaries.
+It contains `length` bytes at `data` and permits embedded NUL bytes.
+
+# Ownership contract
+
+`owned` is `:owned` or `:borrowed`.
+
+`CString{:owned}(::AbstractString)` allocates a copy. The consumer releases
+`data` once with `Libc.free` or the `jlw_free` entrypoint emitted by
+[`@export_release_entrypoints`](@ref).
+
+`CString{:borrowed}` wraps a buffer the caller owns and keeps alive; the
+consumer never releases it.
 
 # Example
 
 ```julia
 using JLWInterop
 
-Base.@ccallable function greeting_length(s::CString)::Int32
+Base.@ccallable function greeting_length(s::CString{:borrowed})::Int32
     return Int32(length(s))
 end
+
+s = CString{:owned}("héllo")
+String(s) == "héllo"
+Libc.free(s.data)
 ```
 
 # Extended help
 
 Unlike `Base.Cstring`, `CString` is length-prefixed rather than NUL-terminated.
-It does not allocate, copy, free, or keep its storage alive.
 
-Use it to expose a string value at a `@ccallable` boundary instead of a
-`String` (which is not C-ABI compatible) or a `Cstring` (which requires
-NUL termination and forbids embedded NULs). Binding targets can map its
-name and layout to native string and byte-sequence types.
+Use it instead of a `String`, which is not C-ABI compatible, or a `Cstring`,
+which requires NUL termination and forbids embedded NULs.
 
-`CString <: AbstractString` with `ncodeunits`, `codeunit`, and a fast
-byte-level `cmp`; Base derives UTF-8 iteration, `length` (character
-count vs. `ncodeunits` byte count), equality, `print`, regex matching,
-`split`, `replace`, and the rest of the `AbstractString` interface. Use
-`String(s)` to copy the bytes out into a fresh heap-allocated Julia
-`String` when you need ownership.
+Every construction path names an ownership: there is no defaulting
+constructor, and any parameter other than `:owned` or `:borrowed` is
+rejected.
 
-The caller must keep `s.data` valid for the duration of the call.
+`CString{owned} <: AbstractString`. Use `String(s)` to copy its bytes into a
+Julia `String`.
 """
-struct CString <: AbstractString
+struct CString{owned} <: AbstractString
     length::Int32
     data::Ptr{UInt8}
+
+    function CString{owned}(length, data) where {owned}
+        owned === :owned || owned === :borrowed || throw(
+            ArgumentError(
+                "ownership parameter must be :owned or :borrowed, got $(repr(owned))"
+            )
+        )
+        return new{owned}(length, data)
+    end
+end
+
+# Allocate a copy of `s`'s UTF-8 bytes, without a terminating NUL.
+function CString{:owned}(s::AbstractString)
+    str = String(s)
+    nb = sizeof(str)
+    p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
+    GC.@preserve str unsafe_copyto!(p, pointer(str), nb)
+    return CString{:owned}(Int32(nb), p)
 end
 
 Base.ncodeunits(s::CString) = Int(s.length)
@@ -333,6 +360,9 @@ with `_free_strings` or the `jlw_free_strings` entrypoint emitted by
 consumer never releases it. Converting to `Vector{String}` copies without
 freeing the source.
 
+Elements share the container's ownership — `data` points to `CString{owned}`s
+— and releasing an owning `CStrArray` releases every element's buffer too.
+
 There is no default ownership or constructor that borrows a `Vector{String}`;
 borrowed carriers arrive across the ABI.
 
@@ -348,7 +378,7 @@ JLWInterop._free_strings(a.data, a.length)
 """
 struct CStrArray{owned}
     length::Int64
-    data::Ptr{CString}     # each element a length-prefixed CString
+    data::Ptr{CString{owned}}     # each element a length-prefixed CString
 
     function CStrArray{owned}(length, data) where {owned}
         owned === :owned || owned === :borrowed || throw(
@@ -372,26 +402,22 @@ end
 # Allocate a copy of `v` as length-prefixed CStrings.
 function CStrArray{:owned}(v::Vector{String})
     n = length(v)
-    data = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
+    data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
     for i in 1:n
-        s = v[i]
-        nb = sizeof(s)
-        p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
-        GC.@preserve s unsafe_copyto!(p, pointer(s), nb)
-        unsafe_store!(data, CString(Int32(nb), p), i)
+        unsafe_store!(data, CString{:owned}(v[i]), i)
     end
     return CStrArray{:owned}(Int64(n), data)
 end
 
 """
-    JLWInterop._free_strings(p::Ptr{CString}, n::Int64)
+    JLWInterop._free_strings(p::Ptr{CString{:owned}}, n::Int64)
 
 Free `n` string buffers pointed to by the `CString`s at `p` (each one's
 `.data`), then free `p` itself. Matches the allocation made by
 `CStrArray{:owned}(::Vector{String})`. Internal; exposed at a `@ccallable`
 boundary as `jlw_free_strings` by [`@export_release_entrypoints`](@ref).
 """
-function _free_strings(p::Ptr{CString}, n::Int64)
+function _free_strings(p::Ptr{CString{:owned}}, n::Int64)
     for i in 1:n
         Libc.free(unsafe_load(p, i).data)
     end
@@ -430,6 +456,9 @@ property of its type.
 `CDict{:borrowed,V}` wraps memory the caller owns and keeps alive; the consumer
 never releases it. Converting to a `Dict` copies without freeing the source.
 
+Keys share the dictionary's ownership — `keys` points to `CString{owned}`s —
+and releasing them releases every key's buffer too.
+
 There is no default ownership or constructor that borrows a `Dict`; borrowed
 carriers arrive across the ABI.
 
@@ -446,7 +475,7 @@ Libc.free(c.values)
 """
 struct CDict{owned, V}
     length::Int64
-    keys::Ptr{CString}
+    keys::Ptr{CString{owned}}
     values::Ptr{V}
 
     function CDict{owned, V}(length, keys, values) where {owned, V}
@@ -476,15 +505,12 @@ for V in CDICT_VALUE_TYPES
         end
         function CDict{:owned}(dict::Dict{String, $V})
             n = length(dict)
-            kp = Ptr{CString}(Libc.malloc(max(n, 1) * sizeof(CString)))
+            kp = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
             i = 0
             for (k, v) in dict
                 i += 1
-                nb = sizeof(k)
-                p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty key still needs a non-NULL, freeable p
-                GC.@preserve k unsafe_copyto!(p, pointer(k), nb)
-                unsafe_store!(kp, CString(Int32(nb), p), i)
+                unsafe_store!(kp, CString{:owned}(k), i)
                 unsafe_store!(vp, v, i)
             end
             return CDict{:owned, $V}(Int64(n), kp, vp)
@@ -538,7 +564,7 @@ macro export_release_entrypoints()
                 Libc.free(p)
                 return nothing
             end
-            Base.@ccallable function jlw_free_strings(p::Ptr{CString}, n::Int64)::Cvoid
+            Base.@ccallable function jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid
                 JLWInterop._free_strings(p, n)
                 return nothing
             end
