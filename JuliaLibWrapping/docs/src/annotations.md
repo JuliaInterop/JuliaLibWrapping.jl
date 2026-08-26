@@ -52,10 +52,16 @@ end
 The assignment form `f(x::Int64)::Int64 = x` and a `where` clause on the
 signature each fail at expansion with a message naming what to write instead.
 
-The docstring is the macro's first argument, on the same line as `@api`. A
-`"""…"""` written on the line *above* `@api` documents the macro call's value,
-which is `nothing`; it never reaches the sidecar and never appears in the
-generated Python.
+The docstring is the macro's first argument, on the same line as `@api`. Only
+that argument reaches the sidecar and the generated Python. A `"""…"""`
+written on the line *above* `@api` still documents the Julia function — the
+macro passes the definition through `Base.@__doc__` — but the emitter never
+sees it, so the Python wrapper is left undocumented. Write the docstring as
+the macro argument to get both.
+
+The Python name is the Julia function name, so it has to be a legal Python
+identifier. A trailing `!`, the Julia convention for a mutating function, is
+rejected at build time rather than emitted as `def bump!(…)`.
 
 ## Type table
 
@@ -64,8 +70,9 @@ via [`carrier_return_type`](@ref), to a C-ABI carrier. An unmapped type is an
 expansion-time error naming the offending argument or the return. "Scalar"
 below means one of `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`,
 `Bool`; the carriers hold those elements as raw bytes behind a pointer, so
-`Vector{Any}`, `Matrix{String}` and `Dict{String,Vector{Int}}` are rejected
-rather than reinterpreted.
+`Vector{Any}`, `Matrix{String}`, `Dict{String,Vector{Int}}` and a union of
+scalars such as `Vector{Union{Int64,Float64}}` are rejected rather than
+reinterpreted.
 
 | Julia `T` | as argument | as return |
 |---|---|---|
@@ -92,7 +99,8 @@ call. `Vector{T}` is the row to reach for when the length should travel with
 the buffer.
 
 The [`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
-example exercises every row except the rejected `String` return.
+example exercises every row except the rejected `String` return and the
+multi-dimensional `Array{T,N}` form; its arrays are all `Vector`s.
 
 ## Registering your own type
 

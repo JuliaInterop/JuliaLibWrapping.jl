@@ -73,22 +73,32 @@ has its own carrier that copies each element.
 A `Ptr{T}` is its own carrier and crosses unconverted: no length and no
 ownership travel with it, and the caller owns both.
 
+`_API_SCALARS` is itself a `Union`, so a union *of* scalars satisfies
+`T <: _API_SCALARS`. A carrier holds its payload as raw bytes at a known
+size, which a union cannot supply, and `CArray`/`CDict` are `isbits`
+whatever their parameter is — so the later `isbitstype` check on the carrier
+cannot catch it. Every method below therefore demands a concrete payload
+explicitly and returns `nothing` otherwise.
+
 The mapping is open. A type outside this table becomes an `@api` type once
 its own module adds methods for it to `carrier_type`, [`to_carrier`](@ref)
 and [`from_carrier`](@ref); an `isbits` struct can be its own carrier, with
 all three methods the identity.
 """
-carrier_type(::Type{T}) where {T <: _API_SCALARS} = T
+carrier_type(::Type{T}) where {T <: _API_SCALARS} = isconcretetype(T) ? T : nothing
 carrier_type(::Type{Ptr{T}}) where {T} = Ptr{T}
 carrier_type(::Type{String}) = CString{:borrowed}
 carrier_type(::Type{Vector{String}}) = CStrArray{:borrowed}
-carrier_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} = CDict{:borrowed, V}
+carrier_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} =
+    isconcretetype(V) ? CDict{:borrowed, V} : nothing
 # `Nothing` unifies with `Union{T,Nothing} where T` (T = Union{}), which
 # throws on an unbound static parameter, so it needs its own method.
 # `Nothing` is return-only and has no carrier.
 carrier_type(::Type{Nothing}) = nothing
-carrier_type(::Type{Union{T, Nothing}}) where {T <: _API_SCALARS} = COpt{T}
-carrier_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} = CArray{:borrowed, T, N}
+carrier_type(::Type{Union{T, Nothing}}) where {T <: _API_SCALARS} =
+    isconcretetype(T) ? COpt{T} : nothing
+carrier_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
+    isconcretetype(T) ? CArray{:borrowed, T, N} : nothing
 carrier_type(::Type) = nothing
 
 """
@@ -100,11 +110,14 @@ type: an argument borrows the caller's buffer, while a return is a fresh
 Julia allocation the consumer must release, so it is `:owned`.
 `Vector{String}` needs its own method: the `Array` method below is the more
 specific signature and would otherwise shadow its [`CStrArray`](@ref)
-carrier.
+carrier. The concrete-payload demand is the same as in
+[`carrier_type`](@ref).
 """
 carrier_return_type(::Type{Vector{String}}) = CStrArray{:owned}
-carrier_return_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} = CDict{:owned, V}
-carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} = CArray{:owned, T, N}
+carrier_return_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} =
+    isconcretetype(V) ? CDict{:owned, V} : nothing
+carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
+    isconcretetype(T) ? CArray{:owned, T, N} : nothing
 carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 
 """
@@ -426,9 +439,13 @@ macro api(args...)
         )
     )
 
+    # `Base.@__doc__` marks which definition a docstring written above the
+    # `@api` call binds to. Without it the docsystem has nothing to attach to
+    # in the returned block and the function is undocumented in Julia as well
+    # as in Python.
     return esc(
         quote
-            $fn
+            Base.@__doc__ $fn
             $wrapper
             $registration
             nothing

@@ -684,6 +684,69 @@ using Test
         )
     end
 
+    @testset "carrier_type rejects a union of scalars" begin
+        # `_API_SCALARS` is itself a Union, so `T <: _API_SCALARS` accepts a
+        # union OF scalars. `CArray`/`CDict` are isbits whatever the payload
+        # (they hold only a pointer), so the isbits check on the carrier does
+        # not catch it and the failure would surface as a juliac or
+        # `unsafe_wrap` error much later.
+        U = Union{Int64, Float64}
+        for f in (JLWInterop.carrier_type, JLWInterop.carrier_return_type)
+            @test isnothing(f(Vector{U}))
+            @test isnothing(f(Matrix{U}))
+            @test isnothing(f(Dict{String, U}))
+        end
+        @test isnothing(JLWInterop.carrier_type(U))
+        @test isnothing(JLWInterop.carrier_type(Union{Int64, Float64, Nothing}))
+        # The concrete forms still map.
+        @test JLWInterop.carrier_type(Vector{Int64}) === CArray{:borrowed, Int64, 1}
+        @test JLWInterop.carrier_type(Dict{String, Int64}) === CDict{:borrowed, Int64}
+        @test JLWInterop.carrier_type(Union{Int64, Nothing}) === COpt{Int64}
+
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestUnion)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(const U = Union{Int64, Float64}))
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function unionarg(a::Vector{U})::Int64
+                    1
+                end
+            )
+        )
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function unionret(n::Int64)::Vector{U}
+                    U[n]
+                end
+            )
+        )
+    end
+
+    @testset "@api passes the definition through Base.@__doc__" begin
+        # A triple-quoted block above `@api` is the idiomatic place to write
+        # a docstring; without `Base.@__doc__` it would document the macro
+        # call's value and leave the Julia function undocumented too.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestDoc)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, Expr(
+                :macrocall, GlobalRef(Core, Symbol("@doc")), LineNumberNode(0),
+                "Doubles it.\n",
+                :(
+                    JLWInterop.@api function twice(x::Float64)::Float64
+                        2x
+                    end
+                )
+            )
+        )
+        @test occursin("Doubles it.", string(Core.eval(m, :(@doc twice))))
+        # The docstring the sidecar and the Python façade carry is still the
+        # macro's own argument, which this form does not set.
+        @test only(JLWInterop._API).doc == ""
+    end
+
     @testset "@api rejects a carrier that is not isbits" begin
         # A library may register any carrier it likes, but the error boundary
         # returns a zero-filled one when the body throws, and `_zero_carrier`
