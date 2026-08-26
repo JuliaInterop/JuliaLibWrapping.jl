@@ -370,10 +370,10 @@ Paths reach the subprocess through `ARGS` rather than interpolation into the
 subprocess reads no input and runs interpreted (`--compile=min -O0`): it
 only resolves the project, includes one file, and writes JSON.
 
-The subprocess instantiates `project` before loading `JLWInterop`. A
-Manifest it creates is removed afterwards, so generating metadata leaves
-`project` as it was found; `juliac` instantiates its own copy in a separate
-temp dir, so nothing else resolves this one.
+The subprocess instantiates `project` before loading `JLWInterop`. A Manifest
+it creates is removed afterwards and one it re-resolves is written back, so
+generating metadata leaves `project` as it was found; `juliac` instantiates
+its own copy in a separate temp dir, so nothing else resolves this one.
 """
 function _maybe_dump_api_metadata(
         entry::AbstractString, project::AbstractString,
@@ -400,11 +400,22 @@ function _maybe_dump_api_metadata(
     # cannot load `Pkg` for the driver's `instantiate`.
     cmd = addenv(cmd, "JULIA_LOAD_PATH" => nothing)
     verbose && @info "JuliaLibWrapping: dumping API metadata sidecar" cmd
-    manifests_before = _manifest_files(project)
+    # `Pkg.instantiate` may re-resolve a Manifest the author already had, so
+    # keep its bytes and put them back: the sidecar must not rewrite anyone's
+    # lockfile.
+    manifests_before = Dict(
+        f => read(joinpath(project, f)) for f in _manifest_files(project)
+    )
     output = IOBuffer()
     ok = success(pipeline(cmd; stdin = devnull, stdout = output, stderr = output))
     for f in _manifest_files(project)
-        f in manifests_before || rm(joinpath(project, f); force = true)
+        path = joinpath(project, f)
+        before = get(manifests_before, f, nothing)
+        if isnothing(before)
+            rm(path; force = true)
+        elseif read(path) != before
+            write(path, before)
+        end
     end
     ok || error(
         "failed to produce the API metadata sidecar for $entry:\n$(String(take!(output)))"

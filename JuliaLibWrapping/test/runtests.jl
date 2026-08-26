@@ -1606,9 +1606,9 @@ end
             @test !occursin("def from_bytes(cls, b):", bindings)
             @test occursin("def as_bytes(self):", bindings)
             @test occursin("def as_str(self):", bindings)
-            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
+            @test occursin("        if not self.data:\n            return", bindings)
             @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
-            @test occursin("        self._freed = True", bindings)
+            @test occursin("        self.data = type(self.data)()\n        self.length = 0", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstring_owned_lowlevel.py"), String)
             @test bindings == golden
@@ -1731,8 +1731,8 @@ end
             @test !occursin("def from_list(cls, items):", owned_body)
             # Low-level release is idempotent.
             @test occursin("def free(self):", owned_body)
-            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
-            @test occursin("self._freed = True", owned_body)
+            @test occursin("if not self.data:\n            return", owned_body)
+            @test occursin("self.data = type(self.data)()\n        self.length = 0", owned_body)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1815,8 +1815,11 @@ end
             @test !occursin("def free(self):", borrowed_body)
             @test !occursin("def from_dict(cls, d):", owned_body)
             @test occursin("def free(self):", owned_body)
-            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
-            @test occursin("self._freed = True", owned_body)
+            @test occursin("if not self.keys:\n            return", owned_body)
+            @test occursin(
+                "self.keys = type(self.keys)()\n        self.values = type(self.values)()\n" *
+                    "        self.length = 0", owned_body
+            )
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
@@ -2244,13 +2247,13 @@ end
 
             # An owning class has no `from_numpy`: Python has no Julia
             # allocation to hand over. It does get `free()`, made idempotent by
-            # a Python-side attribute since the struct carries no flag.
+            # nulling the struct's own data pointer.
             @test occursin("class CVector_owned_Float64(ctypes.Structure):", bindings)
             @test !occursin("def from_numpy(cls, arr):", bindings)
             @test !occursin("owned=0", bindings)
-            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
+            @test occursin("        if not self.data:\n            return", bindings)
             @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
-            @test occursin("        self._freed = True", bindings)
+            @test occursin("        self.data = type(self.data)()\n        self.dims = type(self.dims)()", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_carray_owned_lowlevel.py"), String)
             @test bindings == golden
@@ -2525,13 +2528,72 @@ end
             dest = PythonTarget(dir, "mylib_py", "mylib")
             @test_throws ErrorException write_wrapper(dest, info; api_metadata = bad)
             @test !isfile(joinpath(dir, "mylib_py", "_facade.py"))
-            @test isempty(filter(endswith(".tmp"), readdir(joinpath(dir, "mylib_py"))))
+            # Nor does the scratch file the emission wrote into survive.
+            @test readdir(joinpath(dir, "mylib_py")) == ["_lowlevel.py"]
 
             # The next build still emits a complete façade.
             meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
             write_wrapper(dest, info; api_metadata = meta)
             @test read(joinpath(dir, "mylib_py", "_facade.py"), String) ==
                 read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+        end
+    end
+
+    @testset "owned free() guards on the carrier's own field" begin
+        # An owning carrier is normally reached as `result.value`, and every
+        # read of a nested `ctypes` struct field builds a fresh Python wrapper
+        # over the same buffer. A flag stored on the wrapper is therefore gone
+        # by the next read, and `free()` would release the same buffer on every
+        # call. The guard is a field of the struct instead, nulled after the
+        # release; the counts are reset with it so an accessor called after
+        # `free()` cannot read the released memory. `test/smoke.py` in
+        # `examples/boundary` calls `free()` twice against the real allocator.
+        for (stem, pkg, lib) in (
+                ("carray_owned", "carray_owned_demo", "libcarrayowned"),
+                ("cstrarray", "cstrarray_demo", "libcstrarray"),
+                ("cdict", "cdict_demo", "libcdict"),
+            )
+            abi = read_abi_info("bindinginfo_$stem.json")
+            mktempdir() do path
+                write_wrapper(PythonTarget(path, pkg, lib), abi)
+                bindings = read(joinpath(path, pkg, "_lowlevel.py"), String)
+                @test occursin("def free(self):", bindings)
+                @test !occursin("_freed", bindings)
+                # Every owned carrier here holds strings, so `CString_owned`
+                # is emitted alongside the kind under test.
+                @test occursin("if not self.data:", bindings)
+                @test occursin("self.data = type(self.data)()", bindings)
+                @test occursin("self.length = 0", bindings)
+            end
+        end
+
+        # Per kind: the guard field and what `free()` resets.
+        abi = read_abi_info("bindinginfo_carray_owned.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "carray_owned_demo", "libcarrayowned"), abi)
+            bindings = read(joinpath(path, "carray_owned_demo", "_lowlevel.py"), String)
+            # A CArray counts through `dims`, which is a ctypes array.
+            @test occursin("self.dims = type(self.dims)()", bindings)
+        end
+        abi = read_abi_info("bindinginfo_cdict.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "cdict_demo", "libcdict"), abi)
+            bindings = read(joinpath(path, "cdict_demo", "_lowlevel.py"), String)
+            # A CDict owns two buffers; the keys pointer is the guard.
+            @test occursin("if not self.keys:", bindings)
+            @test occursin("self.keys = type(self.keys)()", bindings)
+            @test occursin("self.values = type(self.values)()", bindings)
+        end
+
+        # Without release symbols `free()` still guards on the field, so a
+        # zero-filled carrier is a no-op rather than a raise.
+        abi = read_abi_info("bindinginfo_cstrarray_nofree.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "cstrarray_nofree_demo", "libcstrarraynofree"), abi)
+            bindings = read(joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py"), String)
+            @test occursin("if not self.data:", bindings)
+            @test !occursin("_freed", bindings)
+            @test occursin("raise RuntimeError(\"this library does not export release", bindings)
         end
     end
 

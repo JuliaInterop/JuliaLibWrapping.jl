@@ -684,6 +684,65 @@ using Test
         )
     end
 
+    @testset "@api rejects a carrier that is not isbits" begin
+        # A library may register any carrier it likes, but the error boundary
+        # returns a zero-filled one when the body throws, and `_zero_carrier`
+        # can only zero an isbits type. Without this check the throw lands
+        # inside the wrapper's `catch`, which aborts a trimmed library.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestNonBits)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                mutable struct Boxed
+                    x::Int64
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.carrier_type(::Type{Boxed}) = Boxed;
+                JLWInterop.carrier_return_type(::Type{Boxed}) = Boxed;
+                JLWInterop.to_carrier(b::Boxed) = b;
+                JLWInterop.from_carrier(::Type{Boxed}, c::Boxed) = c
+            )
+        )
+        @test !isbitstype(Core.eval(m, :Boxed))
+        @test_throws(
+            "argument 'b' of type Main.ApiTestNonBits.Boxed maps to the carrier " *
+                "Main.ApiTestNonBits.Boxed, which is not isbits",
+            Core.eval(
+                m, :(
+                    JLWInterop.@api function takes(b::Boxed)::Int64
+                        b.x
+                    end
+                )
+            )
+        )
+        @test_throws(
+            "return type Main.ApiTestNonBits.Boxed maps to the carrier",
+            Core.eval(
+                m, :(
+                    JLWInterop.@api function gives(x::Int64)::Boxed
+                        Boxed(x)
+                    end
+                )
+            )
+        )
+        # The reason travels with the message: nothing else explains why an
+        # isbits carrier is required.
+        @test_throws(
+            "only an isbits carrier can be zeroed",
+            Core.eval(
+                m, :(
+                    JLWInterop.@api function gives2(x::Int64)::Boxed
+                        Boxed(x)
+                    end
+                )
+            )
+        )
+    end
+
     @testset "@api rejects shapes it cannot take apart" begin
         JLWInterop.clear_api!()
         m = Module(:ApiTestK)

@@ -70,7 +70,7 @@ end
 end
 
 # The rest of this module is hand-written: `@api` and `Base.@ccallable`
-# entrypoints coexist in one library. These three keep carrier ownership
+# entrypoints coexist in one library. These four keep carrier ownership
 # visible at the boundary, which `@api`'s value-level signatures hide.
 
 # A borrowed pass-through must not free the caller's buffer.
@@ -82,9 +82,13 @@ Base.@ccallable function echo_dict(d::CDict{:borrowed, Float64})::CDict{:borrowe
     return d
 end
 
-# The façade copies and frees this owned return.
+# The façade copies and frees these owned returns.
 Base.@ccallable function make_vec(n::Int64)::CVector{:owned, Float64}
     return CArray{:owned}(collect(Float64, 1:n))
+end
+
+Base.@ccallable function make_str()::CString{:owned}
+    return CString{:owned}("héllo")
 end
 
 end # module

@@ -432,7 +432,9 @@ function write_wrapper(
         # Emit into a temporary file and rename on success. Writing straight
         # to `_facade.py` would leave an empty one behind when emission
         # throws, and the `isfile` check above would then keep it forever.
-        tmp_path = facade_path * ".tmp"
+        # The name is unique so that two builds writing into one directory
+        # cannot share it, and it sits in `pkgdir` so the rename is atomic.
+        tmp_path = tempname(pkgdir)
         try
             open(tmp_path, "w") do f
                 _write_facade_stub(f, dest, abi_info, typedict, needs_jlwerror, api_metadata)
@@ -473,12 +475,18 @@ function write_wrapper(
 end
 
 """
-    _emit_owned_free_method(f, buffers_desc, free_lines, release_present)
+    _emit_owned_free_method(f, buffers_desc, free_lines, release_present, null_fields, zero_fields)
 
 Emit the `.free()` method for an `:owned` carrier class. Ownership is a type
-parameter, so the struct carries no ownership field and idempotence rides on
-a Python-side `_freed` attribute set after the release call. Borrowed classes
-get no `free()` at all.
+parameter, so the struct carries no ownership field; idempotence rides on the
+carrier's own pointer fields, which `free()` nulls after releasing them.
+Borrowed classes get no `free()` at all.
+
+The guard has to live in the struct's bytes rather than on the Python object:
+an owning carrier is usually reached as `result.value`, and every read of a
+`ctypes` struct field builds a *fresh* wrapper over the same buffer, so an
+attribute set on one wrapper is gone by the next read and a `_freed` flag
+would never trip. Field writes reach the shared buffer and do persist.
 
 Without release entrypoints the body raises a `RuntimeError`; the façade never
 reaches it, since an owning return is demoted to a mechanical re-export in
@@ -487,25 +495,45 @@ gets a clear diagnosis instead of an `AttributeError`.
 
 `buffers_desc` fills in "buffer" or "buffers" in the docstring; `free_lines`
 are the release-call statements (already indented to 8 spaces) emitted only
-when `release_present`.
+when `release_present`. `null_fields` names the pointer (or dimension-tuple)
+fields to reset — the first doubles as the guard — and `zero_fields` the
+integer counts, so an accessor called after `free()` reads a null pointer with
+a zero count instead of released memory.
 """
 function _emit_owned_free_method(
         f::IO, buffers_desc::AbstractString,
-        free_lines::Vector{String}, release_present::Bool
+        free_lines::Vector{String}, release_present::Bool,
+        null_fields::Vector{String}, zero_fields::Vector{String}
     )
+    guard = first(null_fields)
     println(f, "")
     println(f, "    def free(self):")
     println(f, "        \"\"\"Free the Julia-allocated ", buffers_desc, ".")
     println(f, "")
-    println(f, "        Idempotent: a second call is a no-op. For callers who bypass the")
-    println(f, "        façade's convert-then-free wrapper and talk to `_lowlevel` directly.\"\"\"")
-    println(f, "        if getattr(self, \"_freed\", False):")
+    println(f, "        Idempotent: a second call is a no-op. The guard is this struct's own")
+    println(f, "        `", guard, "` field rather than a Python attribute: reading a struct field")
+    println(f, "        nested in a result yields a fresh wrapper each time, so a flag set on the")
+    println(f, "        wrapper would be lost, while a field write reaches the shared buffer.")
+    if release_present
+        println(f, "        Freeing nulls `", guard, "` and resets the other fields, so an accessor")
+        println(f, "        called afterwards cannot read the released memory.")
+    end
+    println(f, "")
+    println(f, "        For callers who bypass the façade's convert-then-free wrapper and talk")
+    println(f, "        to `_lowlevel` directly.\"\"\"")
+    println(f, "        if not self.", guard, ":")
     println(f, "            return")
     if release_present
         for line in free_lines
             println(f, line)
         end
-        return println(f, "        self._freed = True")
+        for field in null_fields
+            println(f, "        self.", field, " = type(self.", field, ")()")
+        end
+        for field in zero_fields
+            println(f, "        self.", field, " = 0")
+        end
+        return nothing
     else
         return println(
             f, "        raise RuntimeError(\"this library does not export release entrypoints; ",
@@ -589,7 +617,7 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
-        release_present
+        release_present, ["data", "dims"], String[]
     )
 end
 
@@ -638,7 +666,7 @@ function _write_cstring_helpers(f::IO, csinfo, release_present::Bool)
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
-        release_present
+        release_present, ["data"], ["length"]
     )
 end
 
@@ -712,7 +740,7 @@ function _write_cstrarray_helpers(
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free_strings(self.data, self.length)"],
-        release_present
+        release_present, ["data"], ["length"]
     )
 end
 
@@ -754,7 +782,7 @@ function _write_cdict_helpers(
             "        _lib.jlw_free_strings(self.keys, self.length)",
             "        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))",
         ],
-        release_present
+        release_present, ["keys", "values"], ["length"]
     )
 end
 

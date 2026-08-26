@@ -59,6 +59,51 @@ assert b.echo_dict({"k": 1.0}) == {"k": 1.0}
 
 # Owning returns are copied and freed.
 assert np.array_equal(b.make_vec(4), np.array([1.0, 2.0, 3.0, 4.0]))
+assert b.make_str() == "héllo"
+
+# `free()` is idempotent, against the real allocator. An owning `@api` return
+# arrives nested in a JLWResult, and every read of `.value` builds a fresh
+# Python wrapper over the same buffer — so the guard has to live in the
+# carrier's own fields. A second release here would be a double free (N+1 of
+# them for the string array), which glibc turns into an abort.
+ll = b._lowlevel
+
+r = ll.boundary_upcase_strs(ll.CStrArray_borrowed.from_list(["a", "bb"]))
+assert r.value.as_list() == ["A", "BB"]
+r.value.free()
+r.value.free()
+r.value.free()
+assert r.value.as_list() == []  # nulled, so nothing is read back
+
+r = ll.boundary_make_dict(3)
+assert r.value.as_dict() == {"k1": 1.0, "k2": 2.0, "k3": 3.0}
+r.value.free()
+r.value.free()
+assert r.value.as_dict() == {}
+
+r = ll.boundary_scale_vec(
+    ll.CVector_borrowed_Float64.from_numpy(np.asfortranarray([1.0, 2.0])), 2.0)
+assert list(r.value.as_numpy()) == [2.0, 4.0]
+r.value.free()
+r.value.free()
+try:
+    r.value.as_numpy()
+    raise AssertionError("expected a null-pointer error after free")
+except ValueError:
+    pass
+
+# A bare owning return, the shape a hand-written entrypoint gives.
+s = ll.make_str()
+assert s.as_str() == "héllo"
+s.free()
+s.free()
+assert s.as_str() == ""
+
+v = ll.make_vec(4)
+assert list(v.as_numpy()) == [1.0, 2.0, 3.0, 4.0]
+v.free()
+v.free()
+print("free() idempotence: OK")
 
 # Exercise repeated owning and borrowed returns.
 for _ in range(10_000):

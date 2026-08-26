@@ -134,12 +134,20 @@ class CString_owned(ctypes.Structure):
     def free(self):
         """Free the Julia-allocated buffer.
 
-        Idempotent: a second call is a no-op. For callers who bypass the
-        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
-        if getattr(self, "_freed", False):
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `data` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `data` and resets the other fields, so an accessor
+        called afterwards cannot read the released memory.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.data:
             return
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
-        self._freed = True
+        self.data = type(self.data)()
+        self.length = 0
 
 class CDict_owned_Int32(ctypes.Structure):
     _fields_ = [
@@ -159,13 +167,22 @@ class CDict_owned_Int32(ctypes.Structure):
     def free(self):
         """Free the Julia-allocated buffers.
 
-        Idempotent: a second call is a no-op. For callers who bypass the
-        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
-        if getattr(self, "_freed", False):
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `keys` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `keys` and resets the other fields, so an accessor
+        called afterwards cannot read the released memory.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.keys:
             return
         _lib.jlw_free_strings(self.keys, self.length)
         _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
-        self._freed = True
+        self.keys = type(self.keys)()
+        self.values = type(self.values)()
+        self.length = 0
 
 _lib.take_dict_i32.argtypes = [CDict_borrowed_Int32]
 _lib.take_dict_i32.restype = ctypes.c_int64

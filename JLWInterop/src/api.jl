@@ -244,6 +244,19 @@ function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String,
         label == "return" ? "@api $__module__.$fname: return type $T has no carrier mapping" :
             "@api $__module__.$fname: argument '$label' of type $T has no carrier mapping",
     )
+    # A wrapper whose body throws returns a zero-filled carrier, which
+    # `_zero_carrier` can build only for an `isbits` type. Rejecting the
+    # carrier here turns what would otherwise be a throw from inside the
+    # wrapper's `catch` — fatal in a trimmed library, and reachable only on the
+    # error path — into a macro-expansion error.
+    isbitstype(C) || error(
+        (
+            label == "return" ? "@api $__module__.$fname: return type $T" :
+                "@api $__module__.$fname: argument '$label' of type $T"
+        ) *
+            " maps to the carrier $C, which is not isbits. On a thrown error the wrapper " *
+            "returns a zero-filled carrier, and only an isbits carrier can be zeroed."
+    )
     return T, C
 end
 
