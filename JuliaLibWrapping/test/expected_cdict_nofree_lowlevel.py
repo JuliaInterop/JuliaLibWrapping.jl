@@ -98,10 +98,14 @@ class CString_owned(ctypes.Structure):
 
     def as_bytes(self):
         """Return a copy of the underlying bytes as a Python `bytes` object."""
+        if not self.data:
+            raise RuntimeError("CString_owned has already been freed")
         return ctypes.string_at(self.data, self.length)
 
     def as_str(self):
         """Return the underlying bytes decoded as UTF-8."""
+        if not self.data:
+            raise RuntimeError("CString_owned has already been freed")
         return self.as_bytes().decode("utf-8")
 
     def free(self):
@@ -153,6 +157,8 @@ class CDict_owned_Float64(ctypes.Structure):
     ]
 
     def as_dict(self):
+        if not self.keys:
+            raise RuntimeError("CDict_owned_Float64 has already been freed")
         out = {}
         for i in range(self.length):
             e = self.keys[i]

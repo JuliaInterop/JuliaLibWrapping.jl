@@ -496,9 +496,9 @@ gets a clear diagnosis instead of an `AttributeError`.
 `buffers_desc` fills in "buffer" or "buffers" in the docstring; `free_lines`
 are the release-call statements (already indented to 8 spaces) emitted only
 when `release_present`. `null_fields` names the pointer (or dimension-tuple)
-fields to reset — the first doubles as the guard — and `zero_fields` the
-integer counts, so an accessor called after `free()` reads a null pointer with
-a zero count instead of released memory.
+fields to reset — the first doubles as the guard, and as the field every
+accessor's [`_emit_freed_guard`](@ref) tests — and `zero_fields` the integer
+counts.
 """
 function _emit_owned_free_method(
         f::IO, buffers_desc::AbstractString,
@@ -515,8 +515,9 @@ function _emit_owned_free_method(
     println(f, "        nested in a result yields a fresh wrapper each time, so a flag set on the")
     println(f, "        wrapper would be lost, while a field write reaches the shared buffer.")
     if release_present
-        println(f, "        Freeing nulls `", guard, "` and resets the other fields, so an accessor")
-        println(f, "        called afterwards cannot read the released memory.")
+        println(f, "        Freeing nulls `", guard, "` and resets the other fields; an accessor")
+        println(f, "        called afterwards sees the null and raises RuntimeError rather than")
+        println(f, "        reading the released memory or returning an empty result.")
     end
     println(f, "")
     println(f, "        For callers who bypass the façade's convert-then-free wrapper and talk")
@@ -543,7 +544,27 @@ function _emit_owned_free_method(
 end
 
 """
-    _write_carray_helpers(f, cainfo, release_present)
+    _emit_freed_guard(f, classname, ptr_field)
+
+Emit the two-line guard that opens every accessor on an `:owned` carrier
+class. `free()` nulls `ptr_field` and zeroes the counts beside it, so without
+this guard an accessor run afterwards reads a null pointer with a zero count
+and returns an empty result — an empty numpy array over address 0, an empty
+list, an empty dict, an empty string — which the caller cannot tell from a
+genuine answer. The guard turns that into a `RuntimeError` naming the class.
+
+`ptr_field` must be the field `free()` nulls first, the same one it guards on.
+Borrowed classes get no guard: nothing nulls their pointer, so it could only
+fire on a carrier the caller zeroed by hand, and "already been freed" would
+misname what happened to a class that has no `free()`.
+"""
+function _emit_freed_guard(f::IO, classname::AbstractString, ptr_field::AbstractString)
+    println(f, "        if not self.", ptr_field, ":")
+    return println(f, "            raise RuntimeError(\"", classname, " has already been freed\")")
+end
+
+"""
+    _write_carray_helpers(f, cainfo, classname, release_present)
 
 Emit the conversion methods on a recognized `CArray` `ctypes` class. The
 class's ownership decides its API: a `:borrowed` class gets `from_numpy`
@@ -552,7 +573,9 @@ class's ownership decides its API: a `:borrowed` class gets `from_numpy`
 `:owned` class gets `as_numpy` and `free()`, and no `from_numpy` — Python
 has no Julia allocation to hand over.
 """
-function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
+function _write_carray_helpers(
+        f::IO, cainfo, classname::AbstractString, release_present::Bool
+    )
     ctype = cainfo.ctype
     dtype = cainfo.dtype
     ndim = cainfo.ndim
@@ -600,20 +623,23 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
     end
     println(f, "")
     println(f, "    def as_numpy(self):")
+    owned = cainfo.ownership === :owned
     if ndim == 1
         println(f, "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"")
+        owned && _emit_freed_guard(f, classname, "data")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))")
     else
         println(f, "        \"\"\"Return a ", ndim, "-D column-major numpy view of the underlying buffer (no copy).")
         println(f, "")
         println(f, "        The view has shape `tuple(self.dims)` and Fortran (column-major) strides,")
         println(f, "        matching the storage layout.\"\"\"")
+        owned && _emit_freed_guard(f, classname, "data")
         println(f, "        # Read the column-major buffer as reversed-shape C-order then transpose:")
         println(f, "        # `.T` reverses all axes, yielding a view with the natural Fortran-order")
         println(f, "        # shape and strides.")
         println(f, "        return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T")
     end
-    cainfo.ownership === :owned || return nothing
+    owned || return nothing
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
@@ -622,12 +648,15 @@ function _write_carray_helpers(f::IO, cainfo, release_present::Bool)
 end
 
 """
-    _write_cstring_helpers(f, csinfo, release_present)
+    _write_cstring_helpers(f, csinfo, classname, release_present)
 
 Emit conversion methods for a recognized `CString` `ctypes` class. Borrowed
 classes also get constructors; owned classes get `free()`.
 """
-function _write_cstring_helpers(f::IO, csinfo, release_present::Bool)
+function _write_cstring_helpers(
+        f::IO, csinfo, classname::AbstractString, release_present::Bool
+    )
+    owned = csinfo.ownership === :owned
     # CString helpers use ctypes only.
     if csinfo.ownership === :borrowed
         println(f, "")
@@ -657,12 +686,14 @@ function _write_cstring_helpers(f::IO, csinfo, release_present::Bool)
     println(f, "")
     println(f, "    def as_bytes(self):")
     println(f, "        \"\"\"Return a copy of the underlying bytes as a Python `bytes` object.\"\"\"")
+    owned && _emit_freed_guard(f, classname, "data")
     println(f, "        return ctypes.string_at(self.data, self.length)")
     println(f, "")
     println(f, "    def as_str(self):")
     println(f, "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"")
+    owned && _emit_freed_guard(f, classname, "data")
     println(f, "        return self.as_bytes().decode(\"utf-8\")")
-    csinfo.ownership === :owned || return nothing
+    owned || return nothing
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))"],
@@ -706,15 +737,17 @@ function _emit_cstring_array(
 end
 
 """
-    _write_cstrarray_helpers(f, csainfo, cstring_classname, release_present)
+    _write_cstrarray_helpers(f, csainfo, classname, cstring_classname, release_present)
 
 Emit the conversion methods on a recognized `CStrArray` `ctypes` class. The
 borrowed class gets `from_list` and `as_list`; the owned class gets `as_list`
 and `free()`.
 """
 function _write_cstrarray_helpers(
-        f::IO, csainfo, cstring_classname::AbstractString, release_present::Bool
+        f::IO, csainfo, classname::AbstractString,
+        cstring_classname::AbstractString, release_present::Bool
     )
+    owned = csainfo.ownership === :owned
     if csainfo.ownership === :borrowed
         println(f, "")
         println(f, "    @classmethod")
@@ -731,12 +764,13 @@ function _write_cstrarray_helpers(
     end
     println(f, "")
     println(f, "    def as_list(self):")
+    owned && _emit_freed_guard(f, classname, "data")
     println(f, "        out = []")
     println(f, "        for i in range(self.length):")
     println(f, "            e = self.data[i]")
     println(f, "            out.append(ctypes.string_at(e.data, e.length).decode(\"utf-8\"))")
     println(f, "        return out")
-    csainfo.ownership === :owned || return nothing
+    owned || return nothing
     return _emit_owned_free_method(
         f, "buffer",
         ["        _lib.jlw_free_strings(self.data, self.length)"],
@@ -745,16 +779,18 @@ function _write_cstrarray_helpers(
 end
 
 """
-    _write_cdict_helpers(f, cdinfo, cstring_classname, release_present)
+    _write_cdict_helpers(f, cdinfo, classname, cstring_classname, release_present)
 
 Emit the conversion methods on a recognized `CDict` `ctypes` class. The
 borrowed class gets `from_dict` and `as_dict`; the owned class gets `as_dict`
 and `free()`.
 """
 function _write_cdict_helpers(
-        f::IO, cdinfo, cstring_classname::AbstractString, release_present::Bool
+        f::IO, cdinfo, classname::AbstractString,
+        cstring_classname::AbstractString, release_present::Bool
     )
     ctype = cdinfo.ctype
+    owned = cdinfo.ownership === :owned
     if cdinfo.ownership === :borrowed
         println(f, "")
         println(f, "    @classmethod")
@@ -769,13 +805,14 @@ function _write_cdict_helpers(
     end
     println(f, "")
     println(f, "    def as_dict(self):")
+    owned && _emit_freed_guard(f, classname, "keys")
     println(f, "        out = {}")
     println(f, "        for i in range(self.length):")
     println(f, "            e = self.keys[i]")
     println(f, "            k = ctypes.string_at(e.data, e.length).decode(\"utf-8\")")
     println(f, "            out[k] = self.values[i]")
     println(f, "        return out")
-    cdinfo.ownership === :owned || return nothing
+    owned || return nothing
     return _emit_owned_free_method(
         f, "buffers",
         [
@@ -960,18 +997,18 @@ function _write_bindings(
             coinfo = _python_copt_info(type, typeinfo)
             if cainfo !== nothing
                 # Emit numpy helpers for supported CArray layouts.
-                _write_carray_helpers(f, cainfo, release_present)
+                _write_carray_helpers(f, cainfo, name, release_present)
             elseif !isnothing(csinfo)
                 # Emit CString conversion helpers.
-                _write_cstring_helpers(f, csinfo, release_present)
+                _write_cstring_helpers(f, csinfo, name, release_present)
             elseif !isnothing(csainfo)
                 # Emit CStrArray conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
-                _write_cstrarray_helpers(f, csainfo, cs_classname, release_present)
+                _write_cstrarray_helpers(f, csainfo, name, cs_classname, release_present)
             elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
                 cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
-                _write_cdict_helpers(f, cdinfo, cs_classname, release_present)
+                _write_cdict_helpers(f, cdinfo, name, cs_classname, release_present)
             elseif !isnothing(coinfo)
                 # Emit COpt conversion helpers.
                 _write_copt_helpers(f, coinfo)

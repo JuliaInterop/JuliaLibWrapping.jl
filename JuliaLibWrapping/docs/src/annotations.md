@@ -117,7 +117,10 @@ end
 ```
 
 The three methods must be defined before the `@api` that uses the type:
-`@api` resolves the signature at expansion time. `Extent` then behaves like
+`@api` resolves the signature at expansion time. The struct must also be
+`isbits`, as `Extent` is: a `mutable struct`, or one with a `String` or
+`Vector` field, is rejected at expansion, because the error branch constructs
+a zero-filled carrier. `Extent` then behaves like
 any other row of the table — the wrapper is
 `Base.@ccallable Boundary_widen(e::Extent, by::Int32)::JLWResult{Extent}`,
 and the Python side gets a `ctypes.Structure` with the struct's fields:

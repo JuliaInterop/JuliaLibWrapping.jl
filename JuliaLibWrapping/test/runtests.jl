@@ -2597,6 +2597,81 @@ end
         end
     end
 
+    @testset "owned accessors raise once the carrier is freed" begin
+        # `free()` nulls the pointer and zeroes the counts, so an unguarded
+        # accessor would read a null pointer with a zero count and return an
+        # empty result — an empty numpy array over address 0, an empty list,
+        # dict or string — which the caller cannot tell from a real answer.
+        # Every accessor on an owning class opens with the same guard on the
+        # field `free()` nulls. `test/smoke.py` in `examples/boundary` calls an
+        # accessor after freeing and asserts the raise against the real
+        # allocator.
+        bindings_for(stem, pkg, lib) = mktempdir() do path
+            write_wrapper(PythonTarget(path, pkg, lib), read_abi_info("bindinginfo_$stem.json"))
+            return read(joinpath(path, pkg, "_lowlevel.py"), String)
+        end
+
+        carray = bindings_for("carray_owned", "carray_owned_demo", "libcarrayowned")
+        @test occursin(
+            "    def as_numpy(self):\n" *
+                "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"\n" *
+                "        if not self.data:\n" *
+                "            raise RuntimeError(\"CVector_owned_Float64 has already been freed\")\n",
+            carray
+        )
+
+        # A CString has two accessors and either is an entry point, so both
+        # guard rather than one leaning on the other.
+        cstring = bindings_for("cstring_owned", "cstring_owned_demo", "libcstringowned")
+        guard = "        if not self.data:\n" *
+            "            raise RuntimeError(\"CString_owned has already been freed\")\n"
+        @test occursin(
+            "    def as_bytes(self):\n" *
+                "        \"\"\"Return a copy of the underlying bytes as a Python `bytes` object.\"\"\"\n" *
+                guard, cstring
+        )
+        @test occursin(
+            "    def as_str(self):\n" *
+                "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"\n" *
+                guard, cstring
+        )
+
+        cstrarray = bindings_for("cstrarray", "cstrarray_demo", "libcstrarray")
+        @test occursin(
+            "    def as_list(self):\n" *
+                "        if not self.data:\n" *
+                "            raise RuntimeError(\"CStrArray_owned has already been freed\")\n",
+            cstrarray
+        )
+
+        # A CDict owns two buffers and guards on `keys`, the field `free()`
+        # nulls first.
+        cdict = bindings_for("cdict", "cdict_demo", "libcdict")
+        @test occursin(
+            "    def as_dict(self):\n" *
+                "        if not self.keys:\n" *
+                "            raise RuntimeError(\"CDict_owned_Float64 has already been freed\")\n",
+            cdict
+        )
+
+        # Owning earns the guard, not the presence of release entrypoints:
+        # without them `free()` raises, but the error path still hands back a
+        # zero-filled carrier that would otherwise read as empty.
+        nofree = bindings_for("cstrarray_nofree", "cstrarray_nofree_demo", "libcstrarraynofree")
+        @test occursin("raise RuntimeError(\"CStrArray_owned has already been freed\")", nofree)
+
+        # Borrowed classes get no guard: nothing nulls their pointer, and they
+        # have no `free()` for the message to refer to.
+        for (stem, pkg, lib) in (
+                ("cmatrix", "cmatrix_demo", "libcmatrix"),
+                ("cstring", "cstring_demo", "libcstring"),
+            )
+            borrowed = bindings_for(stem, pkg, lib)
+            @test occursin("(self):", borrowed)
+            @test !occursin("has already been freed", borrowed)
+        end
+    end
+
     @testset "opaque payloads pass through only under `@api`" begin
         # The same ABI, with and without a sidecar entry. A sidecar entry
         # means the author wrote the signature for these bindings, so the

@@ -66,44 +66,58 @@ assert b.make_str() == "héllo"
 # Python wrapper over the same buffer — so the guard has to live in the
 # carrier's own fields. A second release here would be a double free (N+1 of
 # them for the string array), which glibc turns into an abort.
+#
+# Reading a freed carrier raises. Without the guard the accessor would read
+# the nulled pointer with its zeroed count and hand back an empty list, dict
+# or string — or, for `as_numpy`, an empty array over address 0 — none of
+# which a caller can tell apart from a real answer.
 ll = b._lowlevel
+
+
+def freed(carrier, accessor, classname):
+    """Assert `accessor` on an already-freed `carrier` raises, naming the class."""
+    try:
+        getattr(carrier, accessor)()
+    except RuntimeError as e:
+        assert str(e) == f"{classname} has already been freed", str(e)
+        return
+    raise AssertionError(f"{classname}.{accessor}() did not raise after free()")
+
 
 r = ll.boundary_upcase_strs(ll.CStrArray_borrowed.from_list(["a", "bb"]))
 assert r.value.as_list() == ["A", "BB"]
 r.value.free()
 r.value.free()
 r.value.free()
-assert r.value.as_list() == []  # nulled, so nothing is read back
+freed(r.value, "as_list", "CStrArray_owned")
 
 r = ll.boundary_make_dict(3)
 assert r.value.as_dict() == {"k1": 1.0, "k2": 2.0, "k3": 3.0}
 r.value.free()
 r.value.free()
-assert r.value.as_dict() == {}
+freed(r.value, "as_dict", "CDict_owned_Float64")
 
 r = ll.boundary_scale_vec(
     ll.CVector_borrowed_Float64.from_numpy(np.asfortranarray([1.0, 2.0])), 2.0)
 assert list(r.value.as_numpy()) == [2.0, 4.0]
 r.value.free()
 r.value.free()
-try:
-    r.value.as_numpy()
-    raise AssertionError("expected a null-pointer error after free")
-except ValueError:
-    pass
+freed(r.value, "as_numpy", "CVector_owned_Float64")
 
 # A bare owning return, the shape a hand-written entrypoint gives.
 s = ll.make_str()
 assert s.as_str() == "héllo"
 s.free()
 s.free()
-assert s.as_str() == ""
+freed(s, "as_str", "CString_owned")
+freed(s, "as_bytes", "CString_owned")
 
 v = ll.make_vec(4)
 assert list(v.as_numpy()) == [1.0, 2.0, 3.0, 4.0]
 v.free()
 v.free()
-print("free() idempotence: OK")
+freed(v, "as_numpy", "CVector_owned_Float64")
+print("free() idempotence and read-after-free: OK")
 
 # Exercise repeated owning and borrowed returns.
 for _ in range(10_000):
