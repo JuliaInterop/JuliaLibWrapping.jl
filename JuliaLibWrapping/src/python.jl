@@ -429,8 +429,18 @@ function write_wrapper(
     # types or primitives; anything else is re-exported with a TODO comment.
     facade_path = joinpath(pkgdir, "_facade.py")
     if !isfile(facade_path)
-        open(facade_path, "w") do f
-            _write_facade_stub(f, dest, abi_info, typedict, needs_jlwerror, api_metadata)
+        # Emit into a temporary file and rename on success. Writing straight
+        # to `_facade.py` would leave an empty one behind when emission
+        # throws, and the `isfile` check above would then keep it forever.
+        tmp_path = facade_path * ".tmp"
+        try
+            open(tmp_path, "w") do f
+                _write_facade_stub(f, dest, abi_info, typedict, needs_jlwerror, api_metadata)
+            end
+            mv(tmp_path, facade_path)
+        catch
+            rm(tmp_path; force = true)
+            rethrow()
         end
     end
 

@@ -2507,6 +2507,34 @@ end
         @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
     end
 
+    @testset "a failed façade emission leaves no file" begin
+        # `_facade.py` is written once and then kept, so an empty one left
+        # behind by a failed emission would be shipped by every later build.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        bad = Dict{String, Any}(
+            "mylib_scale" => Dict{String, Any}(
+                "name" => "scale!", "args" => ["x"],
+                "kwargs" => Any[
+                    Dict{String, Any}("name" => "factor"),
+                    Dict{String, Any}("name" => "label"),
+                ],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            @test_throws ErrorException write_wrapper(dest, info; api_metadata = bad)
+            @test !isfile(joinpath(dir, "mylib_py", "_facade.py"))
+            @test isempty(filter(endswith(".tmp"), readdir(joinpath(dir, "mylib_py"))))
+
+            # The next build still emits a complete façade.
+            meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+            write_wrapper(dest, info; api_metadata = meta)
+            @test read(joinpath(dir, "mylib_py", "_facade.py"), String) ==
+                read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+        end
+    end
+
     @testset "opaque payloads pass through only under `@api`" begin
         # The same ABI, with and without a sidecar entry. A sidecar entry
         # means the author wrote the signature for these bindings, so the
