@@ -1,130 +1,105 @@
 {
-  "_comment": "Fixture identical to bindinginfo_carray_owned.json EXCEPT the two jlw_free* release-entrypoint function entries are deleted (the `types` array \u2014 including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used \u2014 is left untouched deliberately). This models a library that returns an owning `CVector{:owned, Float64}` but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_vec` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, exactly as for CStrArray and CDict.",
+  "_comment": "Fixture identical to bindinginfo_carray_owned.json EXCEPT the two jlw_free* release-entrypoint function entries are deleted (the `types` array — including the synthetic `Nothing`/`Ptr{Nothing}` pair those functions used — is left untouched deliberately). This models a library that returns an owning `CVector{:owned, Float64}` but forgot (or has not yet called) `JLWInterop.@export_release_entrypoints`. `_release_symbols_present` must see that `jlw_free`/`jlw_free_strings` are absent from `functions` and gate the owning return `give_vec` back to `:mechanical` with a TODO naming `JLWInterop.@export_release_entrypoints`, exactly as for CStrArray and CDict.",
+  "functions": [
+    {
+      "symbol": "give_vec",
+      "name": "give_vec()",
+      "arguments": [
+      ],
+      "returns": { "type_id": 6 }
+    }
+  ],
   "types": [
     {
+      "id": 1,
       "kind": "primitive",
       "name": "Float64",
-      "id": 1,
-      "size": 8,
-      "bits": 64,
       "signed": false,
+      "bits": 64,
+      "size": 8,
       "alignment": 8
     },
     {
+      "id": 2,
       "kind": "primitive",
       "name": "Int32",
-      "id": 2,
-      "size": 4,
-      "bits": 32,
       "signed": true,
+      "bits": 32,
+      "size": 4,
       "alignment": 4
     },
     {
+      "id": 3,
       "kind": "primitive",
       "name": "Int64",
-      "id": 3,
-      "size": 8,
-      "bits": 64,
       "signed": true,
+      "bits": 64,
+      "size": 8,
       "alignment": 8
     },
     {
+      "id": 4,
       "kind": "pointer",
       "name": "Ptr{Float64}",
-      "id": 4,
       "pointee_type_id": 1
     },
     {
+      "id": 5,
       "kind": "array",
       "name": "NTuple{1, Int32}",
-      "id": 5,
       "element_type_id": 2,
       "count": 1,
       "size": 4,
       "alignment": 4
     },
     {
+      "id": 6,
       "kind": "struct",
       "name": "CVector{:owned, Float64}",
-      "id": 6,
       "size": 16,
+      "alignment": 8,
       "fields": [
-        {
-          "name": "dims",
-          "type_id": 5,
-          "offset": 0,
-          "isptr": false,
-          "isfieldatomic": false
-        },
-        {
-          "name": "data",
-          "type_id": 4,
-          "offset": 8,
-          "isptr": false,
-          "isfieldatomic": false
-        }
-      ],
-      "alignment": 8
+        { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
     },
     {
+      "id": 7,
       "kind": "primitive",
       "name": "UInt8",
-      "id": 7,
-      "size": 1,
-      "bits": 8,
       "signed": false,
+      "bits": 8,
+      "size": 1,
       "alignment": 1
     },
     {
+      "id": 8,
       "kind": "pointer",
       "name": "Ptr{UInt8}",
-      "id": 8,
       "pointee_type_id": 7
     },
     {
+      "id": 9,
       "kind": "struct",
       "name": "CString",
-      "id": 9,
       "size": 16,
+      "alignment": 8,
       "fields": [
-        {
-          "name": "length",
-          "type_id": 2,
-          "offset": 0,
-          "isptr": false,
-          "isfieldatomic": false
-        },
-        {
-          "name": "data",
-          "type_id": 8,
-          "offset": 8,
-          "isptr": false,
-          "isfieldatomic": false
-        }
-      ],
-      "alignment": 8
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 8, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
     },
     {
+      "id": 10,
       "kind": "pointer",
       "name": "Ptr{CString}",
-      "id": 10,
       "pointee_type_id": 9
     },
     {
+      "id": 11,
       "kind": "pointer",
       "name": "Ptr{Nothing}",
-      "id": 11,
       "pointee_type_id": null
-    }
-  ],
-  "functions": [
-    {
-      "returns": {
-        "type_id": 6
-      },
-      "name": "give_vec()",
-      "arguments": [],
-      "symbol": "give_vec"
     }
   ]
 }
