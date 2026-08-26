@@ -1,0 +1,97 @@
+{
+  "_comment": "JLWResult{Float64} fixture. Offsets probed from the real JLWInterop layout: sizeof(JLWStatus)=260, sizeof(JLWResult{Float64})=272, fieldoffset 0/264.",
+  "types": [
+    {
+      "kind": "array",
+      "name": "NTuple{256, UInt8}",
+      "id": 1,
+      "element_type_id": 2,
+      "count": 256,
+      "size": 256,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 2,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 3,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "JLWStatus",
+      "id": 4,
+      "size": 260,
+      "fields": [
+        {
+          "name": "code",
+          "isptr": false,
+          "offset": 0,
+          "isfieldatomic": false,
+          "type_id": 3
+        },
+        {
+          "name": "message",
+          "isptr": false,
+          "offset": 4,
+          "isfieldatomic": false,
+          "type_id": 1
+        }
+      ],
+      "alignment": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 5,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{Float64}",
+      "id": 6,
+      "size": 272,
+      "fields": [
+        {
+          "name": "status",
+          "isptr": false,
+          "offset": 0,
+          "isfieldatomic": false,
+          "type_id": 4
+        },
+        {
+          "name": "value",
+          "isptr": false,
+          "offset": 264,
+          "isfieldatomic": false,
+          "type_id": 5
+        }
+      ],
+      "alignment": 8
+    }
+  ],
+  "functions": [
+    {
+      "returns": {
+        "type_id": 6
+      },
+      "name": "mylib_scale()",
+      "arguments": [],
+      "symbol": "mylib_scale"
+    }
+  ]
+}

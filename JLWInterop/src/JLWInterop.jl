@@ -1,7 +1,10 @@
 """
     JLWInterop
 
-Dependency-free ABI types for JuliaLibWrapping-generated libraries.
+Dependency-free ABI types for JuliaLibWrapping-generated libraries, plus
+[`@api`](@ref), the annotation macro that generates a `@ccallable` wrapper
+(argument/return conversion, `JLWResult`/`JLWStatus` error reporting, and a
+build-host metadata registry) from an ordinary Julia function.
 """
 module JLWInterop
 
@@ -9,7 +12,9 @@ export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
 export CDict, COpt, unwrap
+export JLWResult
 export @export_release_entrypoints
+export @api
 
 """
     JLW_MESSAGE_BYTES
@@ -549,6 +554,9 @@ COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps th
 Convert a [`COpt{T}`](@ref) to `Union{T,Nothing}`.
 """
 unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
+
+include("result.jl")
+include("api.jl")
 
 """
     @export_release_entrypoints

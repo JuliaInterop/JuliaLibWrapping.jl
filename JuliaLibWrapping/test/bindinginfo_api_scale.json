@@ -1,0 +1,178 @@
+{
+  "_comment": "Fixture for @api's JLWResult return: `mylib_scale(x::CVector{:borrowed, Float64}, factor::Float64, label::CString) -> JLWResult{CVector{:owned, Float64}}`, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints (the result wraps an owning CArray, so release entrypoints must be present). The argument and the returned value are two distinct CArray types: `@api` borrows the caller's array and returns a fresh allocation. `label` is a required keyword-only arg (no sidecar default) exercising the no-default branch. Offsets probed from the real JLWInterop layout: sizeof(JLWStatus)=260 (code@0, message@4), sizeof(CVector{owned, Float64})=16 align 8 (dims@0, data@8), sizeof(JLWResult{CVector{:owned, Float64}})=280 align 8 (status@0, value@264).",
+  "types": [
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 1,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "array",
+      "name": "NTuple{256, UInt8}",
+      "id": 2,
+      "element_type_id": 3,
+      "count": 256,
+      "size": 256,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 3,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "struct",
+      "name": "JLWStatus",
+      "id": 4,
+      "size": 260,
+      "fields": [
+        { "name": "code", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 1 },
+        { "name": "message", "isptr": false, "offset": 4, "isfieldatomic": false, "type_id": 2 }
+      ],
+      "alignment": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 5,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Float64}",
+      "id": 6,
+      "pointee_type_id": 5
+    },
+    {
+      "kind": "array",
+      "name": "NTuple{1, Int32}",
+      "id": 7,
+      "element_type_id": 1,
+      "count": 1,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "CVector{:borrowed, Float64}",
+      "id": 8,
+      "size": 16,
+      "fields": [
+        { "name": "dims", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 7 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 6 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "CVector{:owned, Float64}",
+      "id": 16,
+      "size": 16,
+      "fields": [
+        { "name": "dims", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 7 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 6 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{CVector{:owned, Float64}}",
+      "id": 9,
+      "size": 280,
+      "fields": [
+        { "name": "status", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 4 },
+        { "name": "value", "isptr": false, "offset": 264, "isfieldatomic": false, "type_id": 16 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 10,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 11,
+      "pointee_type_id": 3
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:borrowed}",
+      "id": 12,
+      "size": 16,
+      "fields": [
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 1 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 11 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 13,
+      "size": 16,
+      "fields": [
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 1 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 11 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 14,
+      "pointee_type_id": 13
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 15,
+      "pointee_type_id": null
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 9 },
+      "name": "mylib_scale(x::CVector{:borrowed, Float64}, factor::Float64, label::CString{:borrowed})",
+      "arguments": [
+        { "name": "x", "type_id": 8 },
+        { "name": "factor", "type_id": 5 },
+        { "name": "label", "type_id": 12 }
+      ],
+      "symbol": "mylib_scale"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 15 }
+      ],
+      "symbol": "jlw_free"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 14 },
+        { "name": "n", "type_id": 10 }
+      ],
+      "symbol": "jlw_free_strings"
+    }
+  ]
+}

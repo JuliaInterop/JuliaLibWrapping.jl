@@ -99,10 +99,11 @@ is released in a `finally`. The generated classes follow: a borrowed class
 gets `from_numpy` and `as_numpy` and no `free()`; an owning class gets
 `as_numpy` and an idempotent `free()`, and no `from_numpy`.
 
-A library returning an owning `CArray` without
+A hand-written entrypoint returning an owning `CArray` without
 [`@export_release_entrypoints`](@ref) is demoted at build time to a `TODO`
 re-export naming the macro to add — the same rule as `CString`, `CStrArray`,
-and `CDict`. An owning `CArray` *argument* is likewise left to a human: it
+and `CDict`. An [`@api`](@ref) function in that position fails the build
+instead. An owning `CArray` *argument* is likewise left to a human: it
 would transfer a Julia allocation into the library, which numpy cannot supply.
 The same holds for owning `CString`, `CStrArray`, and `CDict` arguments.
 

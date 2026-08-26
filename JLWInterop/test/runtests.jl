@@ -587,6 +587,615 @@ using Test
         @test isnothing(unwrap(o))
     end
 
+    @testset "JLWResult" begin
+        r = jlw_ok(3.5)
+        @test r isa JLWResult{Float64}
+        @test iszero(r.status.code)
+        @test r.value == 3.5
+
+        e = JLWInterop.jlw_error(1, "boom", Float64)
+        @test e.status.code == Int32(1)
+        @test iszero(e.value)
+        @test e.status.message[1:4] == (UInt8('b'), UInt8('o'), UInt8('o'), UInt8('m'))
+        @test iszero(e.status.message[5])
+
+        # zero carriers for every carrier type
+        @test iszero(JLWInterop._zero_carrier(Int64))
+        @test JLWInterop._zero_carrier(CString{:owned}).length == Int32(0)
+        @test JLWInterop._zero_carrier(CStrArray{:owned}).data == Ptr{CString{:owned}}(C_NULL)
+        @test JLWInterop._zero_carrier(CDict{:owned, Float64}).keys == Ptr{CString{:owned}}(C_NULL)
+        @test JLWInterop._zero_carrier(COpt{Float64}).has_value == Int32(0)
+        @test JLWInterop._zero_carrier(CArray{:owned, Float64, 2}).data == Ptr{Float64}(C_NULL)
+    end
+
+    @testset "@api scalars and strings" begin
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestA)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Double it." function twice(x::Float64)::Float64
+                    2x
+                end
+            )
+        )
+        @test Core.eval(m, :(twice(2.0))) == 4.0
+        e = only(JLWInterop._API)
+        @test e.name === :twice
+        @test e.symbol == "ApiTestA_twice"
+        @test e.args == [(:x, Float64)]
+        @test isempty(e.kwargs)
+        @test e.ret === Float64
+        @test e.doc == "Double it."
+
+        # String maps to CString as an argument; as a return it is rejected.
+        JLWInterop.clear_api!()
+        m2 = Module(:ApiTestB)
+        Core.eval(m2, :(using JLWInterop))
+        Core.eval(
+            m2, :(
+                JLWInterop.@api function len(s::String)::Int64
+                    Int64(ncodeunits(s))
+                end
+            )
+        )
+        @test only(JLWInterop._API).args == [(:s, String)]
+        @test_throws LoadError Core.eval(
+            m2, :(
+                JLWInterop.@api function bad(s::String)::String
+                    s
+                end
+            )
+        )
+
+        # An unsupported type is rejected with the argument name in the message.
+        @test_throws LoadError Core.eval(
+            m2, :(
+                JLWInterop.@api function nope(d::Dict{Int, Int})::Int64
+                    1
+                end
+            )
+        )
+    end
+
+    @testset "carrier_type rejects non-scalar payloads" begin
+        # The carriers hold elements as raw bytes behind a pointer, so a
+        # non-bits payload has no mapping rather than a reinterpreted one.
+        @test isnothing(JLWInterop.carrier_type(Matrix{String}))
+        @test isnothing(JLWInterop.carrier_type(Vector{Any}))
+        @test isnothing(JLWInterop.carrier_type(Dict{String, Vector{Int}}))
+        @test isnothing(JLWInterop.carrier_type(Union{String, Nothing}))
+        @test isnothing(JLWInterop.carrier_return_type(Matrix{String}))
+        @test isnothing(JLWInterop.carrier_return_type(Vector{Any}))
+        @test isnothing(JLWInterop.carrier_return_type(Dict{String, Vector{Int}}))
+        # Vector{String} keeps its own copying carrier.
+        @test JLWInterop.carrier_type(Vector{String}) === CStrArray{:borrowed}
+        @test JLWInterop.carrier_return_type(Vector{String}) === CStrArray{:owned}
+
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestJ)
+        Core.eval(m, :(using JLWInterop))
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function nonbits(a::Matrix{String})::Int64
+                    1
+                end
+            )
+        )
+    end
+
+    @testset "@api rejects shapes it cannot take apart" begin
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestK)
+        Core.eval(m, :(using JLWInterop))
+        # A `where` clause: the return annotation is present, so the message
+        # must name the `where`, not a missing `::Ret`.
+        err = try
+            Core.eval(
+                m, :(
+                    JLWInterop.@api function generic(x::T)::T where {T}
+                        x
+                    end
+                )
+            )
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("where", err.error.msg)
+
+        # The assignment form.
+        err = try
+            Core.eval(m, :(JLWInterop.@api f(x::Int64)::Int64 = x))
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("function f(x) ... end", err.error.msg)
+    end
+
+    @testset "@api type table" begin
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestC)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function up(v::Vector{String})::Vector{String}
+                    uppercase.(v)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function total(d::Dict{String, Float64})::Float64
+                    sum(values(d); init = 0.0)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+                    isnothing(x) ? nothing : 2x
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function scale(a::Vector{Float64})::Vector{Float64}
+                    2 .* a
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function shout(s::String)::Nothing
+                    nothing
+                end
+            )
+        )
+        syms = [e.symbol for e in JLWInterop._API]
+        @test syms == ["ApiTestC_up", "ApiTestC_total", "ApiTestC_maybe", "ApiTestC_scale", "ApiTestC_shout"]
+        @test JLWInterop.carrier_type(Vector{String}) === CStrArray{:borrowed}
+        @test JLWInterop.carrier_type(Dict{String, Float64}) === CDict{:borrowed, Float64}
+        @test JLWInterop.carrier_type(Union{Float64, Nothing}) === COpt{Float64}
+        @test JLWInterop.carrier_type(Vector{Float64}) === CArray{:borrowed, Float64, 1}
+        @test JLWInterop.carrier_return_type(Vector{Float64}) === CArray{:owned, Float64, 1}
+        @test JLWInterop.carrier_return_type(Dict{String, Float64}) === CDict{:owned, Float64}
+        # Vector{String} is an Array, so without its own method the CArray
+        # method would shadow its carrier.
+        @test JLWInterop.carrier_return_type(Vector{String}) === CStrArray{:owned}
+        @test last(JLWInterop._API).ret === Nothing
+
+        # Array arguments are zero-copy views: mutation is visible through the carrier.
+        A = [1.0, 2.0, 3.0]
+        c = JLWInterop.to_carrier(A)            # CArray{:owned, Float64, 1}
+        v = JLWInterop.from_carrier(
+            Vector{Float64}, CArray{:borrowed, Float64, 1}(c.dims, c.data)
+        )
+        v[1] = 9.0
+        @test unsafe_load(c.data) == 9.0
+        Libc.free(c.data)
+
+        # COpt round-trips.
+        r = JLWInterop.from_carrier(Union{Float64, Nothing}, JLWInterop.to_carrier_opt(Float64, nothing))
+        @test isnothing(r)
+        # Value-present branch: `to_carrier_opt` must not route through the
+        # parameterized `COpt{T}(x)` constructor, which only has a `::Nothing`
+        # method and would throw a MethodError at the boundary.
+        r2 = JLWInterop.from_carrier(Union{Float64, Nothing}, JLWInterop.to_carrier_opt(Float64, 3.0))
+        @test r2 === 3.0
+    end
+
+    @testset "@api generated wrapper calls" begin
+        # The generated `Base.@ccallable` wrapper is an ordinary Julia
+        # function, so each type-table row and both error paths can be
+        # exercised by calling it with carriers.
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+
+        JLWInterop.clear_api!()
+        m = Module(:ApiCall)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function twice(x::Float64)::Float64
+                    2x
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function len(s::String)::Int64
+                    Int64(ncodeunits(s))
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function up(v::Vector{String})::Vector{String}
+                    uppercase.(v)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function total(d::Dict{String, Float64})::Float64
+                    sum(values(d); init = 0.0)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function mk(n::Int64)::Dict{String, Float64}
+                    Dict(string("k", i) => Float64(i) for i in 1:n)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+                    isnothing(x) ? nothing : 2x
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
+                    factor .* a
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function check(x::Float64)::Nothing
+                    x > 0 || error("not positive")
+                    nothing
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function boom(x::Int64)::Int64
+                    error("boom $x")
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function argue(x::Int64)::Int64
+                    throw(ArgumentError("bad argument"))
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function mismatch(x::Int64)::Int64
+                    throw(DimensionMismatch("shapes differ"))
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function outside(x::Int64)::Int64
+                    throw(DomainError(x))
+                end
+            )
+        )
+
+        # Scalars pass through by value.
+        r = Core.eval(m, :(ApiCall_twice(2.0)))
+        @test r isa JLWResult{Float64}
+        @test iszero(r.status.code)
+        @test r.value == 4.0
+
+        # String argument: a borrowed CString the caller still owns.
+        cs = CString{:owned}("wörld")
+        r = Core.eval(m, :(ApiCall_len($(CString{:borrowed}(cs.length, cs.data)))))
+        @test r.value == 6
+        Libc.free(cs.data)
+
+        # Vector{String}: borrowed in, owned out.
+        src = CStrArray{:owned}(["ab", "cd"])
+        r = Core.eval(m, :(ApiCall_up($(CStrArray{:borrowed}(src.length, src.data)))))
+        @test Vector{String}(r.value) == ["AB", "CD"]
+        JLWInterop._free_strings(r.value.data, r.value.length)
+        JLWInterop._free_strings(src.data, src.length)
+
+        # Dict{String,Float64}: borrowed in, owned out.
+        d = CDict{:owned}(Dict("a" => 1.5, "b" => 2.5))
+        r = Core.eval(m, :(ApiCall_total($(CDict{:borrowed}(d.length, d.keys, d.values)))))
+        @test r.value == 4.0
+        JLWInterop._free_strings(d.keys, d.length)
+        Libc.free(d.values)
+
+        r = Core.eval(m, :(ApiCall_mk(2)))
+        @test Dict{String, Float64}(r.value) == Dict("k1" => 1.0, "k2" => 2.0)
+        JLWInterop._free_strings(r.value.keys, r.value.length)
+        Libc.free(r.value.values)
+
+        # Union{Float64,Nothing} travels as COpt in both directions.
+        @test unwrap(Core.eval(m, :(ApiCall_maybe($(COpt(9.0))))).value) == 18.0
+        @test isnothing(unwrap(Core.eval(m, :(ApiCall_maybe($(COpt{Float64}(nothing))))).value))
+
+        # Array argument, plus a keyword that reaches the wrapper as a
+        # trailing positional C argument.
+        a = [1.0, 2.0]
+        r = GC.@preserve a Core.eval(m, :(ApiCall_scale($(CArray{:borrowed}(a)), 3.0)))
+        @test unsafe_load(r.value.data, 1) == 3.0
+        @test unsafe_load(r.value.data, 2) == 6.0
+        Libc.free(r.value.data)
+
+        # A `Nothing` return is a bare JLWStatus, with no value field.
+        st = Core.eval(m, :(ApiCall_check(1.0)))
+        @test st isa JLWStatus
+        @test iszero(st.code)
+        st = Core.eval(m, :(ApiCall_check(-1.0)))
+        @test st.code == Int32(1)
+        @test status_message(st) == "not positive"
+
+        # Error paths: the three exception types that carry a `msg::String`
+        # report it; anything else reports "error".
+        r = Core.eval(m, :(ApiCall_boom(7)))
+        @test r.status.code == Int32(1)
+        @test iszero(r.value)
+        @test status_message(r.status) == "boom 7"
+        @test status_message(Core.eval(m, :(ApiCall_argue(1))).status) == "bad argument"
+        @test status_message(Core.eval(m, :(ApiCall_mismatch(1))).status) == "shapes differ"
+        @test status_message(Core.eval(m, :(ApiCall_outside(1))).status) == "error"
+    end
+
+    @testset "@api raw pointers and library-registered carriers" begin
+        # A `Ptr{T}` is its own carrier, and so is any `isbits` struct whose
+        # library adds the three protocol methods for it.
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+
+        JLWInterop.clear_api!()
+        m = Module(:ApiRaw)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                struct P32
+                    x::Int32
+                    y::Int32
+                end
+            )
+        )
+        Core.eval(m, :(JLWInterop.carrier_type(::Type{P32}) = P32))
+        Core.eval(m, :(JLWInterop.to_carrier(p::P32) = p))
+        Core.eval(m, :(JLWInterop.from_carrier(::Type{P32}, c::P32) = c))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function sum_at(data::Ptr{Float64}, n::Int64)::Float64
+                    n >= 0 || error("negative length")
+                    s = 0.0
+                    for i in 1:n
+                        s += unsafe_load(data, i)
+                    end
+                    s
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function shift(p::P32, by::Int32)::P32
+                    by >= 0 || error("negative shift")
+                    P32(p.x + by, p.y + by)
+                end
+            )
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api function head(v::Vector{Float64})::Ptr{Float64}
+                    pointer(v)
+                end
+            )
+        )
+
+        @test JLWInterop.carrier_type(Ptr{Float64}) === Ptr{Float64}
+        @test JLWInterop.carrier_return_type(Ptr{Cvoid}) === Ptr{Cvoid}
+        @test JLWInterop.from_carrier(Ptr{Int8}, Ptr{Int8}(C_NULL)) === Ptr{Int8}(C_NULL)
+
+        buf = [1.0, 2.0, 4.0]
+        r = GC.@preserve buf Core.eval(m, :(ApiRaw_sum_at($(pointer(buf)), 3)))
+        @test iszero(r.status.code)
+        @test r.value == 7.0
+
+        p = Core.eval(m, :(P32(Int32(1), Int32(2))))
+        r = Core.eval(m, :(ApiRaw_shift($p, Int32(3))))
+        @test iszero(r.status.code)
+        @test r.value == Core.eval(m, :(P32(Int32(4), Int32(5))))
+
+        # A `Ptr` return travels unconverted.
+        r = GC.@preserve buf Core.eval(m, :(ApiRaw_head($(CArray{:borrowed}(buf)))))
+        @test r.value === pointer(buf)
+
+        # Errors still cross as a status, with a zero-filled value.
+        r = GC.@preserve buf Core.eval(m, :(ApiRaw_sum_at($(pointer(buf)), -1)))
+        @test r.status.code == Int32(1)
+        @test status_message(r.status) == "negative length"
+        r = Core.eval(m, :(ApiRaw_shift($p, Int32(-1))))
+        @test r.status.code == Int32(1)
+        @test status_message(r.status) == "negative shift"
+        @test r.value == Core.eval(m, :(P32(Int32(0), Int32(0))))
+
+        # Padding is zeroed too, and a non-isbits carrier is rejected.
+        Core.eval(
+            m, :(
+                struct Padded
+                    a::Int8
+                    b::Int64
+                end
+            )
+        )
+        @test Core.eval(m, :(JLWInterop._zero_carrier(Padded))) ==
+            Core.eval(m, :(Padded(0, 0)))
+        @test_throws ArgumentError JLWInterop._zero_carrier(Vector{Float64})
+    end
+
+    @testset "@api kwargs and metadata" begin
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestD)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Scale." function scale(x::Vector{Float64}; factor::Float64 = 2.0, label::String)::Vector{Float64}
+                    factor .* x
+                end
+            )
+        )
+        e = only(JLWInterop._API)
+        @test e.args == [(:x, Vector{Float64})]
+        @test e.kwargs == [(:factor, Float64, true, 2.0), (:label, String, false, nothing)]
+        # non-literal defaults are rejected at expansion
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function bad(x::Float64; k::Float64 = sqrt(2))::Float64
+                    x
+                end
+            )
+        )
+        # so is a literal of the wrong type, in either direction
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function wrongtype(x::Float64; k::Float64 = "oops")::Float64
+                    x
+                end
+            )
+        )
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function narrowing(x::Float64; k::Float64 = 2)::Float64
+                    x
+                end
+            )
+        )
+        # A second @api method of the same function would claim the same C symbol.
+        @test_throws LoadError Core.eval(
+            m, :(
+                JLWInterop.@api function scale(x::Float64)::Float64
+                    x
+                end
+            )
+        )
+        mktempdir() do dir
+            p = joinpath(dir, "m.jlw.json")
+            JLWInterop.write_metadata(p)
+            txt = read(p, String)
+            @test occursin("\"jlw_metadata_version\": 1", txt)
+            @test occursin("ApiTestD_scale", txt)
+            @test occursin("\"factor\"", txt) && occursin("2.0", txt)
+            @test occursin("Scale.", txt)
+        end
+    end
+
+    @testset "@api kwargs: empty-string default vs required" begin
+        # A `= ""` default stays distinguishable from no default, in both
+        # ApiEntry.kwargs and the sidecar JSON.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestE)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function f(; opt::String = "", req::String)::Int64
+                    0
+                end
+            )
+        )
+        e = only(JLWInterop._API)
+        @test e.kwargs == [(:opt, String, true, ""), (:req, String, false, nothing)]
+
+        mktempdir() do dir
+            p = joinpath(dir, "e.jlw.json")
+            JLWInterop.write_metadata(p)
+            txt = read(p, String)
+            @test occursin("{\"name\": \"opt\", \"default\": \"\"}", txt)
+            @test occursin("{\"name\": \"req\"}", txt)   # req: no default key at all
+        end
+    end
+
+    @testset "@api kwarg defaults are typed JSON values" begin
+        # Each default reaches the sidecar as a JSON value of its own type,
+        # so the emitter never re-parses Julia source text.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestH)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function f(
+                        ;
+                        i::Int64 = 3, f64::Float64 = 2.5, b::Bool = true,
+                        s::String = "a\$b\\c", o::Union{Float64, Nothing} = nothing,
+                    )::Int64
+                    0
+                end
+            )
+        )
+        e = only(JLWInterop._API)
+        @test e.kwargs == [
+            (:i, Int64, true, 3), (:f64, Float64, true, 2.5), (:b, Bool, true, true),
+            (:s, String, true, "a\$b\\c"),
+            (:o, Union{Float64, Nothing}, true, nothing),
+        ]
+        mktempdir() do dir
+            p = joinpath(dir, "h.jlw.json")
+            JLWInterop.write_metadata(p)
+            txt = read(p, String)
+            @test occursin("{\"name\": \"i\", \"default\": 3}", txt)
+            @test occursin("{\"name\": \"f64\", \"default\": 2.5}", txt)
+            @test occursin("{\"name\": \"b\", \"default\": true}", txt)
+            @test occursin("{\"name\": \"s\", \"default\": \"a\$b\\\\c\"}", txt)
+            @test occursin("{\"name\": \"o\", \"default\": null}", txt)
+        end
+    end
+
+    @testset "write_metadata: JSON escaping" begin
+        # A docstring's double quote, backslash, and newline come back
+        # escaped in the JSON text, never raw.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestF)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Has \"quotes\", a \\backslash\\, and a\nnewline." function g(x::Float64)::Float64
+                    x
+                end
+            )
+        )
+        mktempdir() do dir
+            p = joinpath(dir, "g.jlw.json")
+            JLWInterop.write_metadata(p)
+            txt = read(p, String)
+            @test occursin("\\\"quotes\\\"", txt)     # escaped double quote
+            @test occursin("\\\\backslash\\\\", txt)  # escaped backslash
+            @test occursin("a\\nnewline", txt)         # escaped newline
+            @test !occursin("a\nnewline", txt)          # never a raw newline inside the string
+        end
+    end
+
+    @testset "@api kwarg default: negated number literal" begin
+        # The parser folds `-1`, `-1.5` and `-1f0` into a literal token but
+        # leaves `-0x10` as `Expr(:call, :-, <number>)`, so that branch is
+        # reachable through `@api`.
+        @test Meta.parse("-0x10") isa Expr
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestI)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, :(
+                JLWInterop.@api function g(x::Float64; k::UInt8 = -0x10)::Float64
+                    x
+                end
+            )
+        )
+        @test only(JLWInterop._API).kwargs == [(:k, UInt8, true, 0xf0)]
+        mktempdir() do dir
+            p = joinpath(dir, "i.jlw.json")
+            JLWInterop.write_metadata(p)
+            @test occursin("{\"name\": \"k\", \"default\": 240}", read(p, String))
+        end
+    end
+
     @testset "release entrypoints" begin
         m = Module()
         Core.eval(m, :(using JLWInterop))

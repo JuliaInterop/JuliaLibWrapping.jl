@@ -102,7 +102,7 @@ end
         @test length(typeinfo) == 4
         @test !any(
             desc isa PrimitiveTypeDesc && desc.name == "Cvoid"
-            for desc in values(typeinfo)
+                for desc in values(typeinfo)
         )
 
         # `zero_first(p::Ptr{Cvoid}, n::Int32)::Cvoid`: null return and null
@@ -1331,6 +1331,206 @@ end
         @test JuliaLibWrapping._python_status_path(method, ti) == ".lambda_"
     end
 
+    @testset "jlwresult_struct_info" begin
+        info = read_abi_info("bindinginfo_jlwresult.json")
+        desc = first(d for (_, d) in info.typeinfo if d isa StructDesc && startswith(d.name, "JLWResult"))
+        got = JuliaLibWrapping.jlwresult_struct_info(desc, info.typeinfo)
+        @test !isnothing(got)
+        @test info.typeinfo[got.value_type_id] isa PrimitiveTypeDesc
+        # A plain JLWStatus struct is not a JLWResult.
+        st = first(d for (_, d) in info.typeinfo if d isa StructDesc && d.name == "JLWStatus")
+        @test isnothing(JuliaLibWrapping.jlwresult_struct_info(st, info.typeinfo))
+    end
+
+    @testset "api scale vocabulary" begin
+        info = read_abi_info("bindinginfo_api_scale.json")
+        meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test occursin("def scale(x, *, factor=2.0, label):", facade)
+            @test occursin("\"\"\"Scale every entry.\"\"\"", facade)
+            @test occursin("raise JLWError", facade)
+            @test occursin("_label = CString_borrowed.from_str(label)", facade)
+            @test facade == read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+            bindings_path = joinpath(dir, "mylib_py", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test bindings == read(joinpath(@__DIR__, "expected_api_scale_lowlevel.py"), String)
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(dir, "mylib_py", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "api kwarg defaults are typed values" begin
+        @test JuliaLibWrapping._api_kwarg_default_python(2.5) == "2.5"
+        @test JuliaLibWrapping._api_kwarg_default_python(3) == "3"
+        @test JuliaLibWrapping._api_kwarg_default_python(true) == "True"
+        @test JuliaLibWrapping._api_kwarg_default_python(false) == "False"
+        @test JuliaLibWrapping._api_kwarg_default_python(nothing) == "None"
+        @test JuliaLibWrapping._api_kwarg_default_python("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\""
+        @test_throws ErrorException JuliaLibWrapping._api_kwarg_default_python([1])
+
+        # A string default carrying a backslash and a quote reaches the
+        # façade as a Python literal, not as Julia's `repr` of one.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        meta = Dict{String, Any}(
+            "mylib_scale" => Dict{String, Any}(
+                "name" => "scale", "args" => ["x"],
+                "kwargs" => Any[
+                    Dict{String, Any}("name" => "factor", "default" => 1.5),
+                    Dict{String, Any}("name" => "label", "default" => "a\\b\"c"),
+                ],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            facade_path = joinpath(dir, "mylib_py", "_facade.py")
+            @test occursin(
+                "def scale(x, *, factor=1.5, label=\"a\\\\b\\\"c\"):",
+                read(facade_path, String)
+            )
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "duplicate façade names" begin
+        # Two entrypoints claiming one Python name would leave only the
+        # second defined on the façade.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        scale = only(m for m in info.entrypoints if m.symbol == "mylib_scale")
+        twin = JuliaLibWrapping.MethodDesc("mylib_scale2", scale.name, scale.return_type, scale.args)
+        doubled = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared, [info.entrypoints..., twin]
+        )
+        entry = Dict{String, Any}(
+            "name" => "scale", "args" => ["x"],
+            "kwargs" => Any[Dict{String, Any}("name" => "factor"), Dict{String, Any}("name" => "label")],
+            "doc" => "",
+        )
+        meta = Dict{String, Any}("mylib_scale" => entry, "mylib_scale2" => entry)
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, doubled; api_metadata = meta)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale2", err.msg)
+        end
+
+        # A Julia name that is not a Python identifier is rejected rather
+        # than emitted as `def bump!(...)`.
+        @test JuliaLibWrapping._is_python_identifier("bump")
+        @test !JuliaLibWrapping._is_python_identifier("bump!")
+        @test !JuliaLibWrapping._is_python_identifier("2fast")
+        @test !JuliaLibWrapping._is_python_identifier("")
+        @test !JuliaLibWrapping._is_python_identifier("class")
+        bang = Dict{String, Any}("mylib_scale" => merge(entry, Dict{String, Any}("name" => "scale!")))
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, info; api_metadata = bang)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("scale!", err.msg)
+        end
+    end
+
+    @testset "api docstrings are escaped" begin
+        # A docstring carrying `\"\"\"`, a backslash escape, and a trailing
+        # quote reaches Python as a valid `\"\"\"…\"\"\"` body.
+        nasty = "ends with \"\"\" and \\d and a quote\""
+        @test JuliaLibWrapping._python_docstring(nasty) ==
+            "ends with \\\"\\\"\\\" and \\\\d and a quote\\\""
+        info = read_abi_info("bindinginfo_api_scale.json")
+        src = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+        entry = Dict{String, Any}(String(k) => v for (k, v) in src["mylib_scale"])
+        entry["doc"] = nasty
+        meta = Dict{String, Any}("mylib_scale" => entry)
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                for name in ("_lowlevel.py", "_facade.py")
+                    path = joinpath(dir, "mylib_py", name)
+                    cmd = `$python3 -c "import ast; ast.parse(open('$path').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "JLWResult over an unreleasable payload" begin
+        # An owning payload with no release entrypoints has no unwrap to
+        # emit, so the whole JLWResult return is opaque.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        nofree = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared,
+            [m for m in info.entrypoints if m.symbol ∉ ("jlw_free", "jlw_free_strings")]
+        )
+        @test JuliaLibWrapping._release_symbols_present(nofree) === false
+        meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+
+        # With a sidecar entry the function is `@api`-annotated, so degrading
+        # it would silently drop its Python name, kwargs and docstring: the
+        # build fails instead, naming the macro to add (D9).
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, nofree; api_metadata = meta)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale", err.msg)
+            @test occursin("JLWInterop.@export_release_entrypoints", err.msg)
+        end
+
+        # The same shape without a sidecar entry is a hand-written
+        # `Base.@ccallable`, which still degrades to a mechanical re-export.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, nofree)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test !occursin("def scale(", facade)
+            @test occursin(
+                "from ._lowlevel import mylib_scale  # TODO: hand-wrap — owning return needs release entrypoints",
+                facade
+            )
+        end
+
+        # Every classification the planner can hand to `_emit_value_unwrap`
+        # has a body; anything else throws instead of emitting nothing.
+        @test_throws ErrorException JuliaLibWrapping._emit_value_unwrap(devnull, "_result", :opaque)
+    end
+
     @testset "CString vocabulary" begin
         # Borrowed CString conversion requires no numpy or release function.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -2305,6 +2505,62 @@ end
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
         method_cm = only(abi_cm.entrypoints)
         @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
+    end
+
+    @testset "opaque payloads pass through only under `@api`" begin
+        # The same ABI, with and without a sidecar entry. A sidecar entry
+        # means the author wrote the signature for these bindings, so the
+        # pointer crosses as it stands; a hand-written entrypoint keeps the
+        # TODO.
+        abi = read_abi_info("bindinginfo_rawptr.json")
+        method = only(abi.entrypoints)
+        typedict = Dict{Int, String}()
+        argdesc = only(a for a in method.args if abi.typeinfo[a.type] isa PointerDesc)
+
+        @test JuliaLibWrapping._facade_classify_arg(argdesc, abi.typeinfo, typedict).kind ===
+            :opaque
+        @test JuliaLibWrapping._facade_classify_arg(
+            argdesc, abi.typeinfo, typedict; pass_opaque = true
+        ).kind === :primitive
+
+        @test JuliaLibWrapping._facade_plan(method, abi.typeinfo, typedict, false).category ===
+            :mechanical
+
+        entry = Dict{String, Any}(
+            "name" => "sum_doubles", "args" => ["data", "n"],
+            "kwargs" => Any[], "doc" => "Sum `n` doubles at `data`.",
+        )
+        plan = JuliaLibWrapping._facade_plan(method, abi.typeinfo, typedict, false, entry)
+        @test plan.category === :api_auto
+        @test all(c -> c.kind === :primitive, plan.args)
+
+        mktempdir() do path
+            dest = PythonTarget(path, "rawptr_demo", "librawptr")
+            write_wrapper(dest, abi; api_metadata = Dict{String, Any}("sum_doubles" => entry))
+            facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
+            @test occursin("def sum_doubles(data, n):", facade)
+            @test occursin("\"\"\"Sum `n` doubles at `data`.\"\"\"", facade)
+            @test !occursin("# TODO: hand-wrap", facade)
+        end
+
+        # A struct the emitter has no vocabulary for follows the same rule.
+        simple = read_abi_info("bindinginfo_libsimple.json")
+        pair_arg = only(onlymatch(md -> md.symbol == "copyto_and_sum", simple.entrypoints).args)
+        td = Dict{Int, String}()
+        for (id, type) in pairs(simple.typeinfo)
+            type isa StructDesc && JuliaLibWrapping.mangle_python!(td, id, simple.typeinfo)
+        end
+        @test JuliaLibWrapping._facade_classify_arg(pair_arg, simple.typeinfo, td).kind ===
+            :opaque
+        @test JuliaLibWrapping._facade_classify_arg(
+            pair_arg, simple.typeinfo, td; pass_opaque = true
+        ).kind === :primitive
+        @test JuliaLibWrapping._classify_return_type(
+            pair_arg.type, simple.typeinfo, td, false
+        ).kind === :opaque
+        @test JuliaLibWrapping._classify_return_type(
+            pair_arg.type, simple.typeinfo, td, false; pass_opaque = true
+        ).kind === :passthrough
     end
 
     @testset "JLWStatus convention" begin

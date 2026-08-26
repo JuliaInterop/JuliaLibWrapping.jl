@@ -28,13 +28,15 @@ end
     @testset "validate [sources] paths" begin
         mktempdir() do proj
             open(joinpath(proj, "Project.toml"), "w") do io
-                write(io, """
-                name = "Dummy"
-                uuid = "00000000-0000-0000-0000-000000000000"
+                write(
+                    io, """
+                    name = "Dummy"
+                    uuid = "00000000-0000-0000-0000-000000000000"
 
-                [sources]
-                Foo = {path = "../foo"}
-                """)
+                    [sources]
+                    Foo = {path = "../foo"}
+                    """
+                )
             end
             entry = joinpath(proj, "src.jl")
             touch(entry)
@@ -52,13 +54,15 @@ end
         # Absolute paths are accepted.
         mktempdir() do proj
             open(joinpath(proj, "Project.toml"), "w") do io
-                write(io, """
-                name = "Dummy"
-                uuid = "00000000-0000-0000-0000-000000000001"
+                write(
+                    io, """
+                    name = "Dummy"
+                    uuid = "00000000-0000-0000-0000-000000000001"
 
-                [sources]
-                Foo = {path = "/tmp/foo"}
-                """)
+                    [sources]
+                    Foo = {path = "/tmp/foo"}
+                    """
+                )
             end
             @test JuliaLibWrapping._validate_sources_absolute(proj) === nothing
         end
@@ -72,6 +76,112 @@ end
         end
     end
 
+    @testset "api metadata" begin
+        mktempdir() do dir
+            p = joinpath(dir, "m.jlw.json")
+            write(
+                p, """{"jlw_metadata_version": 1, "exports": {"M_f": {"name": "f", "args": ["x"], "kwargs": [], "doc": ""}}}"""
+            )
+            meta = JuliaLibWrapping.read_api_metadata(p)
+            @test haskey(meta, "M_f")
+            bad = joinpath(dir, "bad.jlw.json")
+            write(bad, """{"jlw_metadata_version": 99, "exports": {}}""")
+            @test_throws ErrorException JuliaLibWrapping.read_api_metadata(bad)
+        end
+
+        @testset "check_metadata_consistency" begin
+            ok_info = read_abi_info("bindinginfo_jlwresult.json")  # JLWResult{Float64}, symbol "mylib_scale", no args
+
+            ok_meta = Dict{String, Any}(
+                "mylib_scale" => Dict{String, Any}(
+                    "name" => "scale", "args" => String[], "kwargs" => Any[], "doc" => ""
+                ),
+            )
+            @test isnothing(JuliaLibWrapping.check_metadata_consistency(ok_info, ok_meta))
+
+            # Unknown symbol: no matching entrypoint in the ABI.
+            unknown_symbol = Dict{String, Any}(
+                "nope" => Dict{String, Any}(
+                    "name" => "f", "args" => String[], "kwargs" => Any[], "doc" => ""
+                ),
+            )
+            err = try
+                JuliaLibWrapping.check_metadata_consistency(ok_info, unknown_symbol)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("nope", err.msg)
+
+            # Arg-count mismatch: sidecar declares 1 arg, ABI entrypoint takes 0.
+            bad_arity = Dict{String, Any}(
+                "mylib_scale" => Dict{String, Any}(
+                    "name" => "scale", "args" => ["x"], "kwargs" => Any[], "doc" => ""
+                ),
+            )
+            err = try
+                JuliaLibWrapping.check_metadata_consistency(ok_info, bad_arity)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale", err.msg)
+
+            # Names and order must match elementwise: the Python emitter
+            # zips the sidecar's list against the ABI's positionally.
+            scale_info = read_abi_info("bindinginfo_api_scale.json")
+            named(kws) = Dict{String, Any}(
+                "mylib_scale" => Dict{String, Any}(
+                    "name" => "scale", "args" => ["x"],
+                    "kwargs" => Any[Dict{String, Any}("name" => k) for k in kws],
+                    "doc" => "",
+                ),
+            )
+            @test isnothing(
+                JuliaLibWrapping.check_metadata_consistency(scale_info, named(["factor", "label"]))
+            )
+            err = try
+                JuliaLibWrapping.check_metadata_consistency(scale_info, named(["label", "factor"]))
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale", err.msg)
+        end
+
+        @testset "sidecar preconditions" begin
+            # A file that uses `@api` and produces no sidecar is an error,
+            # naming what went wrong; a file that does not is a silent skip.
+            mktempdir() do dir
+                proj = mkpath(joinpath(dir, "proj"))
+                withapi = joinpath(dir, "withapi.jl")
+                write(withapi, "using JLWInterop\n@api function f(x::Float64)::Float64\n    x\nend\n")
+                err = try
+                    JuliaLibWrapping._maybe_dump_api_metadata(withapi, proj, dir, "lib"; verbose = false)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin("JLWInterop", err.msg)
+
+                # A directory entry carries no text to scan, so it skips.
+                @test isnothing(
+                    JuliaLibWrapping._maybe_dump_api_metadata(dir, proj, dir, "lib"; verbose = false)
+                )
+
+                plain = joinpath(dir, "plain.jl")
+                write(plain, "f(x) = x\n")
+                @test isnothing(
+                    JuliaLibWrapping._maybe_dump_api_metadata(plain, proj, dir, "lib"; verbose = false)
+                )
+            end
+        end
+    end
+
     @testset "backend selection" begin
         # The default backend requires JuliaC.
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
@@ -80,8 +190,10 @@ end
         if ext === nothing
             for be in (:auto, :juliac)
                 err = try
-                    build_library(entry, AbstractTarget[]; project = proj,
-                                  libname = "abi_stress", backend = be)
+                    build_library(
+                        entry, AbstractTarget[]; project = proj,
+                        libname = "abi_stress", backend = be
+                    )
                     nothing
                 catch e
                     e
@@ -93,8 +205,10 @@ end
 
         # Unknown backend rejected.
         err = try
-            build_library(entry, AbstractTarget[]; project = proj,
-                          libname = "abi_stress", backend = :bogus)
+            build_library(
+                entry, AbstractTarget[]; project = proj,
+                libname = "abi_stress", backend = :bogus
+            )
             nothing
         catch e
             e
@@ -104,8 +218,10 @@ end
 
         # Unknown trim mode rejected.
         err = try
-            build_library(entry, AbstractTarget[]; project = proj,
-                          libname = "abi_stress", trim = :wild)
+            build_library(
+                entry, AbstractTarget[]; project = proj,
+                libname = "abi_stress", trim = :wild
+            )
             nothing
         catch e
             e
@@ -116,16 +232,18 @@ end
 
     @testset "bundle validation" begin
         entry = joinpath(@__DIR__, "..", "examples", "abi_stress", "src", "abi_stress.jl")
-        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+        proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
 
         # bundle = true with a PythonTarget lacking bundle_subdir must
         # fail immediately: writing into the package would leave the
         # generated loader looking in the wrong place.
         err = try
-            build_library(entry,
+            build_library(
+                entry,
                 [PythonTarget("/tmp", "pkg", "libfoo")];
                 project = proj, libname = "abi_stress",
-                bundle = true)
+                bundle = true
+            )
             nothing
         catch e
             e
@@ -143,15 +261,21 @@ end
         if !juliac_ok
             @info "Skipping build_library end-to-end test" has_julia has_cc VERSION
         else
-            entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
-                             "src", "abi_stress.jl")
-            proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+            entry = joinpath(
+                @__DIR__, "..", "examples", "abi_stress",
+                "src", "abi_stress.jl"
+            )
+            proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
             mktempdir() do out
-                result = build_library(entry,
-                    [CTarget(out, "abi_stress"),
-                     PythonTarget(out, "abi_stress_py", "abi_stress")];
+                result = build_library(
+                    entry,
+                    [
+                        CTarget(out, "abi_stress"),
+                        PythonTarget(out, "abi_stress_py", "abi_stress"),
+                    ];
                     project = proj, libname = "abi_stress",
-                    libdir = out, cpu_target = "generic")
+                    libdir = out, cpu_target = "generic"
+                )
                 @test isfile(result.library)
                 @test isfile(result.abi_path)
                 @test result.abi_info isa JuliaLibWrapping.ABIInfo
@@ -166,7 +290,7 @@ end
                 python3 = Sys.which("python3")
                 if python3 !== nothing
                     cmd = `$python3 -c "import ast; ast.parse(open('$lowlevel').read())"`
-                    @test success(run(pipeline(cmd; stderr=devnull, stdout=devnull); wait=true))
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 end
             end
         end
@@ -198,10 +322,12 @@ end
                     exdir = joinpath(@__DIR__, "..", "examples", name)
                     entry = joinpath(exdir, "src", name * ".jl")
                     mktempdir() do out
-                        result = build_library(entry,
+                        result = build_library(
+                            entry,
                             [PythonTarget(out, name * "_py", name)];
                             project = example_project(exdir), libname = name,
-                            libdir = out, cpu_target = "generic")
+                            libdir = out, cpu_target = "generic"
+                        )
                         @test isfile(result.library)
 
                         # `out` on PYTHONPATH makes the generated package
@@ -213,9 +339,11 @@ end
                             "PYTHONPATH" => out,
                             uppercase(name * "_py") * "_LIBRARY" => result.library,
                         )
-                        @test success(pipeline(
-                            cmd; stdout = stdout, stderr = stderr
-                        ))
+                        @test success(
+                            pipeline(
+                                cmd; stdout = stdout, stderr = stderr
+                            )
+                        )
                     end
                 end
             end
@@ -232,24 +360,34 @@ end
         python3 === nothing && error("JLW_TEST_BUNDLE set but python3 not on PATH")
         # The generated _lowlevel.py imports numpy (CVector helpers).
         # Report the missing dependency before attempting the import.
-        has_numpy = success(pipeline(`$python3 -c "import numpy"`; stderr=devnull))
+        has_numpy = success(pipeline(`$python3 -c "import numpy"`; stderr = devnull))
         has_numpy || error("JLW_TEST_BUNDLE set but `python3 -c 'import numpy'` failed; install numpy in this python")
 
-        entry = joinpath(@__DIR__, "..", "examples", "abi_stress",
-                         "src", "abi_stress.jl")
-        proj  = joinpath(@__DIR__, "..", "examples", "abi_stress")
+        entry = joinpath(
+            @__DIR__, "..", "examples", "abi_stress",
+            "src", "abi_stress.jl"
+        )
+        proj = joinpath(@__DIR__, "..", "examples", "abi_stress")
         mktempdir() do out
-            result = build_library(entry,
-                [PythonTarget(out, "abi_stress_py", "abi_stress";
-                              bundle_subdir = "bundle")];
+            result = build_library(
+                entry,
+                [
+                    PythonTarget(
+                        out, "abi_stress_py", "abi_stress";
+                        bundle_subdir = "bundle"
+                    ),
+                ];
                 project = proj, libname = "abi_stress",
-                libdir = out, bundle = true)
+                libdir = out, bundle = true
+            )
             @test result.bundle_dir !== nothing
             @test isdir(result.bundle_dir)
 
             pkgdir = joinpath(out, "abi_stress_py")
-            bundled_lib = joinpath(pkgdir, "bundle", "lib",
-                                   "abi_stress." * Base.Libc.Libdl.dlext)
+            bundled_lib = joinpath(
+                pkgdir, "bundle", "lib",
+                "abi_stress." * Base.Libc.Libdl.dlext
+            )
             @test isfile(bundled_lib)
             # libjulia must be next to the user lib so the embedded
             # RUNPATH ($ORIGIN/../lib[/julia]) resolves it. Privatization is on
@@ -261,9 +399,11 @@ end
             @test !any(startswith.(salted, "libjulia"))
 
             # Import directly from `out`, without installing.
-            cmd = addenv(`$python3 -c "import abi_stress_py; print('ok')"`,
-                         "PYTHONPATH" => out)
-            @test success(run(pipeline(cmd; stderr=stderr, stdout=stdout); wait=true))
+            cmd = addenv(
+                `$python3 -c "import abi_stress_py; print('ok')"`,
+                "PYTHONPATH" => out
+            )
+            @test success(run(pipeline(cmd; stderr = stderr, stdout = stdout); wait = true))
         end
     end
 end

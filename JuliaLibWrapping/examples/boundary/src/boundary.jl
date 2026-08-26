@@ -2,29 +2,76 @@ module boundary
 
 using JLWInterop
 
-JLWInterop.@export_release_entrypoints
+@export_release_entrypoints
 
-Base.@ccallable function count_strs(a::CStrArray{:borrowed})::Int64
-    return Int64(length(Vector{String}(a)))
+@api "Count the strings." function count_strs(a::Vector{String})::Int64
+    Int64(length(a))
 end
 
-Base.@ccallable function upcase_strs(a::CStrArray{:borrowed})::CStrArray{:owned}
-    return CStrArray{:owned}([uppercase(s) for s in Vector{String}(a)])
+@api function upcase_strs(a::Vector{String})::Vector{String}
+    uppercase.(a)
 end
 
-Base.@ccallable function sum_dict(d::CDict{:borrowed, Float64})::Float64
-    return sum(values(Dict{String, Float64}(d)); init = 0.0)
+@api "Sum the values." function sum_dict(d::Dict{String, Float64}; scale::Float64 = 1.0)::Float64
+    scale * sum(values(d); init = 0.0)
 end
 
-Base.@ccallable function make_dict(n::Int64)::CDict{:owned, Float64}
-    return CDict{:owned}(Dict(string("k", i) => Float64(i) for i in 1:n))
+@api function make_dict(n::Int64)::Dict{String, Float64}
+    Dict(string("k", i) => Float64(i) for i in 1:n)
 end
 
-Base.@ccallable function maybe_sqrt(o::COpt{Float64})::COpt{Float64}
-    x = unwrap(o)
-    (isnothing(x) || x < 0.0) && return COpt{Float64}(nothing)
-    return COpt(sqrt(x))
+@api function maybe_sqrt(o::Union{Float64, Nothing})::Union{Float64, Nothing}
+    (isnothing(o) || o < 0.0) && return nothing
+    sqrt(o)
 end
+
+@api function scale_vec(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
+    factor .* a
+end
+
+@api "Always throws." function boom(x::Int64)::Int64
+    error("boom $x")
+end
+
+@api "Length in code units." function str_len(s::String)::Int64
+    Int64(ncodeunits(s))
+end
+
+@api function check_positive(x::Float64)::Nothing
+    x > 0 || error("not positive")
+    nothing
+end
+
+# A raw pointer and a struct this module registers itself. Both cross the
+# boundary unconverted; `@api` still supplies the Python name, the docstring
+# and the error boundary.
+
+struct Extent
+    lo::Int32
+    hi::Int32
+end
+
+JLWInterop.carrier_type(::Type{Extent}) = Extent
+JLWInterop.to_carrier(e::Extent) = e
+JLWInterop.from_carrier(::Type{Extent}, c::Extent) = c
+
+@api "Sum `n` Float64s at `data`." function sum_at(data::Ptr{Float64}, n::Int64)::Float64
+    n >= 0 || error("negative length")
+    s = 0.0
+    for i in 1:n
+        s += unsafe_load(data, i)
+    end
+    s
+end
+
+@api "Widen an extent by `by` on both sides." function widen(e::Extent, by::Int32)::Extent
+    by >= 0 || error("negative width")
+    Extent(e.lo - by, e.hi + by)
+end
+
+# The rest of this module is hand-written: `@api` and `Base.@ccallable`
+# entrypoints coexist in one library. These three keep carrier ownership
+# visible at the boundary, which `@api`'s value-level signatures hide.
 
 # A borrowed pass-through must not free the caller's buffer.
 Base.@ccallable function echo_strs(a::CStrArray{:borrowed})::CStrArray{:borrowed}
