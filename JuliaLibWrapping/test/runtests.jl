@@ -1457,6 +1457,83 @@ end
             @test err isa ErrorException
             @test occursin("scale!", err.msg)
         end
+
+        # A name already claimed by something emitted ABOVE the `def`s — a
+        # struct class, `JLWError`, or another entrypoint's re-export —
+        # leaves that name shadowed and duplicated in `__all__`.
+        shadowed(pyname, extra_symbol = nothing) = begin
+            entries = Dict{String, Any}(
+                "mylib_scale" => merge(entry, Dict{String, Any}("name" => pyname))
+            )
+            abi = if isnothing(extra_symbol)
+                info
+            else
+                twin = JuliaLibWrapping.MethodDesc(
+                    extra_symbol, scale.name, scale.return_type, scale.args
+                )
+                JuliaLibWrapping.ABIInfo(
+                    info.typeinfo, info.forward_declared, [info.entrypoints..., twin]
+                )
+            end
+            mktempdir() do dir
+                dest = PythonTarget(dir, "mylib_py", "mylib")
+                try
+                    write_wrapper(dest, abi; api_metadata = entries)
+                    nothing
+                catch e
+                    e
+                end
+            end
+        end
+        for (pyname, extra) in (
+                ("CString_borrowed", nothing), ("JLWError", nothing), ("shadow", "shadow"),
+            )
+            err = shadowed(pyname, extra)
+            @test err isa ErrorException
+            @test occursin(pyname, err.msg)
+            @test occursin("mylib_scale", err.msg)
+        end
+    end
+
+    @testset "entrypoint symbols must be Python identifiers" begin
+        # `!` is the Julia convention for a mutating function and is illegal
+        # in a Python identifier, so `_lib.mylib_bump!.argtypes` and
+        # `def mylib_bump!(…)` would be two SyntaxErrors on disk. A
+        # hand-written `Base.@ccallable` has no sidecar entry, so the
+        # façade's own name check never sees it.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        scale = onlymatch(m -> m.symbol == "mylib_scale", info.entrypoints)
+        bang = JuliaLibWrapping.MethodDesc(
+            "mylib_bump!", scale.name, scale.return_type, scale.args
+        )
+        broken = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared, [info.entrypoints..., bang]
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, broken)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_bump!", err.msg)
+            # Nothing reaches disk: the check runs before the first write,
+            # and the emitter renames a complete temporary file into place.
+            @test isempty(readdir(joinpath(dir, "mylib_py")))
+        end
+
+        # Every fixture's symbols are legal, which is why this seam went
+        # untested: assert the emitter's own output satisfies the rule.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info)
+            bindings = read(joinpath(dir, "mylib_py", "_lowlevel.py"), String)
+            for m in eachmatch(r"(?m)^def ([^(]*)\(", bindings)
+                @test JuliaLibWrapping._is_python_identifier(m.captures[1])
+            end
+        end
     end
 
     @testset "api docstrings are escaped" begin
