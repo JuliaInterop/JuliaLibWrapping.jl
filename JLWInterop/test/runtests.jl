@@ -390,6 +390,20 @@ using Test
         )
     end
 
+    @testset "CArray{:owned} narrows dims before allocating" begin
+        # `dims` is `NTuple{N,Int32}`, so a dimension past `typemax(Int32)` has
+        # no representation. The conversion must happen before the copy and the
+        # `malloc`: a throw after either one strands memory no one can free.
+        # `Base.OneTo` reports its size without holding storage.
+        huge = Base.OneTo(2^31)
+        @test_throws InexactError CArray{:owned}(huge)
+        allocated = @allocated try
+            CArray{:owned}(huge)
+        catch
+        end
+        @test allocated < 1024
+    end
+
     @testset "CArray{:borrowed} aliases dense arrays" begin
         # `DenseArray` storage is already contiguous and column-major, so the
         # constructor can alias it: `data` is `pointer(A)` and no copy is made.
