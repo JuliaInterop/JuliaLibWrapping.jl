@@ -150,7 +150,8 @@ b = CArray{:borrowed}(buf)  # aliases buf; keep buf alive while b is in use
 """
 function CArray{owned}(A::AbstractArray{T, N}) where {owned, T, N}
     if owned === :owned
-        # Narrow the dims before allocating: a throw here must not strand a malloc'd buffer.
+        # `dims` is `NTuple{N,Int32}` but `size` gives `Int`s, so this can
+        # throw. Narrow before the `malloc`: nothing would free that buffer.
         dims = convert(NTuple{N, Int32}, size(A))
         dense = Array{T, N}(undef, size(A))
         copyto!(dense, A)
@@ -255,7 +256,9 @@ end
 function CString{:owned}(s::AbstractString)
     str = String(s)
     nb = sizeof(str)
-    len = Int32(nb)  # narrow before allocating: a throw here must not strand a malloc'd buffer
+    # `length` is `Int32` but `sizeof` gives an `Int`, so this can throw.
+    # Narrow before the `malloc`: nothing would free that buffer.
+    len = Int32(nb)
     p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
     GC.@preserve str unsafe_copyto!(p, pointer(str), nb)
     return CString{:owned}(len, p)
