@@ -4,13 +4,15 @@ CurrentModule = JLWInterop
 
 # Annotating a library with `@api`
 
-[`@api`](@ref) generates the `@ccallable` wrapper for you. An author writes an
-ordinary Julia function, marks it `@api`, and gets the function itself
-(unchanged), a C-ABI wrapper under a generated symbol, and a build-host
-registry entry carrying the Python name, argument/keyword names, and
-docstring across to the binding target. Hand-written `@ccallable` wrappers
-keep working alongside `@api`-annotated ones — see
-[Two ways to write a library](@ref) in Concepts.
+[`@api`](@ref) generates the `@ccallable` wrapper for you. An author declares
+one call signature of an existing function and gets a C-ABI wrapper under a
+generated symbol plus a build-host registry entry carrying the Python name,
+argument and keyword names, and docstring across to the binding target. The
+macro defines nothing: the function it names must already be callable with
+those types, whether it is defined alongside the declaration or comes from a
+package this layer wraps. Hand-written `@ccallable` wrappers keep working
+alongside `@api` declarations — see [Two ways to write a library](@ref) in
+Concepts.
 
 What is left for a hand-written `Base.@ccallable` is a signature something
 outside the library dictates: `@api` always returns a [`JLWResult`](@ref) or a
@@ -20,44 +22,44 @@ fixes has to be written by hand.
 ## What `@api` generates
 
 ```julia
-@api "Scale a vector." function scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
-    factor .* a
-end
+scale(a::Vector{Float64}; factor::Float64 = 2.0) = factor .* a
+
+@api "Scale a vector." scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
 ```
 
-expands to three things:
+The declaration expands to two things:
 
-1. `scale` itself, unchanged and still callable from Julia.
-2. `Base.@ccallable Boundary_scale(a::CArray{:borrowed,Float64,1}, factor::Float64)::JLWResult{CArray{:owned,Float64,1}}`
-   — arguments converted with [`from_carrier`](@ref), the body called, the
+1. `Base.@ccallable Boundary_scale(a::CArray{:borrowed,Float64,1}, factor::Float64)::JLWResult{CArray{:owned,Float64,1}}`
+   — arguments converted with [`from_carrier`](@ref), `scale` called, the
    result converted with [`to_carrier`](@ref) and wrapped in [`jlw_ok`](@ref),
    or a caught exception turned into [`jlw_error`](@ref).
-3. An [`ApiEntry`](@ref) pushed onto the build-host registry, later written
+2. An [`ApiEntry`](@ref) pushed onto the build-host registry, later written
    by [`write_metadata`](@ref) to the `<lib>.jlw.json` sidecar.
 
-The wrapper's argument and return types are read off `scale`'s own signature,
-and the registry entry is pushed in the same expansion that defines the
-wrapper, so the three cannot disagree.
+Both are built from the declared signature in one expansion, so they cannot
+disagree. The declared types are the boundary contract, not a method
+signature: `scale` may accept more than this, and foreign callers get exactly
+this. A signature `scale` cannot satisfy surfaces when the library is
+compiled, as a missing method.
 
 ## Writing the signature
 
-`@api` takes the definition apart at expansion time, so it accepts one shape:
+`@api` takes the signature apart at expansion time, so it accepts one shape:
 
 ```julia
-@api [docstring] function name(a::T1, …; k::K = default, …)::Ret
-    body
-end
+@api [docstring] name(a::T1, …; k::K = default, …)::Ret
 ```
 
-The assignment form `f(x::Int64)::Int64 = x` and a `where` clause on the
-signature each fail at expansion with a message naming what to write instead.
+A body fails at expansion, in both the `function … end` and the
+`f(x) = …` form, as does a `where` clause. Writing a body would define a
+function, and in a layer that imports the wrapped function by name it would
+add a method to it instead — which recurses when the declared signature is the
+more specific one.
 
-The docstring is the macro's first argument, on the same line as `@api`. Only
-that argument reaches the sidecar and the generated Python. A `"""…"""`
-written on the line *above* `@api` still documents the Julia function — the
-macro passes the definition through `Base.@__doc__` — but the emitter never
-sees it, so the Python wrapper is left undocumented. Write the docstring as
-the macro argument to get both.
+The docstring is the macro's first argument, on the same line as `@api`, and
+it is what reaches the sidecar and the generated Python. Document the Julia
+function itself the ordinary way, with a `"""…"""` above its definition; the
+emitter never sees that one.
 
 The Python name is the Julia function name, so it has to be a legal Python
 identifier. A trailing `!`, the Julia convention for a mutating function, is
@@ -126,10 +128,12 @@ JLWInterop.carrier_type(::Type{Extent}) = Extent
 JLWInterop.to_carrier(e::Extent) = e
 JLWInterop.from_carrier(::Type{Extent}, c::Extent) = c
 
-@api "Widen an extent by `by` on both sides." function widen(e::Extent, by::Int32)::Extent
+function widen(e::Extent, by::Int32)
     by >= 0 || error("negative width")
-    Extent(e.lo - by, e.hi + by)
+    return Extent(e.lo - by, e.hi + by)
 end
+
+@api "Widen an extent by `by` on both sides." widen(e::Extent, by::Int32)::Extent
 ```
 
 The three methods must be defined before the `@api` that uses the type:
@@ -174,9 +178,10 @@ number, a JSON string, `true`/`false`, or `null` — and the Python target
 writes that value as a Python literal, `None` for `null`.
 
 ```julia
-@api function sum_dict(d::Dict{String,Float64}; scale::Float64 = 1.0)::Float64
+sum_dict(d::Dict{String,Float64}; scale::Float64 = 1.0) =
     scale * sum(values(d); init = 0.0)
-end
+
+@api sum_dict(d::Dict{String,Float64}; scale::Float64 = 1.0)::Float64
 ```
 
 becomes `def sum_dict(d, *, scale=1.0)` in the generated façade.
@@ -194,9 +199,9 @@ error-code registry. On the Python side, a non-zero `status.code` raises
 `JLWResult` builds on.
 
 ```julia
-@api "Always throws." function boom(x::Int64)::Int64
-    error("boom $x")
-end
+boom(x::Int64) = error("boom $x")
+
+@api "Always throws." boom(x::Int64)::Int64
 ```
 
 ```python
@@ -239,9 +244,8 @@ using JLWInterop
 
 @export_release_entrypoints
 
-@api function upcase_strs(a::Vector{String})::Vector{String}
-    uppercase.(a)
-end
+upcase_strs(a::Vector{String}) = uppercase.(a)
+@api upcase_strs(a::Vector{String})::Vector{String}
 end
 ```
 
@@ -296,9 +300,8 @@ argument list.
 ## Call path
 
 ```julia
-@api function scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
-    factor .* a
-end
+scale(a::Vector{Float64}; factor::Float64 = 2.0) = factor .* a
+@api scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
 ```
 
 ```python

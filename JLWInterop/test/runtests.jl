@@ -656,10 +656,15 @@ using Test
         m = Module(:ApiTestA)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api "Double it." function twice(x::Float64)::Float64
+            m, quote
+                function twice(x::Float64)
                     2x
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Double it." twice(x::Float64)::Float64
             )
         )
         @test Core.eval(m, :(twice(2.0))) == 4.0
@@ -676,27 +681,28 @@ using Test
         m2 = Module(:ApiTestB)
         Core.eval(m2, :(using JLWInterop))
         Core.eval(
-            m2, :(
-                JLWInterop.@api function len(s::String)::Int64
+            m2, quote
+                function len(s::String)
                     Int64(ncodeunits(s))
                 end
+            end
+        )
+        Core.eval(
+            m2, :(
+                JLWInterop.@api len(s::String)::Int64
             )
         )
         @test only(JLWInterop._API).args == [(:s, String)]
         @test_throws LoadError Core.eval(
             m2, :(
-                JLWInterop.@api function bad(s::String)::String
-                    s
-                end
+                JLWInterop.@api bad(s::String)::String
             )
         )
 
         # An unsupported type is rejected with the argument name in the message.
         @test_throws LoadError Core.eval(
             m2, :(
-                JLWInterop.@api function nope(d::Dict{Int, Int})::Int64
-                    1
-                end
+                JLWInterop.@api nope(d::Dict{Int, Int})::Int64
             )
         )
     end
@@ -720,9 +726,7 @@ using Test
         Core.eval(m, :(using JLWInterop))
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function nonbits(a::Matrix{String})::Int64
-                    1
-                end
+                JLWInterop.@api nonbits(a::Matrix{String})::Int64
             )
         )
     end
@@ -752,42 +756,14 @@ using Test
         Core.eval(m, :(const U = Union{Int64, Float64}))
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function unionarg(a::Vector{U})::Int64
-                    1
-                end
+                JLWInterop.@api unionarg(a::Vector{U})::Int64
             )
         )
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function unionret(n::Int64)::Vector{U}
-                    U[n]
-                end
+                JLWInterop.@api unionret(n::Int64)::Vector{U}
             )
         )
-    end
-
-    @testset "@api passes the definition through Base.@__doc__" begin
-        # A triple-quoted block above `@api` is the idiomatic place to write
-        # a docstring; without `Base.@__doc__` it would document the macro
-        # call's value and leave the Julia function undocumented too.
-        JLWInterop.clear_api!()
-        m = Module(:ApiTestDoc)
-        Core.eval(m, :(using JLWInterop))
-        Core.eval(
-            m, Expr(
-                :macrocall, GlobalRef(Core, Symbol("@doc")), LineNumberNode(0),
-                "Doubles it.\n",
-                :(
-                    JLWInterop.@api function twice(x::Float64)::Float64
-                        2x
-                    end
-                )
-            )
-        )
-        @test occursin("Doubles it.", string(Core.eval(m, :(@doc twice))))
-        # The docstring the sidecar and the Python façade carry is still the
-        # macro's own argument, which this form does not set.
-        @test only(JLWInterop._API).doc == ""
     end
 
     @testset "@api rejects a carrier that is not isbits" begin
@@ -819,9 +795,7 @@ using Test
                 "Main.ApiTestNonBits.Boxed, which is not isbits",
             Core.eval(
                 m, :(
-                    JLWInterop.@api function takes(b::Boxed)::Int64
-                        b.x
-                    end
+                    JLWInterop.@api takes(b::Boxed)::Int64
                 )
             )
         )
@@ -829,9 +803,7 @@ using Test
             "return type Main.ApiTestNonBits.Boxed maps to the carrier",
             Core.eval(
                 m, :(
-                    JLWInterop.@api function gives(x::Int64)::Boxed
-                        Boxed(x)
-                    end
+                    JLWInterop.@api gives(x::Int64)::Boxed
                 )
             )
         )
@@ -841,9 +813,7 @@ using Test
             "only an isbits carrier can be zeroed",
             Core.eval(
                 m, :(
-                    JLWInterop.@api function gives2(x::Int64)::Boxed
-                        Boxed(x)
-                    end
+                    JLWInterop.@api gives2(x::Int64)::Boxed
                 )
             )
         )
@@ -858,9 +828,7 @@ using Test
         err = try
             Core.eval(
                 m, :(
-                    JLWInterop.@api function generic(x::T)::T where {T}
-                        x
-                    end
+                    JLWInterop.@api generic(x::T)::T where {T}
                 )
             )
             nothing
@@ -870,15 +838,25 @@ using Test
         @test err isa LoadError
         @test occursin("where", err.error.msg)
 
-        # The assignment form.
-        err = try
-            Core.eval(m, :(JLWInterop.@api f(x::Int64)::Int64 = x))
-            nothing
-        catch e
-            e
+        # A body, in either form: `@api` declares a signature and defines
+        # nothing, so both are rejected.
+        for body in (
+                :(JLWInterop.@api f(x::Int64)::Int64 = x),
+                :(
+                    JLWInterop.@api function f(x::Int64)::Int64
+                        x
+                    end
+                ),
+            )
+            err = try
+                Core.eval(m, body)
+                nothing
+            catch e
+                e
+            end
+            @test err isa LoadError
+            @test occursin("does not define a function", err.error.msg)
         end
-        @test err isa LoadError
-        @test occursin("function f(x) ... end", err.error.msg)
     end
 
     @testset "@api rejects a String return" begin
@@ -890,10 +868,15 @@ using Test
         Core.eval(m, :(using JLWInterop))
         err = try
             Core.eval(
-                m, :(
-                    JLWInterop.@api function give_str(n::Int64)::String
+                m, quote
+                    function give_str(n::Int64)
                         "x"
                     end
+                end
+            )
+            Core.eval(
+                m, :(
+                    JLWInterop.@api give_str(n::Int64)::String
                 )
             )
             nothing
@@ -905,10 +888,15 @@ using Test
 
         # The same type is fine as an argument.
         Core.eval(
-            m, :(
-                JLWInterop.@api function take_str(s::String)::Int64
+            m, quote
+                function take_str(s::String)
                     Int64(ncodeunits(s))
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api take_str(s::String)::Int64
             )
         )
         @test length(JLWInterop._API) == 1
@@ -919,38 +907,63 @@ using Test
         m = Module(:ApiTestC)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api function up(v::Vector{String})::Vector{String}
+            m, quote
+                function up(v::Vector{String})
                     uppercase.(v)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function total(d::Dict{String, Float64})::Float64
+                JLWInterop.@api up(v::Vector{String})::Vector{String}
+            )
+        )
+        Core.eval(
+            m, quote
+                function total(d::Dict{String, Float64})
                     sum(values(d); init = 0.0)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+                JLWInterop.@api total(d::Dict{String, Float64})::Float64
+            )
+        )
+        Core.eval(
+            m, quote
+                function maybe(x::Union{Float64, Nothing})
                     isnothing(x) ? nothing : 2x
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function scale(a::Vector{Float64})::Vector{Float64}
+                JLWInterop.@api maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+            )
+        )
+        Core.eval(
+            m, quote
+                function scale(a::Vector{Float64})
                     2 .* a
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function shout(s::String)::Nothing
+                JLWInterop.@api scale(a::Vector{Float64})::Vector{Float64}
+            )
+        )
+        Core.eval(
+            m, quote
+                function shout(s::String)
                     nothing
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api shout(s::String)::Nothing
             )
         )
         syms = [e.symbol for e in JLWInterop._API]
@@ -996,88 +1009,148 @@ using Test
         m = Module(:ApiCall)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api function twice(x::Float64)::Float64
+            m, quote
+                function twice(x::Float64)
                     2x
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function len(s::String)::Int64
+                JLWInterop.@api twice(x::Float64)::Float64
+            )
+        )
+        Core.eval(
+            m, quote
+                function len(s::String)
                     Int64(ncodeunits(s))
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function up(v::Vector{String})::Vector{String}
+                JLWInterop.@api len(s::String)::Int64
+            )
+        )
+        Core.eval(
+            m, quote
+                function up(v::Vector{String})
                     uppercase.(v)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function total(d::Dict{String, Float64})::Float64
+                JLWInterop.@api up(v::Vector{String})::Vector{String}
+            )
+        )
+        Core.eval(
+            m, quote
+                function total(d::Dict{String, Float64})
                     sum(values(d); init = 0.0)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function mk(n::Int64)::Dict{String, Float64}
+                JLWInterop.@api total(d::Dict{String, Float64})::Float64
+            )
+        )
+        Core.eval(
+            m, quote
+                function mk(n::Int64)
                     Dict(string("k", i) => Float64(i) for i in 1:n)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+                JLWInterop.@api mk(n::Int64)::Dict{String, Float64}
+            )
+        )
+        Core.eval(
+            m, quote
+                function maybe(x::Union{Float64, Nothing})
                     isnothing(x) ? nothing : 2x
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
+                JLWInterop.@api maybe(x::Union{Float64, Nothing})::Union{Float64, Nothing}
+            )
+        )
+        Core.eval(
+            m, quote
+                function scale(a::Vector{Float64}; factor::Float64 = 2.0)
                     factor .* a
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function check(x::Float64)::Nothing
+                JLWInterop.@api scale(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
+            )
+        )
+        Core.eval(
+            m, quote
+                function check(x::Float64)
                     x > 0 || error("not positive")
                     nothing
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function boom(x::Int64)::Int64
+                JLWInterop.@api check(x::Float64)::Nothing
+            )
+        )
+        Core.eval(
+            m, quote
+                function boom(x::Int64)
                     error("boom $x")
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function argue(x::Int64)::Int64
+                JLWInterop.@api boom(x::Int64)::Int64
+            )
+        )
+        Core.eval(
+            m, quote
+                function argue(x::Int64)
                     throw(ArgumentError("bad argument"))
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function mismatch(x::Int64)::Int64
+                JLWInterop.@api argue(x::Int64)::Int64
+            )
+        )
+        Core.eval(
+            m, quote
+                function mismatch(x::Int64)
                     throw(DimensionMismatch("shapes differ"))
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function outside(x::Int64)::Int64
+                JLWInterop.@api mismatch(x::Int64)::Int64
+            )
+        )
+        Core.eval(
+            m, quote
+                function outside(x::Int64)
                     throw(DomainError(x))
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api outside(x::Int64)::Int64
             )
         )
 
@@ -1163,8 +1236,8 @@ using Test
         Core.eval(m, :(JLWInterop.to_carrier(p::P32) = p))
         Core.eval(m, :(JLWInterop.from_carrier(::Type{P32}, c::P32) = c))
         Core.eval(
-            m, :(
-                JLWInterop.@api function sum_at(data::Ptr{Float64}, n::Int64)::Float64
+            m, quote
+                function sum_at(data::Ptr{Float64}, n::Int64)
                     n >= 0 || error("negative length")
                     s = 0.0
                     for i in 1:n
@@ -1172,21 +1245,36 @@ using Test
                     end
                     s
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function shift(p::P32, by::Int32)::P32
+                JLWInterop.@api sum_at(data::Ptr{Float64}, n::Int64)::Float64
+            )
+        )
+        Core.eval(
+            m, quote
+                function shift(p::P32, by::Int32)
                     by >= 0 || error("negative shift")
                     P32(p.x + by, p.y + by)
                 end
-            )
+            end
         )
         Core.eval(
             m, :(
-                JLWInterop.@api function head(v::Vector{Float64})::Ptr{Float64}
+                JLWInterop.@api shift(p::P32, by::Int32)::P32
+            )
+        )
+        Core.eval(
+            m, quote
+                function head(v::Vector{Float64})
                     pointer(v)
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api head(v::Vector{Float64})::Ptr{Float64}
             )
         )
 
@@ -1236,10 +1324,15 @@ using Test
         m = Module(:ApiTestD)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api "Scale." function scale(x::Vector{Float64}; factor::Float64 = 2.0, label::String)::Vector{Float64}
+            m, quote
+                function scale(x::Vector{Float64}; factor::Float64 = 2.0, label::String)
                     factor .* x
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Scale." scale(x::Vector{Float64}; factor::Float64 = 2.0, label::String)::Vector{Float64}
             )
         )
         e = only(JLWInterop._API)
@@ -1248,32 +1341,24 @@ using Test
         # non-literal defaults are rejected at expansion
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function bad(x::Float64; k::Float64 = sqrt(2))::Float64
-                    x
-                end
+                JLWInterop.@api bad(x::Float64; k::Float64 = sqrt(2))::Float64
             )
         )
         # so is a literal of the wrong type, in either direction
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function wrongtype(x::Float64; k::Float64 = "oops")::Float64
-                    x
-                end
+                JLWInterop.@api wrongtype(x::Float64; k::Float64 = "oops")::Float64
             )
         )
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function narrowing(x::Float64; k::Float64 = 2)::Float64
-                    x
-                end
+                JLWInterop.@api narrowing(x::Float64; k::Float64 = 2)::Float64
             )
         )
         # A second @api method of the same function would claim the same C symbol.
         @test_throws LoadError Core.eval(
             m, :(
-                JLWInterop.@api function scale(x::Float64)::Float64
-                    x
-                end
+                JLWInterop.@api scale(x::Float64)::Float64
             )
         )
         mktempdir() do dir
@@ -1294,10 +1379,15 @@ using Test
         m = Module(:ApiTestE)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api function f(; opt::String = "", req::String)::Int64
+            m, quote
+                function f(; opt::String = "", req::String)
                     0
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api f(; opt::String = "", req::String)::Int64
             )
         )
         e = only(JLWInterop._API)
@@ -1318,15 +1408,14 @@ using Test
         JLWInterop.clear_api!()
         m = Module(:ApiTestH)
         Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(f(; i, f64, b, s, o) = 0))
         Core.eval(
             m, :(
-                JLWInterop.@api function f(
-                        ;
-                        i::Int64 = 3, f64::Float64 = 2.5, b::Bool = true,
-                        s::String = "a\$b\\c", o::Union{Float64, Nothing} = nothing,
-                    )::Int64
-                    0
-                end
+                JLWInterop.@api f(
+                    ;
+                    i::Int64 = 3, f64::Float64 = 2.5, b::Bool = true,
+                    s::String = "a\$b\\c", o::Union{Float64, Nothing} = nothing,
+                )::Int64
             )
         )
         e = only(JLWInterop._API)
@@ -1354,10 +1443,15 @@ using Test
         m = Module(:ApiTestF)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api "Has \"quotes\", a \\backslash\\, and a\nnewline." function g(x::Float64)::Float64
+            m, quote
+                function g(x::Float64)
                     x
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api "Has \"quotes\", a \\backslash\\, and a\nnewline." g(x::Float64)::Float64
             )
         )
         mktempdir() do dir
@@ -1380,10 +1474,15 @@ using Test
         m = Module(:ApiTestI)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
-            m, :(
-                JLWInterop.@api function g(x::Float64; k::UInt8 = -0x10)::Float64
+            m, quote
+                function g(x::Float64; k::UInt8 = -0x10)
                     x
                 end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api g(x::Float64; k::UInt8 = -0x10)::Float64
             )
         )
         @test only(JLWInterop._API).kwargs == [(:k, UInt8, true, 0xf0)]

@@ -158,7 +158,7 @@ end
             mktempdir() do dir
                 proj = mkpath(joinpath(dir, "proj"))
                 withapi = joinpath(dir, "withapi.jl")
-                write(withapi, "using JLWInterop\n@api function f(x::Float64)::Float64\n    x\nend\n")
+                write(withapi, "using JLWInterop\nf(x::Float64) = x\n@api f(x::Float64)::Float64\n")
                 err = try
                     JuliaLibWrapping._maybe_dump_api_metadata(withapi, proj, dir, "lib"; verbose = false)
                     nothing
@@ -181,8 +181,8 @@ end
                 @test isnothing(
                     JuliaLibWrapping._maybe_dump_api_metadata(mentions, proj, dir, "lib"; verbose = false)
                 )
-                @test JuliaLibWrapping._text_uses_api("    @api function f() end")
-                @test JuliaLibWrapping._text_uses_api("@api \"doc\" function f() end")
+                @test JuliaLibWrapping._text_uses_api("    @api f()::Nothing")
+                @test JuliaLibWrapping._text_uses_api("@api \"doc\" f()::Nothing")
                 @test !JuliaLibWrapping._text_uses_api("# see the @api macro")
                 @test !JuliaLibWrapping._text_uses_api("run(`@apid`)")
             end
@@ -201,7 +201,7 @@ end
                 )
                 write(
                     joinpath(pkg, "Pkg.jl"),
-                    "module Pkg\nusing JLWInterop\n@api function f(x::Float64)::Float64\n    x\nend\nend\n"
+                    "module Pkg\nusing JLWInterop\nf(x::Float64) = x\n@api f(x::Float64)::Float64\nend\n"
                 )
                 err = try
                     JuliaLibWrapping._maybe_dump_api_metadata(
@@ -237,7 +237,7 @@ end
                 entry = joinpath(dir, "probe.jl")
                 write(
                     entry,
-                    "module probe\nusing JLWInterop\n@api \"Double it.\" function twice(x::Float64)::Float64\n    2x\nend\nend\n"
+                    "module probe\nusing JLWInterop\ntwice(x::Float64) = 2x\n@api \"Double it.\" twice(x::Float64)::Float64\nend\n"
                 )
 
                 # No Manifest before: none may be left behind.
@@ -414,13 +414,11 @@ end
 
                     using JLWInterop
 
-                    @api "Scale it." function scale_one(x::Float64; factor::Float64 = 2.0)::Float64
-                        factor * x
-                    end
+                    scale_one(x::Float64; factor::Float64 = 2.0) = factor * x
+                    @api "Scale it." scale_one(x::Float64; factor::Float64 = 2.0)::Float64
 
-                    @api function add_ints(a::Int64, b::Int64)::Int64
-                        a + b
-                    end
+                    add_ints(a::Int64, b::Int64) = a + b
+                    @api add_ints(a::Int64, b::Int64)::Int64
 
                     end
                     """

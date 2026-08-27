@@ -183,8 +183,12 @@ from_carrier(::Type{Union{T, Nothing}}, c::COpt{T}) where {T} = unwrap(c)
 
 # Split `f(a::T1, b::T2; k::K=dk)::Ret` into (name, positional-arg exprs,
 # keyword-arg exprs, return-type expr).
+# A `where` binds to the return type in `f(x::T)::T where {T}` and wraps the
+# whole signature in `(f(x::T)::T) where {T}`, so look everywhere.
+_api_has_where(x) = x isa Expr && (x.head === :where || any(_api_has_where, x.args))
+
 function _split_api_signature(sig::Expr)
-    sig.head === :where && error(
+    _api_has_where(sig) && error(
         "@api: `where` clauses are not supported; a wrapper needs one concrete " *
             "signature, so write the argument and return types out"
     )
@@ -193,7 +197,7 @@ function _split_api_signature(sig::Expr)
     ret_expr = sig.args[2]
     call = sig.args[1]
     call isa Expr && call.head === :call ||
-        error("@api expects a function definition")
+        error("@api expects a call signature `f(args...)::Ret`")
     name = call.args[1]
     name isa Symbol || error("@api expects a plain function name")
 
@@ -307,42 +311,50 @@ _api_message_expr() = quote
 end
 
 """
-    @api [docstring] function name(a::T1, ...; k::K = default, ...)::Ret
-        body
-    end
+    @api [docstring] name(a::T1, ...; k::K = default, ...)::Ret
 
-Mark a plain Julia function as a JuliaLibWrapping API entry point. Leaves the
-function unchanged; additionally generates a `Base.@ccallable` C-ABI wrapper
-(named per [`_api_symbol`](@ref)) that converts arguments/return value
-through [`carrier_type`](@ref)/[`carrier_return_type`](@ref)/[`to_carrier`](@ref)/[`from_carrier`](@ref)
-and reports errors via [`JLWResult`](@ref)/[`JLWStatus`](@ref); and records
-an [`ApiEntry`](@ref) in [`_API`](@ref).
+Declare one call signature of `name` as a JuliaLibWrapping API entry point.
+`name` must already be callable with those types — defined in this module, or
+brought in from the package this binding layer wraps. The macro defines
+nothing itself: it generates a `Base.@ccallable` C-ABI wrapper (named per
+[`_api_symbol`](@ref)) that converts arguments and return value through
+[`carrier_type`](@ref)/[`carrier_return_type`](@ref)/[`to_carrier`](@ref)/[`from_carrier`](@ref)
+and reports errors via [`JLWResult`](@ref)/[`JLWStatus`](@ref), and records an
+[`ApiEntry`](@ref) in [`_API`](@ref).
+
+The declared types are the boundary contract, not a method signature: `name`
+may accept more than this, and foreign callers get exactly this. Declaring a
+signature `name` cannot satisfy is caught when the library is compiled, as a
+missing method.
+
+A body is rejected. Writing one would define a function, and in a binding
+layer that imports the wrapped function by name it would silently add a method
+to it instead — which recurses when the declared signature is the more
+specific one.
 
 Every argument and the return type must resolve (via `Core.eval` in the
-defining module) to a type with a carrier mapping; a `String`
-return is rejected. Types are resolved at macro-expansion time, so any
-alias used in the signature must already be defined. Keyword defaults must be
-literals (`Int`, `Float`, `Bool`, `String`, or `nothing`) of the keyword's
-declared type: `k::Float64 = 2` is rejected, `k::Float64 = 2.0` is accepted.
+declaring module) to a type with a carrier mapping; a `String` return is
+rejected. Types are resolved at macro-expansion time, so any alias used in the
+signature must already be defined. Keyword defaults must be literals (`Int`,
+`Float`, `Bool`, `String`, or `nothing`) of the keyword's declared type:
+`k::Float64 = 2` is rejected, `k::Float64 = 2.0` is accepted.
 """
 macro api(args...)
     if length(args) == 2
-        doc, fn = args
+        doc, sig = args
         doc isa String || error("@api: the docstring argument must be a string literal")
     elseif length(args) == 1
-        doc, fn = "", args[1]
+        doc, sig = "", args[1]
     else
-        error("@api expects `[docstring] function ... end`")
+        error("@api expects `[docstring] f(args...)::Ret`")
     end
-    if !(fn isa Expr && fn.head === :function)
-        fn isa Expr && fn.head === :(=) && error(
-            "@api: the assignment form `f(x) = ...` is not supported; write " *
-                "`function f(x) ... end`"
-        )
-        error("@api expects a function definition")
-    end
+    sig isa Expr || error("@api expects a call signature, got `$sig`")
+    (sig.head === :function || sig.head === :(=)) && error(
+        "@api declares a call signature, it does not define a function. Drop the " *
+            "body and write `@api f(x::T)::R`; define `f` itself separately, or in " *
+            "the package this layer wraps."
+    )
 
-    sig = fn.args[1]
     name, arg_exprs, kw_exprs, ret_expr = _split_api_signature(sig)
 
     arg_names = Symbol[]
@@ -444,13 +456,8 @@ macro api(args...)
         )
     )
 
-    # `Base.@__doc__` marks which definition a docstring written above the
-    # `@api` call binds to. Without it the docsystem has nothing to attach to
-    # in the returned block and the function is undocumented in Julia as well
-    # as in Python.
     return esc(
         quote
-            Base.@__doc__ $fn
             $wrapper
             $registration
             nothing

@@ -32,12 +32,14 @@ Hand-writing a `Base.@ccallable` function, as described in the rest of this
 page and in [Error handling across the ABI](@ref), gives full control over the
 C ABI, which is what a signature an outside header fixes needs — `@api`
 always returns a `JLWResult` or a `JLWStatus`.
-[`JLWInterop.@api`](@ref) generates the same kind of wrapper from an ordinary
-Julia function: the C symbol, the argument/return conversions, and `JLWResult`
-error reporting all come from the function's signature, and the wrapper's
-Python name, keyword arguments, and docstring reach the binding target through
-a metadata sidecar. See [Annotating a library with `@api`](@ref) for the type
-table and rules. The two styles coexist in one library.
+[`JLWInterop.@api`](@ref) generates the same kind of wrapper from a declared
+call signature of an ordinary Julia function: the C symbol, the argument and
+return conversions, and `JLWResult` error reporting all come from the declared
+signature, and the wrapper's Python name, keyword arguments, and docstring
+reach the binding target through a metadata sidecar. The declaration defines
+nothing itself, so it can sit in a binding layer around a package it does not
+own. See [Annotating a library with `@api`](@ref) for the type table and
+rules. The two styles coexist in one library.
 
 ## Driving the pipeline
 
