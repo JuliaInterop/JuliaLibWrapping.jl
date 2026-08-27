@@ -414,8 +414,18 @@ end
 function CStrArray{:owned}(v::Vector{String})
     n = length(v)
     data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
-    for i in 1:n
-        unsafe_store!(data, CString{:owned}(v[i]), i)
+    completed = 0
+    try
+        for i in 1:n
+            unsafe_store!(data, CString{:owned}(v[i]), i)
+            completed = i
+        end
+    catch
+        # An element that throws leaves this carrier unreachable to the caller,
+        # so release what is built here. `catch`, not `finally`: on success the
+        # buffers belong to the caller.
+        _free_strings(data, Int64(completed))
+        rethrow()
     end
     return CStrArray{:owned}(Int64(n), data)
 end
@@ -518,11 +528,22 @@ for V in CDICT_VALUE_TYPES
             n = length(dict)
             kp = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
-            i = 0
-            for (k, v) in dict
-                i += 1
-                unsafe_store!(kp, CString{:owned}(k), i)
-                unsafe_store!(vp, v, i)
+            completed = 0
+            try
+                i = 0
+                for (k, v) in dict
+                    i += 1
+                    unsafe_store!(kp, CString{:owned}(k), i)
+                    unsafe_store!(vp, v, i)
+                    completed = i
+                end
+            catch
+                # A key that throws leaves this carrier unreachable to the
+                # caller, so release both arrays here. `catch`, not `finally`:
+                # on success they belong to the caller.
+                _free_strings(kp, Int64(completed))
+                Libc.free(vp)
+                rethrow()
             end
             return CDict{:owned, $V}(Int64(n), kp, vp)
         end

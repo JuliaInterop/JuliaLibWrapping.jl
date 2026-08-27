@@ -594,6 +594,35 @@ using Test
         Libc.free(c2.values)
     end
 
+    @testset "owning constructors release partial work when an element throws" begin
+        # A string of 2 GiB or more has no `Int32` length, so building it throws
+        # partway through the loop, with earlier elements already allocated.
+        # `mallinfo2` measures what `Libc.malloc` still holds; the counter must
+        # come back to where it started. glibc-only, and it needs the memory.
+        if !Sys.islinux() || Sys.free_memory() < 5 * 2^30
+            @test_skip "needs Linux/glibc and ~5 GiB free"
+        else
+            uordblks() = Int(ccall(:mallinfo2, NTuple{10, Csize_t}, ())[8])
+            huge = String(fill(UInt8('x'), 2^31))
+
+            v = vcat(fill("small", 100), huge)
+            @test_throws InexactError CStrArray{:owned}(v)   # also compiles it
+            GC.gc()
+            before = uordblks()
+            @test_throws InexactError CStrArray{:owned}(v)
+            GC.gc()
+            @test uordblks() == before
+
+            d = Dict{String, Float64}(huge => 1.0, ("k$i" => Float64(i) for i in 1:100)...)
+            @test_throws InexactError CDict{:owned}(d)
+            GC.gc()
+            before = uordblks()
+            @test_throws InexactError CDict{:owned}(d)
+            GC.gc()
+            @test uordblks() == before
+        end
+    end
+
     @testset "COpt" begin
         @test unwrap(COpt(3.5)) === 3.5
         o = COpt{Float64}(nothing)
