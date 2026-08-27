@@ -98,6 +98,14 @@ caller's terms, and the caller keeps the memory alive for the duration of the
 call. `Vector{T}` is the row to reach for when the length should travel with
 the buffer.
 
+Returning a `Ptr{T}` is allowed and puts the contract entirely in your hands.
+The address must still be one the caller can reach after the call returns —
+a pointer into a buffer it passed in, or into storage the library keeps. A
+pointer into a fresh Julia allocation dangles once the collector runs, and one
+into `Libc.malloc` memory leaks, because nothing on the Python side knows how
+to free it. Return an `Array` when the caller should own the buffer: it gets a
+length and a release path.
+
 The [`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
 example exercises every row except the rejected `String` return and the
 multi-dimensional `Array{T,N}` form; its arrays are all `Vector`s.

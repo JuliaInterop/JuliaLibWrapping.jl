@@ -70,8 +70,13 @@ carrier holds them as raw bytes behind a pointer,
 which is only sound for bits types. `Vector{String}` is the exception, and
 has its own carrier that copies each element.
 
-A `Ptr{T}` is its own carrier and crosses unconverted: no length and no
-ownership travel with it, and the caller owns both.
+A `Ptr{T}` is its own carrier and crosses unconverted: neither a length nor
+an owner travels with it. An argument addresses memory the caller owns. A
+return must address memory that outlives the call and that the caller can
+already reach — a buffer it passed in, or storage the library holds onto. A
+pointer into a fresh Julia allocation dangles as soon as the collector runs;
+one into `Libc.malloc` memory leaks, because nothing on the far side knows to
+free it.
 
 `_API_SCALARS` is itself a `Union`, so a union *of* scalars satisfies
 `T <: _API_SCALARS`. A carrier holds its payload as raw bytes at a known

@@ -881,6 +881,39 @@ using Test
         @test occursin("function f(x) ... end", err.error.msg)
     end
 
+    @testset "@api rejects a String return" begin
+        # A returned `String` would need a carrier that owns its bytes, and
+        # `CString` has no owning constructor reachable from `to_carrier`.
+        # `Vector{String}` and `Ptr` both return fine; only `String` is out.
+        JLWInterop.clear_api!()
+        m = Module(:ApiTestStrRet)
+        Core.eval(m, :(using JLWInterop))
+        err = try
+            Core.eval(
+                m, :(
+                    JLWInterop.@api function give_str(n::Int64)::String
+                        "x"
+                    end
+                )
+            )
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("String returns are not supported", err.error.msg)
+
+        # The same type is fine as an argument.
+        Core.eval(
+            m, :(
+                JLWInterop.@api function take_str(s::String)::Int64
+                    Int64(ncodeunits(s))
+                end
+            )
+        )
+        @test length(JLWInterop._API) == 1
+    end
+
     @testset "@api type table" begin
         JLWInterop.clear_api!()
         m = Module(:ApiTestC)
