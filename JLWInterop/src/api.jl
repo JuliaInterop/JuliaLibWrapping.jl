@@ -384,43 +384,67 @@ const _API_ERROR_TABLE = (
     (:(Base.BoundsError), _API_ERROR_CODES.bounds, false),
 )
 
-# `nameof(typeof(e))` names an exception without `showerror`, which does not
-# trim. `typeof(e)` is concrete at the call, so this resolves.
-_api_typename_expr() = :(m = String(string(nameof(typeof(e)))))
+"""
+    _api_status_expr(e::Symbol) -> Expr
 
-# Read a `msg` field into `m`. The field is declared `AbstractString`, so it is
-# assigned only where `isa` has narrowed it to a concrete type: this runs
-# inside the trimmed library, where any call with an abstract argument type is
-# a build failure — `String(x)` and `string(x)` alike.
-function _api_message_branch()
-    msg = gensym(:msg)
-    return quote
-        $msg = e.msg
-        if $msg isa String
-            m = $msg
-        elseif $msg isa SubString{String}
-            m = String($msg)
+An expression evaluating to `(code, message)` for the exception bound to `e`.
+
+This has to be inlined code rather than a function the wrapper calls: `catch`
+binds `e` as `Any`, so `_api_status(e)` would be a dynamic dispatch, and the
+wrapper runs inside the trimmed library where that is a build failure. The
+same rule shapes what each branch may do — a message is read only once `isa`
+has narrowed it to a concrete string type, because `String(x)` and `string(x)`
+are equally dynamic when `x` is an `AbstractString`. `nameof(typeof(e))` needs
+no narrowing, `typeof(e)` being concrete at the call.
+
+The generated code is one `isa` chain over [`_API_ERROR_TABLE`](@ref) ending
+in the unrecognized case:
+
+    let code::Int32 = 1, msg::String = "error"
+        if e isa Base.ErrorException
+            code = 1
+            field = e.msg
+            field isa String && (msg = field)          # plus SubString
+        elseif e isa Base.ArgumentError
+            ...
+        else
+            msg = String(string(nameof(typeof(e))))
+        end
+        (code, msg)
+    end
+
+`e` is the caller's own name for the caught exception; every other name is a
+`gensym`, so the result can be spliced into any scope that binds `e`.
+"""
+function _api_status_expr(e::Symbol)
+    code, msg = gensym(:code), gensym(:msg)
+    name_the_type = :($msg = String(string(nameof(typeof($e)))))
+    read_the_msg = function ()
+        field = gensym(:field)
+        return quote
+            $field = $e.msg
+            if $field isa String
+                $msg = $field
+            elseif $field isa SubString{String}
+                $msg = String($field)
+            end
         end
     end
-end
 
-# `(code, message)` for the caught exception bound to `e`, as one `isa` chain
-# over `_API_ERROR_TABLE` ending in the unrecognized case.
-function _api_status_expr()
-    chain = _api_typename_expr()
-    for (T, code, has_msg) in reverse(_API_ERROR_TABLE)
+    chain = name_the_type
+    for (T, c, has_msg) in reverse(_API_ERROR_TABLE)
         branch = quote
-            code = $code
-            $(has_msg ? _api_message_branch() : _api_typename_expr())
+            $code = $c
+            $(has_msg ? read_the_msg() : name_the_type)
         end
-        chain = Expr(:if, :(e isa $T), branch, chain)
+        chain = Expr(:if, :($e isa $T), branch, chain)
     end
     return quote
         let
-            code::Int32 = $(_API_ERROR_CODES.generic)
-            m::String = "error"
+            $code::Int32 = $(_API_ERROR_CODES.generic)
+            $msg::String = "error"
             $chain
-            (code, m)
+            ($code, $msg)
         end
     end
 end
@@ -608,15 +632,20 @@ macro api(args...)
         :($M.to_carrier_as($ret_type, $call_expr)) :
         :($M.to_carrier_opt($ret_opt_inner, $M._api_as($ret_type, $call_expr)))
 
+    # The whole wrapper body is escaped into the declaring module, so every
+    # name it binds is a `gensym`: nothing here can shadow, or be shadowed by,
+    # anything the module defines.
+    err = gensym(:err)
+    status = gensym(:status)
     wrapper = if is_void
         quote
             Base.@ccallable function $ccallable_name($(wrapper_args...))::$M.JLWStatus
                 try
                     $call_expr
                     $M.jlw_ok()
-                catch e
-                    code, msg = $(_api_status_expr())
-                    $M.jlw_error(code, msg)
+                catch $err
+                    $status = $(_api_status_expr(err))
+                    $M.jlw_error($status[1], $status[2])
                 end
             end
         end
@@ -625,9 +654,9 @@ macro api(args...)
             Base.@ccallable function $ccallable_name($(wrapper_args...))::$M.JLWResult{$ret_carrier}
                 try
                     $M.jlw_ok($to_carrier_call)
-                catch e
-                    code, msg = $(_api_status_expr())
-                    $M.jlw_error(code, msg, $ret_carrier)
+                catch $err
+                    $status = $(_api_status_expr(err))
+                    $M.jlw_error($status[1], $status[2], $ret_carrier)
                 end
             end
         end
