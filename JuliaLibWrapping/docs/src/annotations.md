@@ -369,6 +369,8 @@ _api_symbol
 _REGISTRY_NAME
 _register!
 _API_ERROR_CODES
+_API_ERROR_TABLE
+_api_status_expr
 _api_as
 _julia_docstring
 _zero_carrier

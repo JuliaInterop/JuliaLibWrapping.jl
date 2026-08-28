@@ -373,9 +373,14 @@ const _API_ERROR_CODES = (;
     inexact = Int32(4), bounds = Int32(5),
 )
 
-# The exception types an `@api` wrapper recognizes: the code it reports and
-# whether it carries a `msg` field worth reading. Order is the order of the
-# generated `isa` chain, so a subtype must precede its supertype.
+"""
+    JLWInterop._API_ERROR_TABLE
+
+The exception types an `@api` wrapper recognizes, as
+`(type, code, carries a msg field)`. Recognizing another one is a row here;
+[`_api_status_expr`](@ref) builds the wrapper's `isa` chain from it in this
+order, so a subtype must precede its supertype.
+"""
 const _API_ERROR_TABLE = (
     (:(Base.ErrorException), _API_ERROR_CODES.generic, true),
     (:(Base.ArgumentError), _API_ERROR_CODES.argument, true),
