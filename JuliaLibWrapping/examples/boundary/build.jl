@@ -19,10 +19,9 @@
 # on JuliaC.jl — without it, `build_library` errors with a hint.
 #
 # The extra machinery below exists only because we are dogfooding against
-# the in-tree `JLWInterop/` checkout: `juliac` requires `[sources]` paths
-# in the entry project to be absolute, so we materialize a transient copy
-# of `Project.toml` with `[sources]` injected. Once `JLWInterop` is
-# registered, the `prepare_project` step disappears too.
+# the in-tree `JLWInterop/` checkout: `prepare_project` adds its path to a
+# temporary copy of `Project.toml`.
+# Once `JLWInterop` is registered, the `prepare_project` step disappears too.
 
 using TOML: TOML
 
