@@ -1,0 +1,20 @@
+name = "boundary"
+uuid = "5fec5b13-3cc8-482b-be88-c9d7920ddc6e"
+version = "0.0.1"
+
+# The binding layer. It depends on the package next door and on JLWInterop;
+# the package itself depends on neither. Both `[sources]` paths are relative,
+# so this file is committable and works from any checkout.
+
+[deps]
+Boundary = "d6ef1b8b-8768-406c-8849-246498603918"
+JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
+
+[sources]
+Boundary = {path = ".."}
+JLWInterop = {path = "../../../../JLWInterop"}
+
+[compat]
+Boundary = "0.0.1"
+JLWInterop = "0.2"
+julia = "1.13"

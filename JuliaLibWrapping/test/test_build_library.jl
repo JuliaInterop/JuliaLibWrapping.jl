@@ -532,14 +532,19 @@ end
                 )
                 @info "Skipping example smoke tests (no python3 with numpy)"
             else
-                for name in ("ols", "boundary")
+                # `ols` keeps its entrypoints in the package; `boundary` puts
+                # them in a `lib/` binding layer, whose own project names the
+                # package and JLWInterop by relative path.
+                for (name, libsub) in (("ols", nothing), ("boundary", "lib"))
                     exdir = joinpath(@__DIR__, "..", "examples", name)
-                    entry = joinpath(exdir, "src", name * ".jl")
+                    srcdir = isnothing(libsub) ? exdir : joinpath(exdir, libsub)
+                    entry = joinpath(srcdir, "src", name * ".jl")
+                    project = isnothing(libsub) ? example_project(exdir) : srcdir
                     mktempdir() do out
                         result = build_library(
                             entry,
                             [PythonTarget(out, name * "_py", name)];
-                            project = example_project(exdir), libname = name,
+                            project, libname = name,
                             libdir = out, cpu_target = "generic"
                         )
                         @test isfile(result.library)

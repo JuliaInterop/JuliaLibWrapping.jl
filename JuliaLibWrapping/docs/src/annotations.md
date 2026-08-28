@@ -127,7 +127,8 @@ length and a release path.
 
 The [`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
 example exercises every row except the multi-dimensional `Array{T,N}` form;
-its arrays are all `Vector`s.
+its arrays are all `Vector`s. Its declarations live in a binding layer beside
+the package — see [Where the declarations live](@ref).
 
 ## Registering your own type
 
@@ -252,6 +253,36 @@ distinct symbols (`A_B_f`, `C_B_f`) even though `nameof` alone would
 collide. The Python name is `name`, unqualified — it comes from the sidecar,
 not the C symbol.
 
+## Where the declarations live
+
+A declaration defines nothing, so it does not have to sit in the package it
+exposes. Two layouts work.
+
+**A binding layer beside the package.** The package stays as it is, and a
+second project holds the declarations:
+
+```
+Foo/
+├── Project.toml          # what a Julia user installs — no JLWInterop dep
+├── src/Foo.jl
+└── lib/
+    ├── Project.toml      # [sources] Foo = {path = ".."}
+    └── src/foo.jl        # `using Foo: scale` + the @api declarations
+```
+
+`build_library` is pointed at `lib/`. The package gains no dependency and no
+entrypoints, and someone who does not maintain it can still write its
+bindings. Importing the wrapped functions by name is safe here precisely
+because a declaration cannot define a method on them. Relative `[sources]`
+paths are resolved by compiling a temporary copy with them made absolute, so
+`lib/Project.toml` stays committable.
+[`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
+is built this way.
+
+**Declarations inside the package.** Simpler, at the cost of a JLWInterop
+dependency for every Julia user of the package and entry points compiled into
+it.
+
 ## The include-tree limitation
 
 `build_library` dumps the metadata sidecar by spawning a subprocess that
@@ -262,6 +293,10 @@ package loaded with `using`/`import` does not register: its precompilation ran
 in a different process, and the dump subprocess never re-executes that
 package's top-level code, so no [`ApiEntry`](@ref) is pushed in the process
 that writes the sidecar.
+
+This constrains the declarations, not the functions they name. In the
+binding-layer form the declarations are in the entry file and the package is
+an ordinary `using` dependency, which is what the rule asks for.
 
 ## Owning returns require `@export_release_entrypoints`
 
@@ -303,9 +338,9 @@ from ._lowlevel import Boundary_upcase_strs  # TODO: hand-wrap — owning return
 
 ```julia
 result = build_library(
-    joinpath(@__DIR__, "src/boundary.jl"),
+    joinpath(@__DIR__, "lib/src/boundary.jl"),
     [PythonTarget(out, "boundary_py", "boundary")];
-    project = @__DIR__, libname = "boundary", libdir = out,
+    project = joinpath(@__DIR__, "lib"), libname = "boundary", libdir = out,
 )
 ```
 
