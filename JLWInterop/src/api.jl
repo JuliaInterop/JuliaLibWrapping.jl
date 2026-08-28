@@ -373,48 +373,55 @@ const _API_ERROR_CODES = (;
     inexact = Int32(4), bounds = Int32(5),
 )
 
-# `(code, message)` for the caught exception bound to `e`. Every branch has to
-# be concretely typed: this runs inside the trimmed library, where a dynamic
-# call is a build failure, so a message is read only when `isa` has narrowed
-# it to a concrete string type. `nameof(typeof(e))` names the rest without
-# `showerror`, which does not trim.
-_api_status_expr() = quote
-    let
-        code::Int32 = $(_API_ERROR_CODES.generic)
-        m::String = "error"
-        if e isa Base.ErrorException
-            em = e.msg
-            if em isa String
-                m = em
-            elseif em isa SubString{String}
-                m = String(em)
-            end
-        elseif e isa Base.ArgumentError
-            code = $(_API_ERROR_CODES.argument)
-            am = e.msg
-            if am isa String
-                m = am
-            elseif am isa SubString{String}
-                m = String(am)
-            end
-        elseif e isa Base.DimensionMismatch
-            code = $(_API_ERROR_CODES.dimension)
-            dm = e.msg
-            if dm isa String
-                m = dm
-            elseif dm isa SubString{String}
-                m = String(dm)
-            end
-        elseif e isa Base.InexactError
-            code = $(_API_ERROR_CODES.inexact)
-            m = String(string(nameof(typeof(e))))
-        elseif e isa Base.BoundsError
-            code = $(_API_ERROR_CODES.bounds)
-            m = String(string(nameof(typeof(e))))
-        else
-            m = String(string(nameof(typeof(e))))
+# The exception types an `@api` wrapper recognizes: the code it reports and
+# whether it carries a `msg` field worth reading. Order is the order of the
+# generated `isa` chain, so a subtype must precede its supertype.
+const _API_ERROR_TABLE = (
+    (:(Base.ErrorException), _API_ERROR_CODES.generic, true),
+    (:(Base.ArgumentError), _API_ERROR_CODES.argument, true),
+    (:(Base.DimensionMismatch), _API_ERROR_CODES.dimension, true),
+    (:(Base.InexactError), _API_ERROR_CODES.inexact, false),
+    (:(Base.BoundsError), _API_ERROR_CODES.bounds, false),
+)
+
+# `nameof(typeof(e))` names an exception without `showerror`, which does not
+# trim. `typeof(e)` is concrete at the call, so this resolves.
+_api_typename_expr() = :(m = String(string(nameof(typeof(e)))))
+
+# Read a `msg` field into `m`. The field is declared `AbstractString`, so it is
+# assigned only where `isa` has narrowed it to a concrete type: this runs
+# inside the trimmed library, where any call with an abstract argument type is
+# a build failure — `String(x)` and `string(x)` alike.
+function _api_message_branch()
+    msg = gensym(:msg)
+    return quote
+        $msg = e.msg
+        if $msg isa String
+            m = $msg
+        elseif $msg isa SubString{String}
+            m = String($msg)
         end
-        (code, m)
+    end
+end
+
+# `(code, message)` for the caught exception bound to `e`, as one `isa` chain
+# over `_API_ERROR_TABLE` ending in the unrecognized case.
+function _api_status_expr()
+    chain = _api_typename_expr()
+    for (T, code, has_msg) in reverse(_API_ERROR_TABLE)
+        branch = quote
+            code = $code
+            $(has_msg ? _api_message_branch() : _api_typename_expr())
+        end
+        chain = Expr(:if, :(e isa $T), branch, chain)
+    end
+    return quote
+        let
+            code::Int32 = $(_API_ERROR_CODES.generic)
+            m::String = "error"
+            $chain
+            (code, m)
+        end
     end
 end
 
