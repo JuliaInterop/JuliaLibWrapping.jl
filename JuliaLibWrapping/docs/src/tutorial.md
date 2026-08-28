@@ -93,10 +93,10 @@ Requirements:
 - ABI export requires Julia 1.13 or later.
 
 - The `[deps]` here describe what must be baked into `ols.so`. Keep it minimal,
-  without build tooling or test dependencies. If you need a `[sources]` entry to
-  point at a local checkout, use an absolute path: `juliac` relocates the
-  project into a temporary directory before compiling, so relative `[sources]`
-  paths cannot be resolved, and [`build_library`](@ref) rejects them.
+  without build tooling or test dependencies. `[sources]` entries may use
+  relative paths, such as `path = ".."` when this project is a subdirectory of
+  the package it wraps. [`build_library`](@ref) handles `juliac`'s project
+  relocation without modifying the original project.
 
 ## 3. Build the library and Python package
 

@@ -5,8 +5,7 @@ using JuliaC
 using Test
 using TOML: TOML
 
-# `juliac` requires every `[sources]` path in the entry project to be
-# absolute, and the examples deliberately ship without one so their
+# The examples deliberately ship without a `[sources]` entry so their
 # `Project.toml` carries no machine-specific path. Materialize a transient
 # project that points `JLWInterop` at the in-tree checkout.
 function example_project(exdir)
@@ -25,54 +24,126 @@ function example_project(exdir)
 end
 
 @testset "build_library" begin
-    @testset "validate [sources] paths" begin
-        mktempdir() do proj
-            open(joinpath(proj, "Project.toml"), "w") do io
-                write(
-                    io, """
-                    name = "Dummy"
-                    uuid = "00000000-0000-0000-0000-000000000000"
+    @testset "materialize [sources] paths" begin
+        materialize = JuliaLibWrapping._materialize_project
 
-                    [sources]
-                    Foo = {path = "../foo"}
-                    """
-                )
-            end
-            entry = joinpath(proj, "src.jl")
-            touch(entry)
-            err = try
-                build_library(entry, AbstractTarget[]; project = proj, libname = "x")
-                nothing
-            catch e
-                e
-            end
-            @test err isa ArgumentError
-            @test occursin("relative path", err.msg)
-            @test occursin("Foo", err.msg)
+        # Rewrite relative paths while preserving other entries.
+        mktempdir() do root
+            mkpath(joinpath(root, "foo"))
+            proj = joinpath(root, "proj")
+            mkpath(joinpath(proj, "src"))
+            write(joinpath(proj, "src", "dummy.jl"), "module Dummy end\n")
+            pf = joinpath(proj, "Project.toml")
+            write(pf, """
+            name = "Dummy"
+            uuid = "00000000-0000-0000-0000-000000000000"
+            version = "1.2.3"
+
+            [deps]
+            Foo = "00000000-0000-0000-0000-0000000000f0"
+
+            [compat]
+            Foo = "0.1"
+
+            [sources]
+            Foo = {path = "../foo"}
+            Bar = {path = "/somewhere/bar"}
+            Baz = {url = "https://example.com/Baz.jl", rev = "main"}
+            """)
+            before = read(pf)
+
+            dir = materialize(proj)
+            @test dir != proj
+            toml = TOML.parsefile(joinpath(dir, "Project.toml"))
+            @test toml["sources"]["Foo"]["path"] == abspath(joinpath(root, "foo"))
+            @test toml["sources"]["Bar"]["path"] == "/somewhere/bar"
+            @test toml["sources"]["Baz"] == Dict("url" => "https://example.com/Baz.jl",
+                                                 "rev" => "main")
+            @test toml["name"] == "Dummy"
+            @test toml["uuid"] == "00000000-0000-0000-0000-000000000000"
+            @test toml["version"] == "1.2.3"
+            @test toml["deps"] == Dict("Foo" => "00000000-0000-0000-0000-0000000000f0")
+            @test toml["compat"] == Dict("Foo" => "0.1")
+
+            # Copy package sources along with the TOML files.
+            @test read(joinpath(dir, "src", "dummy.jl"), String) == "module Dummy end\n"
+
+            # The original is untouched.
+            @test read(pf) == before
         end
 
-        # Absolute paths are accepted.
-        mktempdir() do proj
-            open(joinpath(proj, "Project.toml"), "w") do io
-                write(
-                    io, """
-                    name = "Dummy"
-                    uuid = "00000000-0000-0000-0000-000000000001"
+        # Rewrite developed-dependency paths in versioned and plain manifests.
+        mktempdir() do root
+            mkpath(joinpath(root, "foo"))
+            proj = joinpath(root, "proj")
+            mkpath(proj)
+            write(joinpath(proj, "Project.toml"), """
+            [sources]
+            Foo = {path = "../foo"}
+            """)
+            mf = joinpath(proj, "Manifest.toml")
+            write(mf, """
+            julia_version = "1.13.0"
+            manifest_format = "2.0"
 
-                    [sources]
-                    Foo = {path = "/tmp/foo"}
-                    """
-                )
+            [[deps.Foo]]
+            path = "../foo"
+            uuid = "00000000-0000-0000-0000-0000000000f0"
+            version = "0.1.0"
+
+            [[deps.Bar]]
+            path = "/somewhere/bar"
+            uuid = "00000000-0000-0000-0000-0000000000ba"
+            version = "0.2.0"
+            """)
+            mf113 = joinpath(proj, "Manifest-v1.13.toml")
+            cp(mf, mf113)
+            before, before113 = read(mf), read(mf113)
+
+            dir = materialize(proj)
+            for name in ("Manifest.toml", "Manifest-v1.13.toml")
+                manifest = TOML.parsefile(joinpath(dir, name))
+                @test manifest["manifest_format"] == "2.0"
+                @test only(manifest["deps"]["Foo"])["path"] == abspath(joinpath(root, "foo"))
+                @test only(manifest["deps"]["Bar"])["path"] == "/somewhere/bar"
+                @test only(manifest["deps"]["Foo"])["version"] == "0.1.0"
             end
-            @test JuliaLibWrapping._validate_sources_absolute(proj) === nothing
+            @test read(mf) == before
+            @test read(mf113) == before113
         end
 
-        # No [sources] table at all is fine.
+        # Errors identify missing paths and their entries.
         mktempdir() do proj
-            open(joinpath(proj, "Project.toml"), "w") do io
-                write(io, "name = \"Dummy\"\nuuid = \"00000000-0000-0000-0000-000000000002\"\n")
-            end
-            @test JuliaLibWrapping._validate_sources_absolute(proj) === nothing
+            write(joinpath(proj, "Project.toml"), """
+            [sources]
+            Foo = {path = "../nowhere"}
+            """)
+            @test_throws "\"Foo\"" materialize(proj)
+            @test_throws "../nowhere" materialize(proj)
+            @test_throws abspath(joinpath(proj, "..", "nowhere")) materialize(proj)
+        end
+
+        # Use the original project when no paths need rewriting.
+        mktempdir() do proj
+            pf = joinpath(proj, "Project.toml")
+            write(pf, """
+            name = "Dummy"
+            uuid = "00000000-0000-0000-0000-000000000001"
+
+            [sources]
+            Foo = {path = "/somewhere/foo"}
+            """)
+            @test materialize(proj) == proj
+        end
+
+        mktempdir() do proj
+            write(joinpath(proj, "Project.toml"),
+                  "name = \"Dummy\"\nuuid = \"00000000-0000-0000-0000-000000000002\"\n")
+            @test materialize(proj) == proj
+        end
+
+        mktempdir() do proj
+            @test materialize(proj) == proj
         end
     end
 

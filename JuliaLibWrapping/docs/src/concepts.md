@@ -65,9 +65,10 @@ is driven through [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl)
 (a weak dependency): load it with `using JuliaC` before calling
 `build_library`.
 
-Relative `[sources]` paths in the entry project's `Project.toml` are
-rejected up front, because `juliac` relocates the project into a
-temporary directory before compiling.
+`build_library` supports relative `[sources]` paths, including paths in
+manifests for developed dependencies. It compiles from a temporary copy
+with absolute paths because `juliac` relocates the project before
+compiling. The original project is unchanged.
 
 ## The ABI data model
 
