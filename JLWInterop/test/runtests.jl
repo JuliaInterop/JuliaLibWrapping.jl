@@ -652,7 +652,6 @@ using Test
     end
 
     @testset "@api scalars and strings" begin
-        JLWInterop.clear_api!()
         m = Module(:ApiTestA)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -668,7 +667,7 @@ using Test
             )
         )
         @test Core.eval(m, :(twice(2.0))) == 4.0
-        e = only(JLWInterop._API)
+        e = only(JLWInterop.api_entries(m))
         @test e.name === :twice
         @test e.symbol == "ApiTestA_twice"
         @test e.args == [(:x, Float64)]
@@ -677,7 +676,6 @@ using Test
         @test e.doc == "Double it."
 
         # String maps to CString as an argument; as a return it is rejected.
-        JLWInterop.clear_api!()
         m2 = Module(:ApiTestB)
         Core.eval(m2, :(using JLWInterop))
         Core.eval(
@@ -692,7 +690,7 @@ using Test
                 JLWInterop.@api len(s::String)::Int64
             )
         )
-        @test only(JLWInterop._API).args == [(:s, String)]
+        @test only(JLWInterop.api_entries(m2)).args == [(:s, String)]
         @test_throws LoadError Core.eval(
             m2, :(
                 JLWInterop.@api bad(s::String)::String
@@ -721,7 +719,6 @@ using Test
         @test JLWInterop.carrier_type(Vector{String}) === CStrArray{:borrowed}
         @test JLWInterop.carrier_return_type(Vector{String}) === CStrArray{:owned}
 
-        JLWInterop.clear_api!()
         m = Module(:ApiTestJ)
         Core.eval(m, :(using JLWInterop))
         @test_throws LoadError Core.eval(
@@ -750,7 +747,6 @@ using Test
         @test JLWInterop.carrier_type(Dict{String, Int64}) === CDict{:borrowed, Int64}
         @test JLWInterop.carrier_type(Union{Int64, Nothing}) === COpt{Int64}
 
-        JLWInterop.clear_api!()
         m = Module(:ApiTestUnion)
         Core.eval(m, :(using JLWInterop))
         Core.eval(m, :(const U = Union{Int64, Float64}))
@@ -771,7 +767,6 @@ using Test
         # returns a zero-filled one when the body throws, and `_zero_carrier`
         # can only zero an isbits type. Without this check the throw lands
         # inside the wrapper's `catch`, which aborts a trimmed library.
-        JLWInterop.clear_api!()
         m = Module(:ApiTestNonBits)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -820,7 +815,6 @@ using Test
     end
 
     @testset "@api rejects shapes it cannot take apart" begin
-        JLWInterop.clear_api!()
         m = Module(:ApiTestK)
         Core.eval(m, :(using JLWInterop))
         # A `where` clause: the return annotation is present, so the message
@@ -859,51 +853,93 @@ using Test
         end
     end
 
-    @testset "@api rejects a String return" begin
-        # A returned `String` would need a carrier that owns its bytes, and
-        # `CString` has no owning constructor reachable from `to_carrier`.
-        # `Vector{String}` and `Ptr` both return fine; only `String` is out.
-        JLWInterop.clear_api!()
+    @testset "@api String argument borrows, String return owns" begin
+        # The two directions take different carriers: an argument reads the
+        # caller's bytes, a return hands over a copy the caller frees.
         m = Module(:ApiTestStrRet)
         Core.eval(m, :(using JLWInterop))
-        err = try
-            Core.eval(
-                m, quote
-                    function give_str(n::Int64)
-                        "x"
-                    end
-                end
-            )
-            Core.eval(
-                m, :(
-                    JLWInterop.@api give_str(n::Int64)::String
-                )
-            )
-            nothing
-        catch e
-            e
-        end
-        @test err isa LoadError
-        @test occursin("String returns are not supported", err.error.msg)
-
-        # The same type is fine as an argument.
         Core.eval(
             m, quote
-                function take_str(s::String)
-                    Int64(ncodeunits(s))
+                function shout(s::String)
+                    return uppercase(s)
                 end
             end
         )
-        Core.eval(
-            m, :(
-                JLWInterop.@api take_str(s::String)::Int64
-            )
-        )
-        @test length(JLWInterop._API) == 1
+        Core.eval(m, :(JLWInterop.@api shout(s::String)::String))
+
+        @test JLWInterop.carrier_type(String) === CString{:borrowed}
+        @test JLWInterop.carrier_return_type(String) === CString{:owned}
+        e = only(JLWInterop.api_entries(m))
+        @test e.args == [(:s, String)]
+        @test e.ret === String
+
+        buf = Vector{UInt8}(codeunits("héllo"))
+        GC.@preserve buf begin
+            borrowed = CString{:borrowed}(Int32(length(buf)), pointer(buf))
+            r = Core.eval(m, :(ApiTestStrRet_shout($borrowed)))
+            @test iszero(r.status.code)
+            @test String(r.value) == "HÉLLO"
+            # The return is a fresh allocation, not the argument's buffer.
+            @test r.value.data != borrowed.data
+            Libc.free(r.value.data)
+        end
     end
 
+
+    @testset "@api needs only the macro in scope" begin
+        # `using JLWInterop: @api` brings in the macro without the module
+        # name, so the expansion has to refer to JLWInterop by value.
+        m = Module(:ApiTestScope)
+        Core.eval(m, :(using JLWInterop: @api))
+        Core.eval(
+            m, quote
+                twice(x::Float64) = 2x
+            end
+        )
+        Core.eval(m, :(@api twice(x::Float64)::Float64))
+        @test !isdefined(m, :JLWInterop)
+        @test only(JLWInterop.api_entries(m)).symbol == "ApiTestScope_twice"
+        r = Core.eval(m, :(ApiTestScope_twice(2.5)))
+        @test iszero(r.status.code)
+        @test r.value == 5.0
+    end
+
+    @testset "the registry belongs to the declaring module" begin
+        # The registry has to live in the annotated module so that a
+        # precompiled package carries its entries in its own cache file.
+        m = Module(:ApiTestReg)
+        Core.eval(m, :(using JLWInterop))
+        @test !isdefined(m, JLWInterop._REGISTRY_NAME)
+        Core.eval(
+            m, quote
+                one(x::Float64) = x
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api one(x::Float64)::Float64))
+        @test isdefined(m, JLWInterop._REGISTRY_NAME)
+        @test getglobal(m, JLWInterop._REGISTRY_NAME) isa Vector{JLWInterop.ApiEntry}
+
+        # A nested module keeps its own, and a walk from the parent finds both.
+        Core.eval(
+            m, :(
+                module Inner
+                using JLWInterop
+                two(x::Int64) = x
+                JLWInterop.@api two(x::Int64)::Int64
+                end
+            )
+        )
+        syms = [e.symbol for e in JLWInterop.api_entries(m)]
+        @test sort(syms) == ["ApiTestReg_Inner_two", "ApiTestReg_one"]
+        @test [e.symbol for e in JLWInterop.api_entries(getglobal(m, :Inner))] ==
+            ["ApiTestReg_Inner_two"]
+
+        # One signature per name: the second declaration claims a taken symbol.
+        @test_throws "already an API entry point" Core.eval(
+            m, :(JLWInterop.@api one(x::Float64)::Float64)
+        )
+    end
     @testset "@api type table" begin
-        JLWInterop.clear_api!()
         m = Module(:ApiTestC)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -966,7 +1002,7 @@ using Test
                 JLWInterop.@api shout(s::String)::Nothing
             )
         )
-        syms = [e.symbol for e in JLWInterop._API]
+        syms = [e.symbol for e in JLWInterop.api_entries(m)]
         @test syms == ["ApiTestC_up", "ApiTestC_total", "ApiTestC_maybe", "ApiTestC_scale", "ApiTestC_shout"]
         @test JLWInterop.carrier_type(Vector{String}) === CStrArray{:borrowed}
         @test JLWInterop.carrier_type(Dict{String, Float64}) === CDict{:borrowed, Float64}
@@ -977,7 +1013,7 @@ using Test
         # Vector{String} is an Array, so without its own method the CArray
         # method would shadow its carrier.
         @test JLWInterop.carrier_return_type(Vector{String}) === CStrArray{:owned}
-        @test last(JLWInterop._API).ret === Nothing
+        @test last(JLWInterop.api_entries(m)).ret === Nothing
 
         # Array arguments are zero-copy views: mutation is visible through the carrier.
         A = [1.0, 2.0, 3.0]
@@ -1005,7 +1041,6 @@ using Test
         # exercised by calling it with carriers.
         status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
 
-        JLWInterop.clear_api!()
         m = Module(:ApiCall)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1205,15 +1240,25 @@ using Test
         @test st.code == Int32(1)
         @test status_message(st) == "not positive"
 
-        # Error paths: the three exception types that carry a `msg::String`
-        # report it; anything else reports "error".
+        # Error paths: the exception types that carry a `msg` report it, under
+        # a code of their own; anything else reports its type name under the
+        # generic code.
         r = Core.eval(m, :(ApiCall_boom(7)))
-        @test r.status.code == Int32(1)
+        @test r.status.code == JLWInterop._API_ERROR_CODES.generic
         @test iszero(r.value)
         @test status_message(r.status) == "boom 7"
-        @test status_message(Core.eval(m, :(ApiCall_argue(1))).status) == "bad argument"
-        @test status_message(Core.eval(m, :(ApiCall_mismatch(1))).status) == "shapes differ"
-        @test status_message(Core.eval(m, :(ApiCall_outside(1))).status) == "error"
+
+        st = Core.eval(m, :(ApiCall_argue(1))).status
+        @test status_message(st) == "bad argument"
+        @test st.code == JLWInterop._API_ERROR_CODES.argument
+
+        st = Core.eval(m, :(ApiCall_mismatch(1))).status
+        @test status_message(st) == "shapes differ"
+        @test st.code == JLWInterop._API_ERROR_CODES.dimension
+
+        st = Core.eval(m, :(ApiCall_outside(1))).status
+        @test status_message(st) == "DomainError"
+        @test st.code == JLWInterop._API_ERROR_CODES.generic
     end
 
     @testset "@api raw pointers and library-registered carriers" begin
@@ -1221,7 +1266,6 @@ using Test
         # library adds the three protocol methods for it.
         status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
 
-        JLWInterop.clear_api!()
         m = Module(:ApiRaw)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1320,7 +1364,6 @@ using Test
     end
 
     @testset "@api kwargs and metadata" begin
-        JLWInterop.clear_api!()
         m = Module(:ApiTestD)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1335,7 +1378,7 @@ using Test
                 JLWInterop.@api "Scale." scale(x::Vector{Float64}; factor::Float64 = 2.0, label::String)::Vector{Float64}
             )
         )
-        e = only(JLWInterop._API)
+        e = only(JLWInterop.api_entries(m))
         @test e.args == [(:x, Vector{Float64})]
         @test e.kwargs == [(:factor, Float64, true, 2.0), (:label, String, false, nothing)]
         # non-literal defaults are rejected at expansion
@@ -1363,7 +1406,7 @@ using Test
         )
         mktempdir() do dir
             p = joinpath(dir, "m.jlw.json")
-            JLWInterop.write_metadata(p)
+            JLWInterop.write_metadata(p, m)
             txt = read(p, String)
             @test occursin("\"jlw_metadata_version\": 1", txt)
             @test occursin("ApiTestD_scale", txt)
@@ -1375,7 +1418,6 @@ using Test
     @testset "@api kwargs: empty-string default vs required" begin
         # A `= ""` default stays distinguishable from no default, in both
         # ApiEntry.kwargs and the sidecar JSON.
-        JLWInterop.clear_api!()
         m = Module(:ApiTestE)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1390,12 +1432,12 @@ using Test
                 JLWInterop.@api f(; opt::String = "", req::String)::Int64
             )
         )
-        e = only(JLWInterop._API)
+        e = only(JLWInterop.api_entries(m))
         @test e.kwargs == [(:opt, String, true, ""), (:req, String, false, nothing)]
 
         mktempdir() do dir
             p = joinpath(dir, "e.jlw.json")
-            JLWInterop.write_metadata(p)
+            JLWInterop.write_metadata(p, m)
             txt = read(p, String)
             @test occursin("{\"name\": \"opt\", \"default\": \"\"}", txt)
             @test occursin("{\"name\": \"req\"}", txt)   # req: no default key at all
@@ -1405,7 +1447,6 @@ using Test
     @testset "@api kwarg defaults are typed JSON values" begin
         # Each default reaches the sidecar as a JSON value of its own type,
         # so the emitter never re-parses Julia source text.
-        JLWInterop.clear_api!()
         m = Module(:ApiTestH)
         Core.eval(m, :(using JLWInterop))
         Core.eval(m, :(f(; i, f64, b, s, o) = 0))
@@ -1418,7 +1459,7 @@ using Test
                 )::Int64
             )
         )
-        e = only(JLWInterop._API)
+        e = only(JLWInterop.api_entries(m))
         @test e.kwargs == [
             (:i, Int64, true, 3), (:f64, Float64, true, 2.5), (:b, Bool, true, true),
             (:s, String, true, "a\$b\\c"),
@@ -1426,7 +1467,7 @@ using Test
         ]
         mktempdir() do dir
             p = joinpath(dir, "h.jlw.json")
-            JLWInterop.write_metadata(p)
+            JLWInterop.write_metadata(p, m)
             txt = read(p, String)
             @test occursin("{\"name\": \"i\", \"default\": 3}", txt)
             @test occursin("{\"name\": \"f64\", \"default\": 2.5}", txt)
@@ -1439,7 +1480,6 @@ using Test
     @testset "write_metadata: JSON escaping" begin
         # A docstring's double quote, backslash, and newline come back
         # escaped in the JSON text, never raw.
-        JLWInterop.clear_api!()
         m = Module(:ApiTestF)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1456,7 +1496,7 @@ using Test
         )
         mktempdir() do dir
             p = joinpath(dir, "g.jlw.json")
-            JLWInterop.write_metadata(p)
+            JLWInterop.write_metadata(p, m)
             txt = read(p, String)
             @test occursin("\\\"quotes\\\"", txt)     # escaped double quote
             @test occursin("\\\\backslash\\\\", txt)  # escaped backslash
@@ -1470,7 +1510,6 @@ using Test
         # leaves `-0x10` as `Expr(:call, :-, <number>)`, so that branch is
         # reachable through `@api`.
         @test Meta.parse("-0x10") isa Expr
-        JLWInterop.clear_api!()
         m = Module(:ApiTestI)
         Core.eval(m, :(using JLWInterop))
         Core.eval(
@@ -1485,10 +1524,10 @@ using Test
                 JLWInterop.@api g(x::Float64; k::UInt8 = -0x10)::Float64
             )
         )
-        @test only(JLWInterop._API).kwargs == [(:k, UInt8, true, 0xf0)]
+        @test only(JLWInterop.api_entries(m)).kwargs == [(:k, UInt8, true, 0xf0)]
         mktempdir() do dir
             p = joinpath(dir, "i.jlw.json")
-            JLWInterop.write_metadata(p)
+            JLWInterop.write_metadata(p, m)
             @test occursin("{\"name\": \"k\", \"default\": 240}", read(p, String))
         end
     end

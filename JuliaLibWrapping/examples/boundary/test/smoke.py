@@ -24,6 +24,7 @@ except Exception as exc:
 
 assert b.str_len("wörld") == 6  # 'ö' is 2 UTF-8 code units
 assert b.str_len("a\x00b") == 3  # an embedded NUL is content, not a terminator
+assert b.shout("héllo") == "HÉLLO"  # an owning String return, freed by the facade
 
 assert b.check_positive(1.0) is None
 try:

@@ -33,11 +33,21 @@ The declaration expands to two things:
    — arguments converted with [`from_carrier`](@ref), `scale` called, the
    result converted with [`to_carrier`](@ref) and wrapped in [`jlw_ok`](@ref),
    or a caught exception turned into [`jlw_error`](@ref).
-2. An [`ApiEntry`](@ref) pushed onto the build-host registry, later written
-   by [`write_metadata`](@ref) to the `<lib>.jlw.json` sidecar.
+2. An [`ApiEntry`](@ref) appended to the declaring module's registry, later
+   written by [`write_metadata`](@ref) to the `<lib>.jlw.json` sidecar.
 
-Both are built from the declared signature in one expansion, so they cannot
-disagree. The declared types are the boundary contract, not a method
+The registry is a `Vector{ApiEntry}` the macro declares in the annotated
+module under the reserved name `_JLW_API_REGISTRY_`; do not bind that name to
+anything else. It belongs to that module rather than to JLWInterop so that a
+package carrying `@api` declarations keeps its entries in its own
+precompilation cache — a registry owned by JLWInterop would hold only what the
+current session happened to macro-expand, and a precompiled package's
+declarations would be missing from it. [`api_entries`](@ref) gathers them from
+a module and everything nested under it, which is how [`write_metadata`](@ref)
+finds every declaration in a library whatever module they live in.
+
+Both outputs are built from the declared signature in one expansion, so they
+cannot disagree. The declared types are the boundary contract, not a method
 signature: `scale` may accept more than this, and foreign callers get exactly
 this. A signature `scale` cannot satisfy surfaces when the library is
 compiled, as a missing method.
@@ -56,10 +66,17 @@ function, and in a layer that imports the wrapped function by name it would
 add a method to it instead — which recurses when the declared signature is the
 more specific one.
 
-The docstring is the macro's first argument, on the same line as `@api`, and
-it is what reaches the sidecar and the generated Python. Document the Julia
-function itself the ordinary way, with a `"""…"""` above its definition; the
-emitter never sees that one.
+The docstring is the macro's first argument, on the same line as `@api`. A
+declaration without one falls back to the function's own Julia docstring, so
+documenting the function the ordinary way is usually enough; give the macro an
+argument when foreign callers need something different from what a Julia
+caller reads.
+
+The name a declaration refers to must already be callable with the declared
+types — defined above it, or brought in from the package this layer wraps.
+`@api` checks with `hasmethod` at expansion, so a typo or a signature the
+function cannot serve is an error at that point rather than a missing method
+when the library is compiled.
 
 The Python name is the Julia function name, so it has to be a legal Python
 identifier. A trailing `!`, the Julia convention for a mutating function, is
@@ -79,7 +96,7 @@ reinterpreted.
 | Julia `T` | as argument | as return |
 |---|---|---|
 | `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Bool` | itself, by value | itself, by value |
-| `String` | `CString{:borrowed}` | rejected at expansion |
+| `String` | `CString{:borrowed}`, the caller's bytes | `CString{:owned}`, a copy the caller frees |
 | `Vector{String}` | `CStrArray{:borrowed}`, copied (Julia-side mutation is invisible to the caller) | `CStrArray{:owned}` |
 | `Dict{String,V}` (`V` scalar) | `CDict{:borrowed,V}`, copied | `CDict{:owned,V}` |
 | `Union{T,Nothing}` (`T` scalar) | [`COpt`](@ref), by value | [`COpt`](@ref), by value |
@@ -109,8 +126,8 @@ to free it. Return an `Array` when the caller should own the buffer: it gets a
 length and a release path.
 
 The [`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
-example exercises every row except the rejected `String` return and the
-multi-dimensional `Array{T,N}` form; its arrays are all `Vector`s.
+example exercises every row except the multi-dimensional `Array{T,N}` form;
+its arrays are all `Vector`s.
 
 ## Registering your own type
 
@@ -189,12 +206,28 @@ becomes `def sum_dict(d, *, scale=1.0)` in the generated façade.
 ## Errors
 
 Every `@api` wrapper wraps its call in `try`/`catch`. A caught exception
-becomes a [`JLWResult`](@ref) with `status.code = 1`; the message is `e.msg`
-when `e` is an `ErrorException`, an `ArgumentError`, or a
-`DimensionMismatch`, and the fixed string `"error"` for any other exception
-type. Every throw maps to code 1; there is no typed
-error-code registry. On the Python side, a non-zero `status.code` raises
-`JLWError` (a `RuntimeError` subclass carrying `.code` and `.message`); see
+becomes a [`JLWResult`](@ref) whose `status.code` names the exception type:
+
+| code | exception | message |
+|:--|:--|:--|
+| 1 | `ErrorException`, and anything not listed below | `e.msg`, or the exception's type name |
+| 2 | `ArgumentError` | `e.msg` |
+| 3 | `DimensionMismatch` | `e.msg` |
+| 4 | `InexactError` | `"InexactError"` |
+| 5 | `BoundsError` | `"BoundsError"` |
+
+A message is read only from a field already known to hold a `String` or a
+`SubString{String}`: the wrapper runs inside the trimmed library, where
+converting an `AbstractString` is a dynamic call the build rejects. Anything
+else reports its type name, which needs no conversion.
+
+The declared return type is applied to the returned value *inside* the
+`try`, so a function whose actual return type differs from the declaration
+reports that as an ordinary error rather than failing in the wrapper's own
+return conversion, which the `catch` cannot reach.
+
+On the Python side, a non-zero `status.code` raises `JLWError` (a
+`RuntimeError` subclass carrying `.code` and `.message`); see
 [Error handling across the ABI](@ref) for the `JLWStatus` convention that
 `JLWResult` builds on.
 
@@ -316,13 +349,14 @@ a `finally`; non-zero raises `JLWError(status.code, status.message)`.
 ```@docs
 @api
 ApiEntry
+api_entries
 carrier_type
 carrier_return_type
 to_carrier
+to_carrier_as
 from_carrier
 write_metadata
 JLWResult
-clear_api!
 ```
 
 ## Internals
@@ -332,7 +366,11 @@ Private helpers referenced by the docstrings above:
 ```@docs
 to_carrier_opt
 _api_symbol
-_API
+_REGISTRY_NAME
+_register!
+_API_ERROR_CODES
+_api_as
+_julia_docstring
 _zero_carrier
 _api_opt_inner
 ```

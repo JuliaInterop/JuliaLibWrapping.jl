@@ -21,20 +21,65 @@ struct ApiEntry
 end
 
 """
-    _API
+    JLWInterop._JLW_API_REGISTRY_
 
-Build-host registry of every `@api`-annotated function seen so far. Populated
-by [`@api`](@ref); cleared with [`clear_api!`](@ref).
+The name of the per-module registry vector [`@api`](@ref) declares and appends
+to: a `Vector{ApiEntry}` holding every entry declared in that module. It lives
+in the annotated module rather than here so that it is written to that
+module's precompilation cache; a registry owned by JLWInterop would be
+populated only by running macro expansion, and a precompiled package's entries
+would be missing from every later session.
+
+The name is reserved: a module may not bind it to anything else.
 """
-const _API = ApiEntry[]
+const _REGISTRY_NAME = :_JLW_API_REGISTRY_
 
 """
-    clear_api!()
+    _register!(registry::Vector{ApiEntry}, e::ApiEntry)
 
-Empty [`_API`](@ref). Intended for tests and for the sidecar dump subprocess,
-which runs one entry file per process.
+Append `e` to a module's registry, rejecting a symbol already registered
+there. [`_api_symbol`](@ref) encodes the declaring module, so two modules
+cannot collide and one registry is the whole scope of the check.
 """
-clear_api!() = (empty!(_API); nothing)
+function _register!(registry::Vector{ApiEntry}, e::ApiEntry)
+    for existing in registry
+        existing.symbol == e.symbol && error(
+            "@api: '$(e.symbol)' is already an API entry point. A function " *
+                "carries `@api` on one signature only; give the second one its own name."
+        )
+    end
+    push!(registry, e)
+    return nothing
+end
+
+"""
+    api_entries(root::Module = Main) -> Vector{ApiEntry}
+
+Every [`@api`](@ref) entry declared in `root` or in a module nested under it,
+in declaration order per module. `Base` and `Core` are not searched.
+"""
+function api_entries(root::Module = Main)
+    out = ApiEntry[]
+    _collect_api!(out, root, Set{Module}())
+    return out
+end
+
+function _collect_api!(out::Vector{ApiEntry}, m::Module, seen::Set{Module})
+    (m === Base || m === Core || m in seen) && return nothing
+    push!(seen, m)
+    if isdefined(m, _REGISTRY_NAME)
+        registry = getglobal(m, _REGISTRY_NAME)
+        registry isa Vector{ApiEntry} && append!(out, registry)
+    end
+    for n in names(m; all = true)
+        isdefined(m, n) || continue
+        v = getglobal(m, n)
+        # `parentmodule` keeps the walk to modules nested in `m`, so an alias
+        # bound to an outer module does not send it back up.
+        v isa Module && v !== m && parentmodule(v) === m && _collect_api!(out, v, seen)
+    end
+    return nothing
+end
 
 """
     _api_symbol(mod::Module, name::Symbol) -> String
@@ -112,12 +157,15 @@ carrier_type(::Type) = nothing
 The C-ABI carrier type for `T` **as a return value**. The same as
 [`carrier_type`](@ref) except for the carriers that state ownership in their
 type: an argument borrows the caller's buffer, while a return is a fresh
-Julia allocation the consumer must release, so it is `:owned`.
+Julia allocation the consumer must release, so it is `:owned`. A `String`
+return is one of these — its bytes are copied into a [`CString`](@ref) the
+consumer frees — whereas a `String` argument borrows the caller's.
 `Vector{String}` needs its own method: the `Array` method below is the more
 specific signature and would otherwise shadow its [`CStrArray`](@ref)
 carrier. The concrete-payload demand is the same as in
 [`carrier_type`](@ref).
 """
+carrier_return_type(::Type{String}) = CString{:owned}
 carrier_return_type(::Type{Vector{String}}) = CStrArray{:owned}
 carrier_return_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} =
     isconcretetype(V) ? CDict{:owned, V} : nothing
@@ -150,6 +198,7 @@ to_carrier(x::_API_SCALARS) = x
 to_carrier(p::Ptr) = p
 # No to_carrier(::String): String returns are rejected at expansion, and
 # argument CStrings are built by the caller, which Julia only reads.
+to_carrier(s::String) = CString{:owned}(s)
 to_carrier(v::Vector{String}) = CStrArray{:owned}(v)
 to_carrier(d::Dict{String, V}) where {V} = CDict{:owned}(d)
 to_carrier(A::AbstractArray) = CArray{:owned}(A)
@@ -164,6 +213,25 @@ fixed at macro-expansion time.
 """
 to_carrier_opt(::Type{T}, x::T) where {T} = COpt(x)
 to_carrier_opt(::Type{T}, ::Nothing) where {T} = COpt{T}(nothing)
+
+"""
+    _api_as(::Type{T}, x) -> T
+
+`convert(T, x)::T`, called inside an `@api` wrapper's `try` block on the
+declared return type. A function whose actual return type differs from the
+declared one fails here, where the wrapper reports it as a `jlw_error`,
+rather than in the wrapper's own return conversion, which is outside the
+`try` and would abort the library.
+"""
+_api_as(::Type{T}, x) where {T} = convert(T, x)::T
+
+"""
+    to_carrier_as(::Type{T}, x) -> carrier
+
+[`to_carrier`](@ref) of `x` converted to the declared return type `T` first.
+See [`_api_as`](@ref).
+"""
+to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
 
 """
     from_carrier(::Type{T}, c) -> T
@@ -257,9 +325,6 @@ _api_default_value(x) = x
 function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String, texpr)
     T = Core.eval(__module__, texpr)
     T isa Type || error("@api $__module__.$fname: `$label` is not a type")
-    if T === String && label == "return"
-        error("@api $__module__.$fname: String returns are not supported")
-    end
     C = label == "return" ? carrier_return_type(T) : carrier_type(T)
     isnothing(C) &&
         error(
@@ -287,27 +352,101 @@ end
 # `DimensionMismatch` each carry a `msg::String`; anything else reports
 # `"error"`. The `isa` chain keeps the code trim-safe: `e` is typed `Any` in a
 # `catch`, and only a narrowing `isa` makes the field access concrete.
-_api_message_expr() = quote
+"""
+    JLWInterop._API_ERROR_CODES
+
+The [`JLWStatus`](@ref) `code` an `@api` wrapper reports per exception type:
+
+| code | exception |
+|:--|:--|
+| 1 | `ErrorException`, and anything not listed below |
+| 2 | `ArgumentError` |
+| 3 | `DimensionMismatch` |
+| 4 | `InexactError` |
+| 5 | `BoundsError` |
+
+A target can branch on the code and still show the message. Codes are part of
+the ABI: renumbering one is a breaking change.
+"""
+const _API_ERROR_CODES = (;
+    generic = Int32(1), argument = Int32(2), dimension = Int32(3),
+    inexact = Int32(4), bounds = Int32(5),
+)
+
+# `(code, message)` for the caught exception bound to `e`. Every branch has to
+# be concretely typed: this runs inside the trimmed library, where a dynamic
+# call is a build failure, so a message is read only when `isa` has narrowed
+# it to a concrete string type. `nameof(typeof(e))` names the rest without
+# `showerror`, which does not trim.
+_api_status_expr() = quote
     let
+        code::Int32 = $(_API_ERROR_CODES.generic)
         m::String = "error"
         if e isa Base.ErrorException
             em = e.msg
             if em isa String
                 m = em
+            elseif em isa SubString{String}
+                m = String(em)
             end
         elseif e isa Base.ArgumentError
+            code = $(_API_ERROR_CODES.argument)
             am = e.msg
             if am isa String
                 m = am
+            elseif am isa SubString{String}
+                m = String(am)
             end
         elseif e isa Base.DimensionMismatch
+            code = $(_API_ERROR_CODES.dimension)
             dm = e.msg
             if dm isa String
                 m = dm
+            elseif dm isa SubString{String}
+                m = String(dm)
             end
+        elseif e isa Base.InexactError
+            code = $(_API_ERROR_CODES.inexact)
+            m = String(string(nameof(typeof(e))))
+        elseif e isa Base.BoundsError
+            code = $(_API_ERROR_CODES.bounds)
+            m = String(string(nameof(typeof(e))))
+        else
+            m = String(string(nameof(typeof(e))))
         end
-        m
+        (code, m)
     end
+end
+
+"""
+    _julia_docstring(mod::Module, name::Symbol, sig::Type) -> String
+
+The docstring attached to `mod.name` for `sig`, or the first one attached to
+it under any signature, or `""` when it has none. Reads
+`Base.Docs.meta` directly: the `Base.Docs.doc` entry points differ across the
+Julia versions JLWInterop supports, and a missing docstring is not worth an
+error.
+"""
+function _julia_docstring(mod::Module, name::Symbol, sig::Type)
+    b = try
+        Base.Docs.Binding(mod, name)
+    catch
+        return ""
+    end
+    meta = try
+        Base.Docs.meta(b.mod)
+    catch
+        return ""
+    end
+    haskey(meta, b) || return ""
+    multidoc = meta[b]
+    entry = get(multidoc.docs, sig, nothing)
+    if isnothing(entry)
+        isempty(multidoc.order) && return ""
+        entry = get(multidoc.docs, first(multidoc.order), nothing)
+    end
+    isnothing(entry) && return ""
+    return String(strip(join(string.(entry.text))))
 end
 
 """
@@ -320,7 +459,8 @@ nothing itself: it generates a `Base.@ccallable` C-ABI wrapper (named per
 [`_api_symbol`](@ref)) that converts arguments and return value through
 [`carrier_type`](@ref)/[`carrier_return_type`](@ref)/[`to_carrier`](@ref)/[`from_carrier`](@ref)
 and reports errors via [`JLWResult`](@ref)/[`JLWStatus`](@ref), and records an
-[`ApiEntry`](@ref) in [`_API`](@ref).
+[`ApiEntry`](@ref) in the declaring module's registry (see
+[`_REGISTRY_NAME`](@ref)).
 
 The declared types are the boundary contract, not a method signature: `name`
 may accept more than this, and foreign callers get exactly this. Declaring a
@@ -333,11 +473,17 @@ to it instead — which recurses when the declared signature is the more
 specific one.
 
 Every argument and the return type must resolve (via `Core.eval` in the
-declaring module) to a type with a carrier mapping; a `String` return is
-rejected. Types are resolved at macro-expansion time, so any alias used in the
-signature must already be defined. Keyword defaults must be literals (`Int`,
-`Float`, `Bool`, `String`, or `nothing`) of the keyword's declared type:
-`k::Float64 = 2` is rejected, `k::Float64 = 2.0` is accepted.
+declaring module) to a type with a carrier mapping. Types are resolved at
+macro-expansion time, so any alias used in the signature must already be
+defined. Keyword defaults must be literals (`Int`, `Float`, `Bool`, `String`,
+or `nothing`) of the keyword's declared type: `k::Float64 = 2` is rejected,
+`k::Float64 = 2.0` is accepted.
+
+Keyword arguments are positional in the C ABI. They follow the positional
+arguments, in declaration order, and every one is passed on every call: a
+default is applied by the calling side, which reads it from the metadata
+sidecar, not by the wrapper. The wrapper therefore has one arity, and a
+keyword's default is a property of the binding rather than of the entry point.
 """
 macro api(args...)
     if length(args) == 2
@@ -399,12 +545,39 @@ macro api(args...)
     ret_opt_inner = is_void ? nothing : _api_opt_inner(ret_type)
     ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_expr))
     symbol = _api_symbol(__module__, name)
-    # One C symbol per name, so a second `@api` method of the same function
-    # would overwrite the first entry point instead of adding one.
-    any(e -> e.symbol == symbol, _API) && error(
-        "@api $__module__.$name: '$symbol' is already an API entry point. " *
-            "A function can carry `@api` on one method only; give the second one its own name."
+
+    # Two declarations of one name would claim one C symbol, and the second
+    # `Base.@ccallable` would replace the first entry point. Caught here, on
+    # the module's own registry, so the message is the same on every Julia
+    # version; `_register!` repeats the check for a registry filled some other
+    # way.
+    if isdefined(__module__, _REGISTRY_NAME)
+        existing = getglobal(__module__, _REGISTRY_NAME)
+        existing isa Vector{ApiEntry} && any(e -> e.symbol == symbol, existing) && error(
+            "@api $__module__.$name: '$symbol' is already an API entry point. " *
+                "A function carries `@api` on one signature only; give the second one its own name."
+        )
+    end
+
+    # The declaration names an existing function, so a typo or a signature it
+    # cannot serve is an error here rather than a missing method at compile
+    # time. The function must therefore be defined, or imported, above the
+    # declaration.
+    isdefined(__module__, name) || error(
+        "@api $__module__.$name: `$name` is not defined here. `@api` declares a " *
+            "signature of an existing function; define or import it above the declaration."
     )
+    f = Core.eval(__module__, name)
+    kwnames = Tuple(kw_names)
+    hasmethod(f, Tuple{arg_types...}, kwnames) || error(
+        "@api $__module__.$name: no method $name(" *
+            join(string.(arg_types), ", ") *
+            (isempty(kw_names) ? "" : "; " * join(string.(kw_names), ", ")) *
+            "). `@api` declares how foreign callers may call an existing function."
+    )
+    # A declaration without its own docstring carries the Julia one across, so
+    # a foreign caller reads what a Julia caller reads.
+    isempty(doc) && (doc = _julia_docstring(__module__, name, Tuple{arg_types...}))
 
     wrapper_args = Expr[]
     for (an, ac) in zip(arg_names, arg_carriers)
@@ -414,47 +587,61 @@ macro api(args...)
         push!(wrapper_args, :($kn::$kc))
     end
 
-    call_args = [:(JLWInterop.from_carrier($(arg_types[i]), $(arg_names[i]))) for i in eachindex(arg_names)]
-    call_kwargs = [Expr(:kw, kw_names[i], :(JLWInterop.from_carrier($(kw_types[i]), $(kw_names[i])))) for i in eachindex(kw_names)]
+    # `JLWInterop` is interpolated as a module value, not written as a name:
+    # `using JLWInterop: @api` brings in the macro without the module, and a
+    # name would not resolve there.
+    M = @__MODULE__
+    call_args = [:($M.from_carrier($(arg_types[i]), $(arg_names[i]))) for i in eachindex(arg_names)]
+    call_kwargs = [Expr(:kw, kw_names[i], :($M.from_carrier($(kw_types[i]), $(kw_names[i])))) for i in eachindex(kw_names)]
     call_expr = isempty(call_kwargs) ? :($name($(call_args...))) :
         :($name($(call_args...); $(call_kwargs...)))
 
     ccallable_name = Symbol(symbol)
-    to_carrier_call = isnothing(ret_opt_inner) ? :(JLWInterop.to_carrier($call_expr)) :
-        :(JLWInterop.to_carrier_opt($ret_opt_inner, $call_expr))
+    to_carrier_call = isnothing(ret_opt_inner) ?
+        :($M.to_carrier_as($ret_type, $call_expr)) :
+        :($M.to_carrier_opt($ret_opt_inner, $M._api_as($ret_type, $call_expr)))
 
     wrapper = if is_void
         quote
-            Base.@ccallable function $ccallable_name($(wrapper_args...))::JLWInterop.JLWStatus
+            Base.@ccallable function $ccallable_name($(wrapper_args...))::$M.JLWStatus
                 try
                     $call_expr
-                    JLWInterop.jlw_ok()
+                    $M.jlw_ok()
                 catch e
-                    JLWInterop.jlw_error(1, $(_api_message_expr()))
+                    code, msg = $(_api_status_expr())
+                    $M.jlw_error(code, msg)
                 end
             end
         end
     else
         quote
-            Base.@ccallable function $ccallable_name($(wrapper_args...))::JLWInterop.JLWResult{$ret_carrier}
+            Base.@ccallable function $ccallable_name($(wrapper_args...))::$M.JLWResult{$ret_carrier}
                 try
-                    JLWInterop.jlw_ok($to_carrier_call)
+                    $M.jlw_ok($to_carrier_call)
                 catch e
-                    JLWInterop.jlw_error(1, $(_api_message_expr()), $ret_carrier)
+                    code, msg = $(_api_status_expr())
+                    $M.jlw_error(code, msg, $ret_carrier)
                 end
             end
         end
     end
 
-    registration = :(
-        push!(
-            JLWInterop._API,
-            JLWInterop.ApiEntry(
+    # The registry belongs to the declaring module, so a precompiled package
+    # carries its own entries in its cache file. One vector per module, named
+    # once here and reserved.
+    registry = _REGISTRY_NAME
+    registration = quote
+        if !$(Base.isdefined)($__module__, $(QuoteNode(_REGISTRY_NAME)))
+            const $registry = $M.ApiEntry[]
+        end
+        $M._register!(
+            $registry,
+            $M.ApiEntry(
                 $(QuoteNode(name)), $symbol,
                 $args_meta, $kwargs_meta, $ret_type, $doc,
             ),
         )
-    )
+    end
 
     return esc(
         quote
@@ -504,10 +691,10 @@ _json_value(x::AbstractString) = _json_str(x)
 _json_value(::Nothing) = "null"
 
 """
-    write_metadata(path::AbstractString)
+    write_metadata(path::AbstractString, root::Module = Main)
 
-Write the JSON metadata sidecar for every [`@api`](@ref)-annotated function
-recorded so far (in [`_API`](@ref)) to `path`:
+Write the JSON metadata sidecar for every [`@api`](@ref) declaration in
+`root` or a module nested under it (see [`api_entries`](@ref)) to `path`:
 
     {"jlw_metadata_version": 1, "exports": {symbol: {"name", "args", "kwargs", "doc"}}}
 
@@ -521,8 +708,8 @@ Types are not repeated here: they live in the separate ABI JSON that
 
 The JSON is written by hand so that JLWInterop needs no JSON dependency.
 """
-function write_metadata(path::AbstractString)
-    entries = sort(_API; by = e -> e.symbol)
+function write_metadata(path::AbstractString, root::Module = Main)
+    entries = sort(api_entries(root); by = e -> e.symbol)
     io = IOBuffer()
     write(io, "{\n  \"jlw_metadata_version\": 1,\n  \"exports\": {\n")
     for (i, e) in enumerate(entries)

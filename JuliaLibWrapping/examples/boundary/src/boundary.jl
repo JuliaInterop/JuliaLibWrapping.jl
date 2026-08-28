@@ -36,6 +36,9 @@ boom(x::Int64) = error("boom $x")
 str_len(s::String) = Int64(ncodeunits(s))
 @api "Length in code units." str_len(s::String)::Int64
 
+shout(s::String) = uppercase(s)
+@api "Upper-case it." shout(s::String)::String
+
 function check_positive(x::Float64)
     x > 0 || error("not positive")
     return nothing
