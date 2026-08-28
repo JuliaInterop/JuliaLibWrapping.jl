@@ -48,12 +48,12 @@ function. `backend = :auto` (the default) and `backend = :juliac` are
 synonyms; the keyword is retained so additional backends can be added
 without changing the calling interface.
 
-# `[sources]` paths must be absolute
+# Relative `[sources]` paths
 
-`juliac` relocates the project into a temporary directory before compiling.
-Relative `[sources]` paths in the entry project's `Project.toml` cannot be
-resolved from there, so this function rejects them up front. Either use
-absolute paths or `Pkg.develop` the dependency.
+`build_library` supports relative `[sources]` paths and relative paths for
+developed dependencies in a manifest. Because `juliac` relocates the project,
+compilation uses a temporary copy with those paths made absolute. The original
+project is unchanged. Paths must refer to existing files or directories.
 
 # Bundling
 
@@ -127,7 +127,7 @@ function build_library(entry::AbstractString,
         end
     end
 
-    _validate_sources_absolute(project)
+    project = _materialize_project(project)
 
     mkpath(libdir)
     library_path = joinpath(libdir, libname * "." * Libdl.dlext)
@@ -218,9 +218,8 @@ The kwargs `out`, `entry`, `python_package`, `project`, `bundle`, and
 `build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
 defaults to `dir`, but can be pointed at a separate location when the
 on-disk source layout and the entry `Project.toml` live in different
-directories (e.g. a transient project materialized with absolute
-`[sources]` paths for `juliac`). `version` sets the version in the generated
-Python package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
+directories. `version` sets the version in the generated Python
+package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
 outside this convention, call `build_library` directly.
 """
 function standard_build(dir::AbstractString = pwd();
@@ -243,24 +242,71 @@ function standard_build(dir::AbstractString = pwd();
                          kwargs...)
 end
 
-function _validate_sources_absolute(project::AbstractString)
+const _MANIFEST_FILE = r"^Manifest(-v\d+\.\d+)?\.toml$"
+
+# Return the original project if its source paths are absolute. Otherwise,
+# copy it and make relative Project and Manifest paths absolute for juliac.
+# Copy the whole directory because package sources and preferences may be used.
+function _materialize_project(project::AbstractString)
     pf = joinpath(project, "Project.toml")
-    isfile(pf) || return  # nothing to validate
+    isfile(pf) || return String(project)
     toml = TOML.parsefile(pf)
-    haskey(toml, "sources") || return
-    sources = toml["sources"]
-    sources isa AbstractDict || return
+    _absolutize_sources!(toml, project, pf) || return String(project)
+    dir = mktempdir()
+    for f in readdir(project)
+        src = joinpath(project, f)
+        if f == "Project.toml"
+            _write_toml(joinpath(dir, f), toml)
+        elseif occursin(_MANIFEST_FILE, f)
+            manifest = TOML.parsefile(src)
+            _absolutize_manifest!(manifest, project, src)
+            _write_toml(joinpath(dir, f), manifest)
+        else
+            cp(src, joinpath(dir, f))
+        end
+    end
+    return dir
+end
+
+# TOML formatting is irrelevant in this temporary project.
+function _write_toml(path::AbstractString, data::AbstractDict)
+    open(path, "w") do io
+        TOML.print(io, data; sorted = true)
+    end
+    return path
+end
+
+# Make a dependency's relative `path` absolute. Return whether it changed.
+function _absolutize_path!(spec, name, base::AbstractString, file::AbstractString)
+    spec isa AbstractDict || return false
+    p = get(spec, "path", nothing)
+    (p isa AbstractString && !isabspath(p)) || return false
+    abs = abspath(joinpath(base, p))
+    ispath(abs) || throw(ArgumentError(
+        "dependency \"$name\" in $file declares path \"$p\", " *
+        "which resolves to $abs — nothing exists there."))
+    spec["path"] = abs
+    return true
+end
+
+function _absolutize_sources!(toml, base, file)
+    sources = get(toml, "sources", nothing)
+    sources isa AbstractDict || return false
+    rewrote = false
     for (name, spec) in sources
-        spec isa AbstractDict || continue
-        haskey(spec, "path") || continue
-        p = spec["path"]
-        if !isabspath(p)
-            throw(ArgumentError(
-                """[sources] entry "$name" has relative path "$p" in $pf.
-                juliac copies the project into a temporary directory before compiling,
-                so relative [sources] paths cannot be resolved. Use an absolute path
-                (e.g. `path = $(repr(abspath(joinpath(project, p))))`) or `Pkg.develop`
-                the dependency."""))
+        rewrote |= _absolutize_path!(spec, name, base, file)
+    end
+    return rewrote
+end
+
+# Manifest dependencies are arrays of tables under `[deps]`.
+function _absolutize_manifest!(manifest, base, file)
+    deps = get(manifest, "deps", nothing)
+    deps isa AbstractDict || return
+    for (name, specs) in deps
+        specs isa AbstractVector || continue
+        for spec in specs
+            _absolutize_path!(spec, name, base, file)
         end
     end
     return
