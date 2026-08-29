@@ -403,6 +403,43 @@ end
         end
     end
 
+
+    @testset "privatization: argument checks and target rewriting" begin
+        # Salting a bundled libjulia needs a bundle to salt.
+        mktempdir() do dir
+            entry = joinpath(dir, "x.jl")
+            write(entry, "module x end\n")
+            @test_throws(
+                "privatize = true requires bundle = true",
+                build_library(
+                    entry, AbstractTarget[];
+                    project = dir, libname = "x", privatize = true, bundle = false
+                )
+            )
+        end
+
+        # A target records whether the bundle it describes was privatized, so
+        # the generated Python can warn about mixing the two.
+        t = PythonTarget("out", "x_py", "x")
+        @test !t.privatized
+        @test JuliaLibWrapping._apply_privatization(t, false) === t
+        priv = JuliaLibWrapping._apply_privatization(t, true)
+        @test priv.privatized
+        @test priv.package_name == t.package_name
+        @test priv.library_basename == t.library_basename
+        @test JuliaLibWrapping._apply_privatization(priv, true) === priv
+
+        # Asking for a non-privatized build from a target that claims one is
+        # a contradiction, not something to silently downgrade.
+        @test_throws(
+            "was constructed with `privatized = true`",
+            JuliaLibWrapping._apply_privatization(priv, false)
+        )
+
+        # A non-Python target is unaffected either way.
+        c = CTarget("out", "x")
+        @test JuliaLibWrapping._apply_privatization(c, true) === c
+    end
     @testset "backend selection" begin
         # The default backend requires JuliaC.
         ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
@@ -608,12 +645,23 @@ end
                     entry = joinpath(srcdir, "src", name * ".jl")
                     project = isnothing(libsub) ? example_project(exdir) : srcdir
                     mktempdir() do out
-                        result = build_library(
-                            entry,
-                            [PythonTarget(out, name * "_py", name)];
-                            project, libname = name,
-                            libdir = out, cpu_target = "generic"
-                        )
+                        # `boundary` goes through `standard_build`, the entry
+                        # point its own build.jl calls; `ols` keeps the
+                        # explicit target list.
+                        result = if isnothing(libsub)
+                            build_library(
+                                entry,
+                                [PythonTarget(out, name * "_py", name)];
+                                project, libname = name,
+                                libdir = out, cpu_target = "generic"
+                            )
+                        else
+                            standard_build(
+                                srcdir;
+                                libname = name, project, out,
+                                bundle = false, cpu_target = "generic"
+                            )
+                        end
                         @test isfile(result.library)
 
                         # `out` on PYTHONPATH makes the generated package

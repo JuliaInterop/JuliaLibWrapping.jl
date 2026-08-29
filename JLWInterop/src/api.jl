@@ -306,12 +306,13 @@ end
 # negated numeric literal (`-1`, `-1.5`). The parser folds most negated
 # numbers into a literal token, but not every numeric-literal shape on every
 # parser version, so `Expr(:call, :-, <number>)` is accepted as well.
-_api_valid_default(x::Union{Integer, AbstractFloat, Bool, String}) = true
-_api_valid_default(x::Symbol) = x === :nothing
-_api_valid_default(x::Expr) =
-    x.head === :call && length(x.args) == 2 && x.args[1] === :- &&
-    x.args[2] isa Union{Integer, AbstractFloat}
-_api_valid_default(x) = false
+function _api_valid_default(x)
+    x isa Union{Integer, AbstractFloat, Bool, String} && return true
+    x isa Symbol && return x === :nothing
+    x isa Expr && return x.head === :call && length(x.args) == 2 &&
+        x.args[1] === :- && x.args[2] isa Union{Integer, AbstractFloat}
+    return false
+end
 
 # The value a validated kwarg default expression denotes. `:nothing` is the
 # only symbol `_api_valid_default` accepts, and the only `Expr` it accepts is

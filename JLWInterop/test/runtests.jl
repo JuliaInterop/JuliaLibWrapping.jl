@@ -929,6 +929,28 @@ using Test
         @test occursin("[docstring] f(args...)::Ret", err.error.msg)
     end
 
+    @testset "@api helper predicates" begin
+        # These are reached through macro expansion elsewhere, but they are
+        # small enough to pin directly.
+        @test isnothing(JLWInterop.carrier_type(Nothing))
+        @test JLWInterop.carrier_return_type(Nothing) === JLWInterop.carrier_type(Nothing)
+
+        valid = JLWInterop._api_valid_default
+        @test valid(3) && valid(2.5) && valid(true) && valid("a")
+        @test valid(:nothing)
+        @test !valid(:other)
+        @test valid(:(-1)) && valid(:(-1.5))
+        @test !valid(:(sqrt(2)))
+        @test !valid(1 => 2)      # anything else
+
+        jsonval = JLWInterop._json_value
+        @test jsonval(nothing) == "null"
+        @test jsonval(true) == "true" && jsonval(false) == "false"
+        @test jsonval(3) == "3"
+        @test jsonval("a") == "\"a\""
+        @test_throws "no JSON representation" jsonval(NaN)
+    end
+
     @testset "@api falls back to the Julia docstring" begin
         # Without a docstring argument the declaration carries the function's
         # own, so a foreign caller reads what a Julia caller reads.
