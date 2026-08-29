@@ -594,30 +594,25 @@ using Test
         Libc.free(c2.values)
     end
 
-    @testset "owning constructors release partial work when an element throws" begin
-        # A string of 2 GiB or more has no `Int32` length, so building it throws
-        # partway through the loop, with earlier elements already allocated.
-        # `mallinfo2` measures what `Libc.malloc` still holds; the counter must
-        # come back to where it started. glibc-only, and it needs the memory.
-        if !Sys.islinux() || Sys.free_memory() < 5 * 2^30
-            @test_skip "needs Linux/glibc and ~5 GiB free"
+    @testset "an owning constructor releases partial work when an element throws" begin
+        # Reading an undefined element throws partway through the loop, with
+        # the array and the first 100 elements already malloc'd. `mallinfo2`
+        # measures what `Libc.malloc` still holds, so the counter must come
+        # back to where it started. `CDict{:owned}` unwinds the same way; its
+        # keys come from the dictionary, so it has no comparable trigger.
+        if !Sys.islinux()
+            @test_skip "mallinfo2 is glibc-only"
         else
             uordblks() = Int(ccall(:mallinfo2, NTuple{10, Csize_t}, ())[8])
-            huge = String(fill(UInt8('x'), 2^31))
+            v = Vector{String}(undef, 101)
+            v[1:100] .= "small"          # v[101] is left undefined
 
-            v = vcat(fill("small", 100), huge)
-            @test_throws InexactError CStrArray{:owned}(v)   # also compiles it
+            @test_throws UndefRefError CStrArray{:owned}(v)   # also compiles it
             GC.gc()
             before = uordblks()
-            @test_throws InexactError CStrArray{:owned}(v)
-            GC.gc()
-            @test uordblks() == before
-
-            d = Dict{String, Float64}(huge => 1.0, ("k$i" => Float64(i) for i in 1:100)...)
-            @test_throws InexactError CDict{:owned}(d)
-            GC.gc()
-            before = uordblks()
-            @test_throws InexactError CDict{:owned}(d)
+            for _ in 1:100
+                @test_throws UndefRefError CStrArray{:owned}(v)
+            end
             GC.gc()
             @test uordblks() == before
         end
@@ -851,6 +846,52 @@ using Test
             @test err isa LoadError
             @test occursin("does not define a function", err.error.msg)
         end
+    end
+
+    @testset "@api rejects a name it cannot call" begin
+        # A declaration names an existing function, so both a typo and a
+        # signature the function cannot serve are expansion errors rather than
+        # a missing method when the library is compiled.
+        m = Module(:ApiTestCallable)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                twice(x::Float64) = 2x
+            end
+        )
+
+        err = try
+            Core.eval(m, :(JLWInterop.@api twiceee(x::Float64)::Float64))
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("`twiceee` is not defined here", err.error.msg)
+
+        # Defined, but not for these argument types.
+        err = try
+            Core.eval(m, :(JLWInterop.@api twice(s::String)::Float64))
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("no method twice(String)", err.error.msg)
+
+        # Defined, but not with this keyword.
+        err = try
+            Core.eval(m, :(JLWInterop.@api twice(x::Float64; k::Int64 = 1)::Float64))
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("no method twice(Float64; k)", err.error.msg)
+
+        # The signature it can serve is accepted.
+        Core.eval(m, :(JLWInterop.@api twice(x::Float64)::Float64))
+        @test only(JLWInterop.api_entries(m)).symbol == "ApiTestCallable_twice"
     end
 
     @testset "@api String argument borrows, String return owns" begin
