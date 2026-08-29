@@ -894,6 +894,107 @@ using Test
         @test only(JLWInterop.api_entries(m)).symbol == "ApiTestCallable_twice"
     end
 
+    @testset "@api helpers: unions, escapes, docstrings" begin
+        # `_api_opt_inner` recognizes an optional in either union order, and
+        # declines anything that is not one.
+        @test JLWInterop._api_opt_inner(Union{Float64, Nothing}) === Float64
+        @test JLWInterop._api_opt_inner(Union{Nothing, Float64}) === Float64
+        @test isnothing(JLWInterop._api_opt_inner(Union{Float64, Int64}))
+        @test isnothing(JLWInterop._api_opt_inner(Float64))
+        @test isnothing(JLWInterop._api_opt_inner(Nothing))
+
+        # Every escape the sidecar writer produces, including the `\uXXXX`
+        # form for a control byte with no shorthand.
+        esc(s) = JLWInterop._json_str(s)
+        @test esc("a\"b") == "\"a\\\"b\""
+        @test esc("a\\b") == "\"a\\\\b\""
+        @test esc("a\nb\rc\td") == "\"a\\nb\\rc\\td\""
+        @test esc("a\x01b") == "\"a\\u0001b\""
+
+        # More than a docstring and a signature.
+        m = Module(:ApiTestArity)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                twice(x::Float64) = 2x
+            end
+        )
+        err = try
+            Core.eval(m, :(JLWInterop.@api "a" "b" twice(x::Float64)::Float64))
+            nothing
+        catch e
+            e
+        end
+        @test err isa LoadError
+        @test occursin("[docstring] f(args...)::Ret", err.error.msg)
+    end
+
+    @testset "@api falls back to the Julia docstring" begin
+        # Without a docstring argument the declaration carries the function's
+        # own, so a foreign caller reads what a Julia caller reads.
+        m = Module(:ApiTestDocFallback)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, Expr(
+                :macrocall, GlobalRef(Core, Symbol("@doc")), LineNumberNode(0),
+                "Doubles it.\n", :(twice(x::Float64) = 2x)
+            )
+        )
+        Core.eval(
+            m, quote
+                plain(x::Float64) = x
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api twice(x::Float64)::Float64))
+        Core.eval(m, :(JLWInterop.@api plain(x::Float64)::Float64))
+        entries = Dict(e.name => e.doc for e in JLWInterop.api_entries(m))
+        @test entries[:twice] == "Doubles it."
+        @test entries[:plain] == ""
+
+        # A docstring on the function rather than on a method is filed under
+        # no signature, so the lookup falls back to the first one recorded.
+        Core.eval(
+            m, Expr(
+                :macrocall, GlobalRef(Core, Symbol("@doc")), LineNumberNode(0),
+                "On the function.\n", :(function quart end)
+            )
+        )
+        Core.eval(
+            m, quote
+                quart(x::Float64) = 4x
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api quart(x::Float64)::Float64))
+        @test only(e.doc for e in JLWInterop.api_entries(m) if e.name === :quart) ==
+            "On the function."
+        # An explicit argument wins over the Julia docstring.
+        Core.eval(
+            m, quote
+                thrice(x::Float64) = 3x
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api "For callers." thrice(x::Float64)::Float64))
+        @test only(e.doc for e in JLWInterop.api_entries(m) if e.name === :thrice) ==
+            "For callers."
+    end
+
+    @testset "@api reports a SubString message" begin
+        # `ErrorException.msg` is typed `AbstractString`, so a `SubString` is
+        # as legitimate as a `String` and the wrapper has to narrow to both.
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+        m = Module(:ApiTestSubStr)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                sliced(x::Int64) = throw(ErrorException(SubString("the tail end", 5)))
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api sliced(x::Int64)::Int64))
+        r = Core.eval(m, :(ApiTestSubStr_sliced(1)))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.generic
+        @test status_message(r.status) == "tail end"
+    end
+
     @testset "@api String argument borrows, String return owns" begin
         # The two directions take different carriers: an argument reads the
         # caller's bytes, a return hands over a copy the caller frees.

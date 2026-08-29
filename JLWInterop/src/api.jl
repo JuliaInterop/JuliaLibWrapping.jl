@@ -458,22 +458,17 @@ end
     _julia_docstring(mod::Module, name::Symbol, sig::Type) -> String
 
 The docstring attached to `mod.name` for `sig`, or the first one attached to
-it under any signature, or `""` when it has none. Reads
-`Base.Docs.meta` directly: the `Base.Docs.doc` entry points differ across the
-Julia versions JLWInterop supports, and a missing docstring is not worth an
-error.
+it under any signature, or `""` when it has none. A docstring written on the
+function rather than on a method is filed under no signature, which is why the
+lookup falls back.
+
+Reads `Base.Docs.meta` directly, rather than calling `Base.Docs.doc`, whose
+entry points differ across the Julia versions JLWInterop supports. Neither
+call here throws for an undocumented binding: both return an empty table.
 """
 function _julia_docstring(mod::Module, name::Symbol, sig::Type)
-    b = try
-        Base.Docs.Binding(mod, name)
-    catch
-        return ""
-    end
-    meta = try
-        Base.Docs.meta(b.mod)
-    catch
-        return ""
-    end
+    b = Base.Docs.Binding(mod, name)
+    meta = Base.Docs.meta(b.mod)
     haskey(meta, b) || return ""
     multidoc = meta[b]
     entry = get(multidoc.docs, sig, nothing)

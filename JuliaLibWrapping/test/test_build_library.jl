@@ -34,22 +34,24 @@ end
             mkpath(joinpath(proj, "src"))
             write(joinpath(proj, "src", "dummy.jl"), "module Dummy end\n")
             pf = joinpath(proj, "Project.toml")
-            write(pf, """
-            name = "Dummy"
-            uuid = "00000000-0000-0000-0000-000000000000"
-            version = "1.2.3"
+            write(
+                pf, """
+                name = "Dummy"
+                uuid = "00000000-0000-0000-0000-000000000000"
+                version = "1.2.3"
 
-            [deps]
-            Foo = "00000000-0000-0000-0000-0000000000f0"
+                [deps]
+                Foo = "00000000-0000-0000-0000-0000000000f0"
 
-            [compat]
-            Foo = "0.1"
+                [compat]
+                Foo = "0.1"
 
-            [sources]
-            Foo = {path = "../foo"}
-            Bar = {path = "/somewhere/bar"}
-            Baz = {url = "https://example.com/Baz.jl", rev = "main"}
-            """)
+                [sources]
+                Foo = {path = "../foo"}
+                Bar = {path = "/somewhere/bar"}
+                Baz = {url = "https://example.com/Baz.jl", rev = "main"}
+                """
+            )
             before = read(pf)
 
             dir = materialize(proj)
@@ -57,8 +59,10 @@ end
             toml = TOML.parsefile(joinpath(dir, "Project.toml"))
             @test toml["sources"]["Foo"]["path"] == abspath(joinpath(root, "foo"))
             @test toml["sources"]["Bar"]["path"] == "/somewhere/bar"
-            @test toml["sources"]["Baz"] == Dict("url" => "https://example.com/Baz.jl",
-                                                 "rev" => "main")
+            @test toml["sources"]["Baz"] == Dict(
+                "url" => "https://example.com/Baz.jl",
+                "rev" => "main"
+            )
             @test toml["name"] == "Dummy"
             @test toml["uuid"] == "00000000-0000-0000-0000-000000000000"
             @test toml["version"] == "1.2.3"
@@ -77,25 +81,29 @@ end
             mkpath(joinpath(root, "foo"))
             proj = joinpath(root, "proj")
             mkpath(proj)
-            write(joinpath(proj, "Project.toml"), """
-            [sources]
-            Foo = {path = "../foo"}
-            """)
+            write(
+                joinpath(proj, "Project.toml"), """
+                [sources]
+                Foo = {path = "../foo"}
+                """
+            )
             mf = joinpath(proj, "Manifest.toml")
-            write(mf, """
-            julia_version = "1.13.0"
-            manifest_format = "2.0"
+            write(
+                mf, """
+                julia_version = "1.13.0"
+                manifest_format = "2.0"
 
-            [[deps.Foo]]
-            path = "../foo"
-            uuid = "00000000-0000-0000-0000-0000000000f0"
-            version = "0.1.0"
+                [[deps.Foo]]
+                path = "../foo"
+                uuid = "00000000-0000-0000-0000-0000000000f0"
+                version = "0.1.0"
 
-            [[deps.Bar]]
-            path = "/somewhere/bar"
-            uuid = "00000000-0000-0000-0000-0000000000ba"
-            version = "0.2.0"
-            """)
+                [[deps.Bar]]
+                path = "/somewhere/bar"
+                uuid = "00000000-0000-0000-0000-0000000000ba"
+                version = "0.2.0"
+                """
+            )
             mf113 = joinpath(proj, "Manifest-v1.13.toml")
             cp(mf, mf113)
             before, before113 = read(mf), read(mf113)
@@ -114,10 +122,12 @@ end
 
         # Errors identify missing paths and their entries.
         mktempdir() do proj
-            write(joinpath(proj, "Project.toml"), """
-            [sources]
-            Foo = {path = "../nowhere"}
-            """)
+            write(
+                joinpath(proj, "Project.toml"), """
+                [sources]
+                Foo = {path = "../nowhere"}
+                """
+            )
             @test_throws "\"Foo\"" materialize(proj)
             @test_throws "../nowhere" materialize(proj)
             @test_throws abspath(joinpath(proj, "..", "nowhere")) materialize(proj)
@@ -126,19 +136,23 @@ end
         # Use the original project when no paths need rewriting.
         mktempdir() do proj
             pf = joinpath(proj, "Project.toml")
-            write(pf, """
-            name = "Dummy"
-            uuid = "00000000-0000-0000-0000-000000000001"
+            write(
+                pf, """
+                name = "Dummy"
+                uuid = "00000000-0000-0000-0000-000000000001"
 
-            [sources]
-            Foo = {path = "/somewhere/foo"}
-            """)
+                [sources]
+                Foo = {path = "/somewhere/foo"}
+                """
+            )
             @test materialize(proj) == proj
         end
 
         mktempdir() do proj
-            write(joinpath(proj, "Project.toml"),
-                  "name = \"Dummy\"\nuuid = \"00000000-0000-0000-0000-000000000002\"\n")
+            write(
+                joinpath(proj, "Project.toml"),
+                "name = \"Dummy\"\nuuid = \"00000000-0000-0000-0000-000000000002\"\n"
+            )
             @test materialize(proj) == proj
         end
 
@@ -320,10 +334,12 @@ end
                 @test haskey(sidecar.metadata, "probe_twice")
                 @test isempty(JuliaLibWrapping._manifest_files(proj))
 
-                # A Manifest that was there is restored byte for byte. This
-                # one names no versions, so the subprocess re-resolves it —
-                # the branch that writes the saved bytes back. Whether the
-                # subprocess then succeeds is beside the point being pinned.
+                # A Manifest that was already there is left exactly as it was,
+                # whether the subprocess rewrote it or refused to run against
+                # it. Only the second happens here: `Pkg.instantiate` will not
+                # resolve a manifest that omits a direct dependency, so it
+                # errors rather than rewriting, and the file is untouched
+                # either way.
                 manifest = joinpath(proj, "Manifest.toml")
                 write(manifest, "# hand-edited\n")
                 before = read(manifest)
@@ -332,6 +348,57 @@ end
                 catch
                 end
                 @test read(manifest) == before
+            end
+        end
+
+        @testset "sidecar: the scan sees @api but nothing registers" begin
+            # `_text_uses_api` reads the source; a declaration in a branch
+            # that does not run registers nothing when the subprocess includes
+            # the file. The empty sidecar is then removed and the entry is
+            # reported as carrying no declarations.
+            interop = abspath(joinpath(@__DIR__, "..", "..", "JLWInterop"))
+            mktempdir() do dir
+                proj = mkpath(joinpath(dir, "proj"))
+                open(joinpath(proj, "Project.toml"), "w") do io
+                    TOML.print(
+                        io,
+                        Dict(
+                            "name" => "probe", "uuid" => "11111111-2222-3333-4444-555555555556",
+                            "deps" => Dict("JLWInterop" => "65e54657-ed21-41a3-96db-71ab7fa6d94b"),
+                            "sources" => Dict("JLWInterop" => Dict("path" => interop)),
+                        );
+                        sorted = true,
+                    )
+                end
+                entry = joinpath(dir, "probe.jl")
+                write(
+                    entry,
+                    "module probe\nusing JLWInterop\nf(x::Float64) = x\n" *
+                        "if false\n    @api f(x::Float64)::Float64\nend\nend\n"
+                )
+                @test JuliaLibWrapping._text_uses_api(read(entry, String))
+                err = try
+                    JuliaLibWrapping._maybe_dump_api_metadata(
+                        entry, proj, dir, "probe"; verbose = false
+                    )
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin("registered no @api function", err.msg)
+                @test !isfile(joinpath(dir, "probe.jlw.json"))
+
+                # An entry that never mentions `@api` reaches the same place
+                # and is not an error: it is a library that simply has none.
+                plain = joinpath(dir, "plain.jl")
+                write(plain, "module plain\nusing JLWInterop\ng(x::Float64) = x\nend\n")
+                @test isnothing(
+                    JuliaLibWrapping._maybe_dump_api_metadata(
+                        plain, proj, dir, "plain"; verbose = false
+                    )
+                )
+                @test !isfile(joinpath(dir, "plain.jlw.json"))
             end
         end
     end
