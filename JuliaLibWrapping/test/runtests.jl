@@ -2986,6 +2986,90 @@ end
         end
     end
 
+    @testset "tuple-return vocabulary" begin
+        # A tuple return unwraps into a Python tuple, element by element: the
+        # first element owns its storage and is copied then released, the
+        # second is a scalar that crosses as it stands.
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "ctuple_demo", "libctuple")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "ctuple_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test occursin("class CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):", bindings)
+
+            golden = read(joinpath(@__DIR__, "expected_ctuple_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Both elements are converted before either is released, so a
+            # later element's conversion cannot read freed memory.
+            facade = read(joinpath(path, "ctuple_demo", "_facade.py"), String)
+            @test occursin(
+                "    _v = _r.value\n    try:\n" *
+                    "        _out = (np.array(_v.v1.as_numpy(), copy=True), _v.v2,)\n" *
+                    "    finally:\n        _v.v1.free()\n    return _out",
+                facade
+            )
+            @test !occursin("_v.v2.free()", facade)
+
+            golden_facade = read(joinpath(@__DIR__, "expected_ctuple_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "ctuple_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+
+        # A tuple with nothing to release gets no `finally`: an empty one is a
+        # Python syntax error.
+        io = IOBuffer()
+        JuliaLibWrapping._emit_value_unwrap(
+            io, "_r.value", (
+                kind = :ctuple_unwrap,
+                elements = [(kind = :passthrough,), (kind = :passthrough,)],
+                classname = "CTuple2_Float64_Int64",
+            )
+        )
+        @test String(take!(io)) == "    _v = _r.value\n    return (_v.v1, _v.v2,)\n"
+
+        # A nested tuple has no element conversion, so the return classifies
+        # `:opaque` and degrades to a re-export instead of reaching an emitter
+        # that cannot honor it.
+        nested_typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => StructDesc(
+                "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
+                    FieldDesc("v1", 1, 0),
+                    FieldDesc("v2", 2, 8),
+                ]
+            ),
+            4 => StructDesc(
+                "CTuple2{CTuple2{Float64, Int64}, Int64}", 24, 8, FieldDesc[
+                    FieldDesc("v1", 3, 0),
+                    FieldDesc("v2", 2, 16),
+                ]
+            ),
+        )
+        nested_typedict = Dict{Int, String}()
+        for id in (3, 4)
+            JuliaLibWrapping.mangle_python!(nested_typedict, id, nested_typeinfo)
+        end
+        nested = JuliaLibWrapping._classify_return_type(
+            4, nested_typeinfo, nested_typedict, true
+        )
+        @test nested.kind === :opaque
+        @test occursin("nested tuple", nested.reason)
+    end
+
     @testset "CArray owning return without release symbols" begin
         # A library that returns an owning CArray but has not exported the
         # release entrypoints must not have that return auto-wrapped — the

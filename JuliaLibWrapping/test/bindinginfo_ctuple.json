@@ -1,0 +1,164 @@
+{
+  "_comment": "Hand-authored fixture for a tuple return. Mirrors the layout juliac emits for `JLWResult{CTuple2{CVector{:owned,Float64},Int64}}`, with one @ccallable function returning it, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so the owning element is `:auto` (copy, then free in a `finally`), not `:mechanical`. It exists to exercise a tuple return whose first element owns its storage and whose second does not, so the emitter has to convert the two elements by different kinds and release only the first. Offsets probed from the real JLWInterop layout: sizeof(CTuple2{CVector{:owned,Float64},Int64})=24, fieldoffset 0/16; sizeof(JLWStatus)=260; sizeof(JLWResult{CTuple2{...}})=288, fieldoffset 0/264.",
+  "functions": [
+    {
+      "symbol": "stats",
+      "name": "stats()",
+      "arguments": [
+      ],
+      "returns": { "type_id": 15 }
+    },
+    {
+      "symbol": "jlw_free",
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 11 }
+      ],
+      "returns": { "type_id": null }
+    },
+    {
+      "symbol": "jlw_free_strings",
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 10 },
+        { "name": "n", "type_id": 3 }
+      ],
+      "returns": { "type_id": null }
+    }
+  ],
+  "types": [
+    {
+      "id": 1,
+      "kind": "primitive",
+      "name": "Float64",
+      "signed": false,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 2,
+      "kind": "primitive",
+      "name": "Int32",
+      "signed": true,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 3,
+      "kind": "primitive",
+      "name": "Int64",
+      "signed": true,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 4,
+      "kind": "pointer",
+      "name": "Ptr{Float64}",
+      "pointee_type_id": 1
+    },
+    {
+      "id": 5,
+      "kind": "array",
+      "name": "NTuple{1, Int32}",
+      "element_type_id": 2,
+      "count": 1,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 6,
+      "kind": "struct",
+      "name": "CVector{:owned, Float64}",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 7,
+      "kind": "primitive",
+      "name": "UInt8",
+      "signed": false,
+      "bits": 8,
+      "size": 1,
+      "alignment": 1
+    },
+    {
+      "id": 8,
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "pointee_type_id": 7
+    },
+    {
+      "id": 9,
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "size": 16,
+      "alignment": 8,
+      "fields": [
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "data", "type_id": 8, "offset": 8, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 10,
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "pointee_type_id": 9
+    },
+    {
+      "id": 11,
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "pointee_type_id": null
+    },
+    {
+      "id": 12,
+      "kind": "array",
+      "name": "NTuple{256, UInt8}",
+      "element_type_id": 7,
+      "count": 256,
+      "size": 256,
+      "alignment": 1
+    },
+    {
+      "id": 13,
+      "kind": "struct",
+      "name": "JLWStatus",
+      "size": 260,
+      "alignment": 4,
+      "fields": [
+        { "name": "code", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "message", "type_id": 12, "offset": 4, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 14,
+      "kind": "struct",
+      "name": "CTuple2{CVector{:owned, Float64}, Int64}",
+      "size": 24,
+      "alignment": 8,
+      "fields": [
+        { "name": "v1", "type_id": 6, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "v2", "type_id": 3, "offset": 16, "isptr": false, "isfieldatomic": false }
+      ]
+    },
+    {
+      "id": 15,
+      "kind": "struct",
+      "name": "JLWResult{CTuple2{CVector{:owned, Float64}, Int64}}",
+      "size": 288,
+      "alignment": 8,
+      "fields": [
+        { "name": "status", "type_id": 13, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "value", "type_id": 14, "offset": 264, "isptr": false, "isfieldatomic": false }
+      ]
+    }
+  ]
+}
