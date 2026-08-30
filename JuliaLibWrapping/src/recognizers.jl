@@ -225,6 +225,32 @@ function _carrier_ownership(name::AbstractString, prefixes)
 end
 
 """
+    _CARRIER_FAMILY_PREFIXES
+
+Prefixes of carrier families recognized by [`_carrier_ownership`](@ref).
+"""
+const _CARRIER_FAMILY_PREFIXES = (
+    "CArray{", "CVector{", "CMatrix{", "CString{", "CStrArray{", "CDict{",
+)
+
+"""
+    carrier_missing_ownership(name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES) -> Union{Nothing, String}
+
+Return the carrier family when `name` lacks an `:owned` or `:borrowed` token.
+Return `nothing` for other names and valid carrier names.
+"""
+function carrier_missing_ownership(
+        name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES
+    )
+    isnothing(_carrier_ownership(name, prefixes)) || return nothing
+    for prefix in prefixes
+        base = SubString(prefix, 1, prevind(prefix, ncodeunits(prefix)))
+        (name == base || startswith(name, prefix)) && return String(base)
+    end
+    return nothing
+end
+
+"""
     carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize `CArray`, `CVector`, or `CMatrix` with explicit ownership, signed
@@ -292,4 +318,64 @@ this to decide whether owning returns can be wrapped automatically.
 function _release_symbols_present(abi_info::ABIInfo)
     symbols = Set{String}(m.symbol for m in abi_info.entrypoints)
     return all(sym -> sym in symbols, _RELEASE_ENTRYPOINT_SYMBOLS)
+end
+
+"""
+    _check_release_entrypoint_signatures(abi_info::ABIInfo)
+
+Validate release entrypoint signatures when both symbols are present.
+"""
+function _check_release_entrypoint_signatures(abi_info::ABIInfo)
+    symbols = Dict{String, MethodDesc}()
+    for m in abi_info.entrypoints
+        m.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && (symbols[m.symbol] = m)
+    end
+    length(symbols) == length(_RELEASE_ENTRYPOINT_SYMBOLS) || return nothing
+
+    typeinfo = abi_info.typeinfo
+    _check_jlw_free_signature(symbols["jlw_free"], typeinfo)
+    _check_jlw_free_strings_signature(symbols["jlw_free_strings"], typeinfo)
+    return nothing
+end
+
+function _check_jlw_free_signature(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    ok = method.return_type === nothing && length(method.args) == 1
+    if ok
+        t = typeinfo[only(method.args).type]
+        ok = t isa PointerDesc && t.pointee_type === nothing
+    end
+    ok || error(
+        "release entrypoint `jlw_free` has signature `" * method.name *
+            "`, but JLWInterop.@export_release_entrypoints requires " *
+            "`jlw_free(p::Ptr{Cvoid})::Cvoid`"
+    )
+    return nothing
+end
+
+function _check_jlw_free_strings_signature(
+        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc}
+    )
+    ok = method.return_type === nothing && length(method.args) == 2
+    if ok
+        p_type = typeinfo[method.args[1].type]
+        ok = p_type isa PointerDesc && p_type.pointee_type !== nothing
+        if ok
+            pointee = typeinfo[p_type.pointee_type]
+            ok = pointee isa StructDesc
+            if ok
+                info = cstring_struct_info(pointee, typeinfo)
+                ok = !isnothing(info) && info.ownership === :owned
+            end
+        end
+    end
+    if ok
+        len = _integer_field_info(typeinfo[method.args[2].type])
+        ok = !isnothing(len) && len.bits == 64
+    end
+    ok || error(
+        "release entrypoint `jlw_free_strings` has signature `" * method.name *
+            "`, but JLWInterop.@export_release_entrypoints requires " *
+            "`jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid`"
+    )
+    return nothing
 end

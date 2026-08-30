@@ -675,6 +675,16 @@ end
         @test ownership("MyCVector{:owned, Float64}") === nothing  # noidiom
         @test ownership("CVector{") === nothing                # unterminated # noidiom
 
+        # Identify carrier names that lack an ownership token.
+        missing_ownership(name) = JuliaLibWrapping.carrier_missing_ownership(
+            name, ("CArray{", "CVector{", "CMatrix{")
+        )
+        @test missing_ownership("CVector{Float64}") == "CVector"
+        @test missing_ownership("CArray{Float64, 3}") == "CArray"
+        @test missing_ownership("CVector") == "CVector"             # bare, no params # noidiom
+        @test missing_ownership("CVector{:owned, Float64}") === nothing  # has a token # noidiom
+        @test missing_ownership("MyCVector{Float64}") === nothing   # not a carrier name # noidiom
+
         # Hand-built rejections: tokenless name, wrong name, wrong field names,
         # non-integer dims element, dims-as-primitive (not array), and the
         # three-field pre-type-parameter layout. Plus a Bool-pointee CArray,
@@ -1870,6 +1880,39 @@ end
         end
     end
 
+    @testset "carrier lacking an ownership token" begin
+        # Demotion identifies the carrier and missing token.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", false, 64, 8, 8),
+            2 => PointerDesc("Ptr{Float64}", 1),
+            3 => ArrayDesc("NTuple{1, Int64}", 4, 1, 8, 8),
+            4 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            5 => StructDesc(
+                "CVector{Float64}", 16, 8, FieldDesc[
+                    FieldDesc("dims", 3, 0),
+                    FieldDesc("data", 2, 8),
+                ]
+            ),
+        )
+        typedict = Dict{Int, String}(5 => "CVector_Float64")
+        arg = JuliaLibWrapping._facade_classify_arg(
+            JuliaLibWrapping.ArgDesc("v", 5, false), typeinfo, typedict
+        )
+        @test arg.kind === :opaque
+        @test occursin("CVector", arg.reason)
+        @test occursin("no ownership", arg.reason)
+
+        method = JuliaLibWrapping.MethodDesc(
+            "mylib_make", "make()", 5, JuliaLibWrapping.ArgDesc[]
+        )
+        ret = JuliaLibWrapping._classify_return_type(
+            5, typeinfo, typedict, false; method
+        )
+        @test ret.kind === :opaque
+        @test occursin("CVector", ret.reason)
+        @test occursin("no ownership", ret.reason)
+    end
+
     @testset "CString vocabulary" begin
         # Borrowed CString conversion requires no numpy or release function.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -2284,7 +2327,7 @@ end
 
             @test occursin("_lib.take_dict_i32.argtypes = [CDict_borrowed_Int32]", bindings)
             @test occursin("_lib.give_dict_i32.restype = CDict_owned_Int32", bindings)
-            # Round-2 fix re-exercised on an independent fixture.
+            # `Ptr{Cvoid}` maps to `c_void_p`.
             @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
             @test occursin("_lib.jlw_free.restype = None", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
@@ -2401,6 +2444,129 @@ end
             ]
         )
         @test present(both) === true
+    end
+
+    @testset "_check_release_entrypoint_signatures" begin
+        # A valid pair passes.
+        check = JuliaLibWrapping._check_release_entrypoint_signatures
+        good = read_abi_info("bindinginfo_cstrarray.json")
+        @test check(good) === nothing
+
+        # Validation requires both symbols.
+        only_free = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc("jlw_free", "jlw_free(p)", 1, JuliaLibWrapping.ArgDesc[]),
+            ]
+        )
+        @test check(only_free) === nothing
+        neither = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(), JuliaLibWrapping.MethodDesc[]
+        )
+        @test check(neither) === nothing
+
+        # Types used by the signature variants below.
+        i64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
+        u64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8)
+        i32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        u8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => i64, 2 => u64, 3 => i32, 4 => u8,
+            5 => PointerDesc("Ptr{UInt8}", 4),
+            6 => StructDesc(
+                "CString{:owned}", 16, 8, FieldDesc[FieldDesc("length", 1, 0), FieldDesc("data", 5, 8)]
+            ),
+            7 => StructDesc(
+                "CString{:borrowed}", 16, 8, FieldDesc[FieldDesc("length", 1, 0), FieldDesc("data", 5, 8)]
+            ),
+            8 => PointerDesc("Ptr{CString{:owned}}", 6),
+            9 => PointerDesc("Ptr{CString{:borrowed}}", 7),
+            10 => PointerDesc("Ptr{Cvoid}", nothing),
+        )
+        valid_free = JuliaLibWrapping.MethodDesc(
+            "jlw_free", "jlw_free(p::Ptr{Cvoid})::Cvoid", nothing,
+            [JuliaLibWrapping.ArgDesc("p", 10, false)]
+        )
+        valid_free_strings = JuliaLibWrapping.MethodDesc(
+            "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid", nothing,
+            [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+        )
+        info(free, free_strings) = JuliaLibWrapping.ABIInfo(ti, BitSet(), [free, free_strings])
+        @test check(info(valid_free, valid_free_strings)) === nothing
+
+        mutants = (
+            # Invalid jlw_free signatures.
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{Cvoid}, extra::Int64)::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 10, false), JuliaLibWrapping.ArgDesc("extra", 1, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{UInt8})::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 5, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{Cvoid})::Int64", 1,
+                    [JuliaLibWrapping.ArgDesc("p", 10, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            # Invalid jlw_free_strings signatures.
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}})::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:borrowed}}, n::Int64)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 9, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::UInt64)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 2, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int32)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 3, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Int64", 1,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+                ),
+                "jlw_free_strings",
+            ),
+        )
+        for (free, free_strings, symbol) in mutants
+            @test_throws symbol check(info(free, free_strings))
+        end
     end
 
     @testset "CStrArray without release symbols" begin

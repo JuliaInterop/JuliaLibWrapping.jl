@@ -596,6 +596,20 @@ using Test
         JLWInterop._free_strings(a2.data, a2.length)
     end
 
+    @testset "CStrArray{:owned} from other AbstractVector{<:AbstractString}" begin
+        # Preserve iteration order across axes and element types.
+        o = OffsetArray(["hello", "wörld", "a\0b"], -1)
+        a = CStrArray{:owned}(o)
+        @test a.length == 3
+        @test Vector{String}(a) == collect(o)
+        JLWInterop._free_strings(a.data, a.length)
+
+        v = ["the", "quick", "brown", "fox"]
+        b = CStrArray{:owned}(view(v, 2:3))   # view of a Vector{String}
+        @test Vector{String}(b) == ["quick", "brown"]
+        JLWInterop._free_strings(b.data, b.length)
+    end
+
     @testset "CStrArray AbstractVector interface" begin
         a = CStrArray{:owned}(["hello", "wörld", ""])
         @test a isa AbstractVector{CString{:owned}}
@@ -684,6 +698,16 @@ using Test
         Libc.free(c2.values)
     end
 
+    @testset "CDict{:owned} from other AbstractDict{<:AbstractString,V}" begin
+        d = Dict(SubString("aa", 1, 1) => 1.5, SubString("bb", 1, 1) => -2.0)
+        c = CDict{:owned}(d)
+        @test c isa CDict{:owned, Float64}
+        @test c.length == 2
+        @test Dict{String, Float64}(c) == Dict("a" => 1.5, "b" => -2.0)
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
+    end
+
     @testset "an owning constructor releases partial work when an element throws" begin
         # Reading an undefined element throws partway through the loop, with
         # the array and the first 100 elements already malloc'd. `mallinfo2`
@@ -723,10 +747,12 @@ using Test
     end
 
     @testset "COpt" begin
-        @test unwrap(COpt(3.5)) === 3.5
+        @test get(COpt(3.5), nothing) === 3.5
+        @test get(COpt(3.5), 0.0) === 3.5
         o = COpt{Float64}(nothing)
         @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
-        @test isnothing(unwrap(o))
+        @test isnothing(get(o, nothing))
+        @test get(o, 0.0) === 0.0
     end
 
     @testset "JLWResult" begin
@@ -1558,8 +1584,8 @@ using Test
         Libc.free(r.value.values)
 
         # Union{Float64,Nothing} travels as COpt in both directions.
-        @test unwrap(Core.eval(m, :(ApiCall_maybe($(COpt(9.0))))).value) == 18.0
-        @test isnothing(unwrap(Core.eval(m, :(ApiCall_maybe($(COpt{Float64}(nothing))))).value))
+        @test get(Core.eval(m, :(ApiCall_maybe($(COpt(9.0))))).value, nothing) == 18.0
+        @test isnothing(get(Core.eval(m, :(ApiCall_maybe($(COpt{Float64}(nothing))))).value, nothing))
 
         # Array argument, plus a keyword that reaches the wrapper as a
         # trailing positional C argument.
@@ -1929,14 +1955,18 @@ using Test
     end
 
     @testset "release entrypoints" begin
+        # The expansion must not depend on other imports.
         m = Module()
-        Core.eval(m, :(using JLWInterop))
-        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
-        # Functions exist and run on malloc'd data without crashing:
+        Core.eval(m, :(import JLWInterop: @export_release_entrypoints))
+        Core.eval(m, :(@export_release_entrypoints))
+        @test only(methods(m.jlw_free)).sig ==
+            Tuple{typeof(m.jlw_free), Ptr{Cvoid}}
+        @test only(methods(m.jlw_free_strings)).sig ==
+            Tuple{typeof(m.jlw_free_strings), Ptr{JLWInterop.CString{:owned}}, Int64}
+        # The functions accept malloc'd data.
         a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
-        @test true
     end
 end

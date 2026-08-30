@@ -11,7 +11,7 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
-export CDict, COpt, unwrap
+export CDict, COpt
 export JLWResult
 export @export_release_entrypoints
 export @api
@@ -369,9 +369,9 @@ Array of length-prefixed UTF-8 [`CString`](@ref)s for C ABI boundaries.
 property of its type rather than of the value.
 
 `CStrArray{:owned}` holds Julia-allocated storage, produced by
-`CStrArray{:owned}(::Vector{String})`. The consumer releases it exactly once
-with `_free_strings` or the `jlw_free_strings` entrypoint emitted by
-[`@export_release_entrypoints`](@ref).
+`CStrArray{:owned}(::AbstractVector{<:AbstractString})`. The consumer releases
+it exactly once with `_free_strings` or the `jlw_free_strings` entrypoint
+emitted by [`@export_release_entrypoints`](@ref).
 
 `CStrArray{:borrowed}` wraps memory the caller owns and keeps alive; the
 consumer never releases it. Converting to `Vector{String}` copies without
@@ -431,15 +431,15 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Allocate a copy of `v` as length-prefixed CStrings.
-function CStrArray{:owned}(v::Vector{String})
+# Copy `v` to length-prefixed C strings in iteration order.
+function CStrArray{:owned}(v::AbstractVector{<:AbstractString})
     n = length(v)
     data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
     completed = 0
     try
-        for i in 1:n
-            unsafe_store!(data, CString{:owned}(v[i]), i)
-            completed = i
+        for (slot, s) in enumerate(v)
+            unsafe_store!(data, CString{:owned}(s), slot)
+            completed = slot
         end
     catch
         # An element that throws leaves this carrier unreachable to the caller,
@@ -456,8 +456,9 @@ end
 
 Free `n` string buffers pointed to by the `CString`s at `p` (each one's
 `.data`), then free `p` itself. Matches the allocation made by
-`CStrArray{:owned}(::Vector{String})`. Internal; exposed at a `@ccallable`
-boundary as `jlw_free_strings` by [`@export_release_entrypoints`](@ref).
+`CStrArray{:owned}(::AbstractVector{<:AbstractString})`. Internal; exposed at
+a `@ccallable` boundary as `jlw_free_strings` by
+[`@export_release_entrypoints`](@ref).
 """
 function _free_strings(p::Ptr{CString{:owned}}, n::Int64)
     for i in 1:n
@@ -491,9 +492,10 @@ String-keyed dictionary for C ABI boundaries. Keys are length-prefixed
 property of its type.
 
 `CDict{:owned,V}` holds Julia-allocated storage, produced by
-`CDict{:owned}(::Dict)`. The consumer releases `keys` with `_free_strings` and
-`values` with `Libc.free`, or uses the corresponding entrypoints emitted by
-[`@export_release_entrypoints`](@ref), exactly once.
+`CDict{:owned}(::AbstractDict{<:AbstractString,V})`. The consumer releases
+`keys` with `_free_strings` and `values` with `Libc.free`, or uses the
+corresponding entrypoints emitted by [`@export_release_entrypoints`](@ref),
+exactly once.
 
 `CDict{:borrowed,V}` wraps memory the caller owns and keeps alive; the consumer
 never releases it. Converting to a `Dict` copies without freeing the source.
@@ -545,7 +547,7 @@ for V in CDICT_VALUE_TYPES
             end
             return out
         end
-        function CDict{:owned}(dict::Dict{String, $V})
+        function CDict{:owned}(dict::AbstractDict{<:AbstractString, $V})
             n = length(dict)
             kp = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
@@ -578,15 +580,15 @@ C-ABI representation of `Union{T,Nothing}`. `has_value` is `1` when the inline
 `value` is present and `0` when it is absent. Absent values are zero-filled.
 
 Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled);
-read back with [`unwrap`](@ref).
+read back with [`get`](@ref Base.get(::COpt, ::Any)).
 
 # Example
 
 ```julia
 using JLWInterop
 
-unwrap(COpt(3.5)) === 3.5
-isnothing(unwrap(COpt{Float64}(nothing)))
+get(COpt(3.5), nothing) === 3.5
+isnothing(get(COpt{Float64}(nothing), nothing))
 ```
 """
 struct COpt{T}
@@ -597,11 +599,13 @@ COpt(x::T) where {T} = COpt{T}(Int32(1), x)
 COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps the struct isbits
 
 """
-    unwrap(o::COpt{T}) -> Union{T,Nothing}
+    get(o::COpt{T}, default) -> Union{T,typeof(default)}
 
-Convert a [`COpt{T}`](@ref) to `Union{T,Nothing}`.
+Return the value carried by a [`COpt{T}`](@ref), or `default` when it is
+absent. `get(o, nothing)` recovers the `Union{T,Nothing}` the carrier
+represents.
 """
-unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
+Base.get(o::COpt, default) = o.has_value == Int32(0) ? default : o.value
 
 include("result.jl")
 include("api.jl")
@@ -616,12 +620,14 @@ returns. `jlw_free` frees one allocation; `jlw_free_strings` frees an array of
 macro export_release_entrypoints()
     return esc(
         quote
-            Base.@ccallable function jlw_free(p::Ptr{Cvoid})::Cvoid
-                Libc.free(p)
+            Base.@ccallable function jlw_free(p::$(Ptr{Cvoid}))::$(Cvoid)
+                $(Libc.free)(p)
                 return nothing
             end
-            Base.@ccallable function jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid
-                JLWInterop._free_strings(p, n)
+            Base.@ccallable function jlw_free_strings(
+                    p::$(Ptr{CString{:owned}}), n::$(Int64),
+                )::$(Cvoid)
+                $(_free_strings)(p, n)
                 return nothing
             end
         end

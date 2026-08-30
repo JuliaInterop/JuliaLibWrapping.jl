@@ -168,9 +168,9 @@ same layout.
 - `CStrArray{:borrowed}` wraps storage the caller owns and keeps alive; the
   consumer never releases it.
 - `CStrArray{:owned}` holds a Julia allocation, produced by
-  `CStrArray{:owned}(::Vector{String})`. The consumer releases it once with
-  `jlw_free_strings`. There is no borrowing constructor: a Julia
-  `Vector{String}` has no length-prefixed layout to alias.
+  `CStrArray{:owned}(::AbstractVector{<:AbstractString})`. The consumer
+  releases it once with `jlw_free_strings`. There is no borrowing
+  constructor: a Julia string vector has no length-prefixed layout to alias.
 
 ### Python target
 
@@ -201,10 +201,10 @@ same layout.
 - `CDict{:borrowed,V}` wraps storage the caller owns and keeps alive; the
   consumer never releases it.
 - `CDict{:owned,V}` holds two separate Julia allocations, produced by
-  `CDict{:owned}(::Dict)`. `keys` is released with `jlw_free_strings` and
-  `values` with `jlw_free`, each exactly once. There is no borrowing
-  constructor: a `Dict`'s storage is neither length-prefixed strings nor a
-  dense value array.
+  `CDict{:owned}(::AbstractDict{<:AbstractString,V})`. `keys` is released
+  with `jlw_free_strings` and `values` with `jlw_free`, each exactly once.
+  There is no borrowing constructor: a `Dict`'s storage is neither
+  length-prefixed strings nor a dense value array.
 
 ### Python target
 
@@ -236,7 +236,7 @@ without a keepalive or release operation.
 
 ```@docs
 COpt
-unwrap
+Base.get(::COpt, ::Any)
 ```
 
 ## Owning carrier returns

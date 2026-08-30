@@ -786,7 +786,7 @@ end
 
 Emit the "encode each string into a raw (non-NUL-terminated) buffer, then
 build a `ctypes` array of `<cstring_classname>` structs, each holding that
-buffer's length and a pointer into it" template shared, byte-for-byte, by
+buffer's length and a pointer into it" template shared by
 `_write_cstrarray_helpers`'s `from_list` (`list_var="bufs"`, `arr_var="arr"`,
 `source_expr="items"`, `item_var="s"`) and `_write_cdict_helpers`'s
 `from_dict` (`list_var="keys"`, `arr_var="karr"`, `source_expr="d.keys()"`,
@@ -942,7 +942,8 @@ function _write_bindings(
     )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
-    # Carrier `.free()` methods use this to diagnose missing entrypoints.
+    # Validate release functions before generating `.free()` methods.
+    _check_release_entrypoint_signatures(abi_info)
     release_present = _release_symbols_present(abi_info)
 
     # Every entrypoint becomes `_lib.<symbol>` and `def <symbol>(…)`, so a
@@ -1284,6 +1285,12 @@ function _facade_classify_arg(
             unsupported = _unsupported_payload_reason(t, typeinfo)
             isnothing(unsupported) ||
                 return (kind = :opaque, reason = "argument type " * unsupported * "; hand-wrap")
+            family = carrier_missing_ownership(t.name)
+            isnothing(family) || return (
+                kind = :opaque,
+                reason = "argument type `" * t.name * "` resembles `" * family *
+                    "` but has no ownership token; hand-wrap",
+            )
             pass_opaque && return (kind = :primitive,)
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
@@ -1427,6 +1434,12 @@ function _classify_return_type(
             unsupported = _unsupported_payload_reason(rt, typeinfo)
             isnothing(unsupported) ||
                 return (kind = :opaque, reason = "return type " * unsupported * "; hand-wrap")
+            family = carrier_missing_ownership(rt.name)
+            isnothing(family) || return (
+                kind = :opaque,
+                reason = "return type `" * rt.name * "` resembles `" * family *
+                    "` but has no ownership token; hand-wrap",
+            )
             pass_opaque && return (kind = :passthrough,)
             return (kind = :opaque, reason = "returns unrecognized struct `" * rt.name * "`")
         end
