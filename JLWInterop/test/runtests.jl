@@ -1031,6 +1031,45 @@ using Test
         @test status_message(r.status) == "tail end"
     end
 
+    @testset "@api applies the declared return type" begin
+        # The declared type, not the callee's, is the boundary contract. The
+        # conversion runs inside the `try`: a convertible return converts, and
+        # one the declared type cannot represent reports an ordinary error
+        # instead of failing in the wrapper's own return conversion, which the
+        # `catch` cannot reach.
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+        m = Module(:ApiTestRetAs)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                narrower(n::Int64) = Float32[1.5f0, 2.5f0][1:n]
+                fractional(x::Float64) = x / 2
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api narrower(n::Int64)::Vector{Float64}))
+        Core.eval(m, :(JLWInterop.@api fractional(x::Float64)::Int64))
+
+        # A `Vector{Float32}` return converts to the declared `Vector{Float64}`.
+        r = Core.eval(m, :(ApiTestRetAs_narrower(2)))
+        @test iszero(r.status.code)
+        @test r.value isa CVector{:owned, Float64}
+        @test unsafe_load(r.value.data, 1) === 1.5
+        @test unsafe_load(r.value.data, 2) === 2.5
+        Libc.free(r.value.data)
+
+        # A value the declared type cannot represent is caught inside the
+        # `try` and reported under the inexact code.
+        r = Core.eval(m, :(ApiTestRetAs_fractional(3.0)))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.inexact
+        @test iszero(r.value)
+        @test status_message(r.status) == "InexactError"
+
+        # The same declaration succeeds when the value is representable.
+        r = Core.eval(m, :(ApiTestRetAs_fractional(4.0)))
+        @test iszero(r.status.code)
+        @test r.value === Int64(2)
+    end
+
     @testset "@api String argument borrows, String return owns" begin
         # The two directions take different carriers: an argument reads the
         # caller's bytes, a return hands over a copy the caller frees.
