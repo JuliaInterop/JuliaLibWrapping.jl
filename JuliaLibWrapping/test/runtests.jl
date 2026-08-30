@@ -675,6 +675,17 @@ end
         @test ownership("MyCVector{:owned, Float64}") === nothing  # noidiom
         @test ownership("CVector{") === nothing                # unterminated # noidiom
 
+        # A carrier-family name with no ownership token is reported by
+        # family, so a demotion reason can name it specifically.
+        missing_ownership(name) = JuliaLibWrapping.carrier_missing_ownership(
+            name, ("CArray{", "CVector{", "CMatrix{")
+        )
+        @test missing_ownership("CVector{Float64}") == "CVector"
+        @test missing_ownership("CArray{Float64, 3}") == "CArray"
+        @test missing_ownership("CVector") == "CVector"             # bare, no params # noidiom
+        @test missing_ownership("CVector{:owned, Float64}") === nothing  # has a token # noidiom
+        @test missing_ownership("MyCVector{Float64}") === nothing   # not a carrier name # noidiom
+
         # Hand-built rejections: tokenless name, wrong name, wrong field names,
         # non-integer dims element, dims-as-primitive (not array), and the
         # three-field pre-type-parameter layout. Plus a Bool-pointee CArray,
@@ -1868,6 +1879,42 @@ end
             @test occursin("import mylib_mask  # TODO: hand-wrap", facade)
             @test occursin("import mylib_count_true  # TODO: hand-wrap", facade)
         end
+    end
+
+    @testset "carrier lacking an ownership token" begin
+        # `CVector{Float64}` matches no recognizer (all require an ownership
+        # token), so it demotes; the reason should name the carrier family
+        # rather than the generic "unrecognized type" message, since it may
+        # come from an older JLWInterop.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", false, 64, 8, 8),
+            2 => PointerDesc("Ptr{Float64}", 1),
+            3 => ArrayDesc("NTuple{1, Int64}", 4, 1, 8, 8),
+            4 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            5 => StructDesc(
+                "CVector{Float64}", 16, 8, FieldDesc[
+                    FieldDesc("dims", 3, 0),
+                    FieldDesc("data", 2, 8),
+                ]
+            ),
+        )
+        typedict = Dict{Int, String}(5 => "CVector_Float64")
+        arg = JuliaLibWrapping._facade_classify_arg(
+            JuliaLibWrapping.ArgDesc("v", 5, false), typeinfo, typedict
+        )
+        @test arg.kind === :opaque
+        @test occursin("CVector", arg.reason)
+        @test occursin("no ownership", arg.reason)
+
+        method = JuliaLibWrapping.MethodDesc(
+            "mylib_make", "make()", 5, JuliaLibWrapping.ArgDesc[]
+        )
+        ret = JuliaLibWrapping._classify_return_type(
+            5, typeinfo, typedict, false; method
+        )
+        @test ret.kind === :opaque
+        @test occursin("CVector", ret.reason)
+        @test occursin("no ownership", ret.reason)
     end
 
     @testset "CString vocabulary" begin

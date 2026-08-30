@@ -225,6 +225,38 @@ function _carrier_ownership(name::AbstractString, prefixes)
 end
 
 """
+    _CARRIER_FAMILY_PREFIXES
+
+Leading name (each ending in `{`) of every JLWInterop carrier family that
+[`_carrier_ownership`](@ref) knows how to parse an ownership token from.
+"""
+const _CARRIER_FAMILY_PREFIXES = (
+    "CArray{", "CVector{", "CMatrix{", "CString{", "CStrArray{", "CDict{",
+)
+
+"""
+    carrier_missing_ownership(name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES) -> Union{Nothing, String}
+
+Return the bare carrier family name (e.g. `"CVector"`) when `name` looks like
+one of the carrier families named by `prefixes` (each ending in `{`) but
+states no `:owned`/`:borrowed` ownership token — either a parametric name
+whose leading type parameter is not the token (`"CVector{Float64}"`) or an
+unparameterized name (`"CStrArray"`). Return `nothing` when `name` matches no
+family, or when it already carries a valid ownership token (recognized by
+[`_carrier_ownership`](@ref) instead).
+"""
+function carrier_missing_ownership(
+        name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES
+    )
+    isnothing(_carrier_ownership(name, prefixes)) || return nothing
+    for prefix in prefixes
+        base = SubString(prefix, 1, prevind(prefix, ncodeunits(prefix)))
+        (name == base || startswith(name, prefix)) && return String(base)
+    end
+    return nothing
+end
+
+"""
     carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize `CArray`, `CVector`, or `CMatrix` with explicit ownership, signed

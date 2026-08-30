@@ -1284,6 +1284,13 @@ function _facade_classify_arg(
             unsupported = _unsupported_payload_reason(t, typeinfo)
             isnothing(unsupported) ||
                 return (kind = :opaque, reason = "argument type " * unsupported * "; hand-wrap")
+            family = carrier_missing_ownership(t.name)
+            isnothing(family) || return (
+                kind = :opaque,
+                reason = "argument type `" * t.name * "` looks like a `" * family *
+                    "` carrier but states no ownership; it may come from an older " *
+                    "JLWInterop — hand-wrap",
+            )
             pass_opaque && return (kind = :primitive,)
             return (kind = :opaque, reason = "argument has unrecognized type `" * t.name * "`")
         end
@@ -1427,6 +1434,13 @@ function _classify_return_type(
             unsupported = _unsupported_payload_reason(rt, typeinfo)
             isnothing(unsupported) ||
                 return (kind = :opaque, reason = "return type " * unsupported * "; hand-wrap")
+            family = carrier_missing_ownership(rt.name)
+            isnothing(family) || return (
+                kind = :opaque,
+                reason = "return type `" * rt.name * "` looks like a `" * family *
+                    "` carrier but states no ownership; it may come from an older " *
+                    "JLWInterop — hand-wrap",
+            )
             pass_opaque && return (kind = :passthrough,)
             return (kind = :opaque, reason = "returns unrecognized struct `" * rt.name * "`")
         end
