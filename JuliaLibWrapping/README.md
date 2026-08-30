@@ -13,5 +13,5 @@ JuliaLibWrapping turns the JSON ABI metadata emitted by
 The Python target separates generated `ctypes` bindings in `_lowlevel.py`
 from the author-editable public API in `_facade.py`. The low-level module is
 regenerated; the façade is created once. See the
-[documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/#Two-tier-Python-output)
+[documentation](https://JuliaInterop.github.io/JuliaLibWrapping.jl/dev/python/)
 for details.

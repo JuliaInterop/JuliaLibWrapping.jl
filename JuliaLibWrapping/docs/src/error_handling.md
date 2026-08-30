@@ -1,13 +1,16 @@
-# Error handling across the ABI
+# Manual error status handling
 
-A Julia `throw` inside a `--trim`-compiled `@ccallable` does not become a
+A Julia `throw` inside a `--trim`-compiled hand-written `@ccallable` does not become a
 Python exception — at best it aborts the host process. JuliaLibWrapping
 defines a convention for reporting errors across the C ABI so that
 generated wrappers can translate them into native exceptions.
 
+An [`@api`](@ref) declaration generates this boundary automatically. This page
+is for authors designing an exact ABI by hand.
+
 ## The `JLWStatus` convention
 
-The canonical status struct is defined in the [JLWInterop](@ref)
+The canonical status struct is defined among the [JLWInterop carriers](@ref)
 subdir package and has the following shape:
 
 ```julia

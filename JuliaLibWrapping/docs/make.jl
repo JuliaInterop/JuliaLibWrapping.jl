@@ -7,6 +7,7 @@ DocMeta.setdocmeta!(JLWInterop, :DocTestSetup, :(using JLWInterop); recursive = 
 
 makedocs(;
     modules = [JuliaLibWrapping, JLWInterop],
+    checkdocs = :exports,
     authors = "Tim Holy <tim.holy@gmail.com> and contributors",
     sitename = "JuliaLibWrapping.jl",
     format = Documenter.HTML(;
@@ -16,11 +17,27 @@ makedocs(;
     ),
     pages = [
         "Home" => "index.md",
-        "Tutorial" => "tutorial.md",
-        "Concepts" => "concepts.md",
-        "JLWInterop" => "jlwinterop.md",
-        "Error handling" => "error_handling.md",
-        "Annotating a library with `@api`" => "annotations.md",
+        "Getting started" => [
+            "Your first wrapper" => "quickstart.md",
+        ],
+        "Authoring libraries" => [
+            "Declaring an API with `@api`" => "annotations.md",
+            "Supported Julia types" => "types.md",
+            "Hand-written ABI entrypoints" => [
+                "Custom OLS tutorial" => "tutorial.md",
+                "Manual error status" => "error_handling.md",
+            ],
+        ],
+        "Generated bindings" => [
+            "Python package and façade" => "python.md",
+            "JLWInterop carriers" => "jlwinterop.md",
+        ],
+        "Building and distribution" => "building.md",
+        "Concepts and extension" => [
+            "Architecture and metadata flow" => "architecture.md",
+            "Adding a target backend" => "extending.md",
+            "Pre-0.2 concepts index" => "concepts.md",
+        ],
         "API reference" => "api.md",
     ],
 )

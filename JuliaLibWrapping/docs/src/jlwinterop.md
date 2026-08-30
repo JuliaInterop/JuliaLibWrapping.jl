@@ -2,11 +2,10 @@
 CurrentModule = JLWInterop
 ```
 
-# JLWInterop
+# JLWInterop carriers
 
-```@docs
-JLWInterop
-```
+The complete list of public objects appears in the [JLWInterop API
+reference](@ref "JLWInterop").
 
 ## Ownership and layout
 
@@ -46,15 +45,9 @@ Base.@ccallable function safe_sqrt(x::Float64)::JLWStatus
 end
 ```
 
-See [Error handling across the ABI](@ref) for the protocol and its current
-Python mapping.
+See [Manual error status handling](@ref) for authoring the protocol and
+[Generated Python bindings](@ref) for its Python mapping.
 
-```@docs
-JLWStatus
-jlw_ok
-jlw_error
-JLW_MESSAGE_BYTES
-```
 
 ## `CArray{owned,T,N}` — N-D numeric buffer (column-major)
 
@@ -116,11 +109,6 @@ The two ownerships mangle to two distinct typedefs
 (`CVector_owned_Float64`, `CVector_borrowed_Float64`), so whether to free a
 returned buffer is visible in the signature.
 
-```@docs
-CArray
-CVector
-CMatrix
-```
 
 ## `CString{owned}` — length-prefixed UTF-8
 
@@ -150,9 +138,6 @@ owning class gets the conversion methods and an idempotent `free()`, but no
 constructors. Owning returns are decoded and freed in a `finally`; owning
 arguments require a manual wrapper.
 
-```@docs
-CString
-```
 
 ## `CStrArray{owned}` — string arrays
 
@@ -181,9 +166,6 @@ same layout.
 A borrowed class gets `from_list` and `as_list`; an owning class gets `as_list`
 and an idempotent `free()`. Owning returns are copied and freed in a `finally`.
 
-```@docs
-CStrArray
-```
 
 ## `CDict{owned,V}` — string-keyed dictionaries
 
@@ -215,10 +197,6 @@ same layout.
 A borrowed class gets `from_dict` and `as_dict`; an owning class gets `as_dict`
 and an idempotent `free()`. Owning returns are copied and freed in a `finally`.
 
-```@docs
-CDict
-CDICT_VALUE_TYPES
-```
 
 ## `COpt{T}` — optional scalars
 
@@ -234,10 +212,6 @@ inline value. It is allocation-free and has no ownership state.
 The generated `from_optional` and `as_optional` helpers convert the value
 without a keepalive or release operation.
 
-```@docs
-COpt
-Base.get(::COpt, ::Any)
-```
 
 ## Owning carrier returns
 
@@ -257,8 +231,3 @@ buffers must be released exactly once; borrowed buffers must not be released.
 Without these entrypoints, a target cannot safely automate owning returns. The
 current Python target leaves affected functions for manual wrapping. A library
 whose carriers are all borrowed needs no release entrypoints at all.
-
-```@docs
-@export_release_entrypoints
-_free_strings
-```

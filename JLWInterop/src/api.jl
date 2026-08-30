@@ -461,12 +461,12 @@ end
 Declare one call signature of `name` as a JuliaLibWrapping API entry point.
 `name` must already be callable with those types — defined in this module, or
 brought in from the package this binding layer wraps. The macro defines
-nothing itself: it generates a `Base.@ccallable` C-ABI wrapper (named per
-[`_api_symbol`](@ref)) that converts arguments and return value through
+nothing itself: it generates a `Base.@ccallable` C-ABI wrapper (named by the
+private `_api_symbol` helper) that converts arguments and return value through
 [`carrier_type`](@ref)/[`carrier_return_type`](@ref)/[`to_carrier`](@ref)/[`from_carrier`](@ref)
 and reports errors via [`JLWResult`](@ref)/[`JLWStatus`](@ref), and records an
 [`ApiEntry`](@ref) in the declaring module's registry (see
-[`_REGISTRY_NAME`](@ref)).
+the private `_REGISTRY_NAME` binding).
 
 The declared types are the boundary contract, not a method signature: `name`
 may accept more than this, and foreign callers get exactly this. Declaring a
