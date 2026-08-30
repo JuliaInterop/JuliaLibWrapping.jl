@@ -27,8 +27,6 @@ from ._lowlevel import (
 
 def stats():
     _r = _lowlevel.stats()
-    if _r.status.code != 0:
-        raise JLWError(_r.status.code, bytes(_r.status.message).rstrip(b"\x00").decode("utf-8", errors="replace"))
     _v = _r.value
     try:
         _out = (np.array(_v.v1.as_numpy(), copy=True), _v.v2,)

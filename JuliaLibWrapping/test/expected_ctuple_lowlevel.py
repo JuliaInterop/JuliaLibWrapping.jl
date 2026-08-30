@@ -61,6 +61,15 @@ class JLWError(RuntimeError):
         self.code = code
         self.message = message
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 class CString_owned(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
@@ -97,12 +106,14 @@ class CString_owned(ctypes.Structure):
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.data = type(self.data)()
         self.length = 0
+_check_layout(CString_owned, 16, (0, 8))
 
 class JLWStatus(ctypes.Structure):
     _fields_ = [
         ("code", ctypes.c_int32),
         ("message", (ctypes.c_uint8 * 256)),
     ]
+_check_layout(JLWStatus, 260, (0, 4))
 
 class CVector_owned_Float64(ctypes.Structure):
     _fields_ = [
@@ -134,18 +145,21 @@ class CVector_owned_Float64(ctypes.Structure):
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.data = type(self.data)()
         self.dims = type(self.dims)()
+_check_layout(CVector_owned_Float64, 16, (0, 8))
 
 class CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):
     _fields_ = [
         ("v1", CVector_owned_Float64),
         ("v2", ctypes.c_int64),
     ]
+_check_layout(CTuple2_CVector_owned_Float64_Int64, 24, (0, 16))
 
 class JLWResult_CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):
     _fields_ = [
         ("status", JLWStatus),
         ("value", CTuple2_CVector_owned_Float64_Int64),
     ]
+_check_layout(JLWResult_CTuple2_CVector_owned_Float64_Int64, 288, (0, 264))
 
 _lib.stats.argtypes = []
 _lib.stats.restype = JLWResult_CTuple2_CVector_owned_Float64_Int64
