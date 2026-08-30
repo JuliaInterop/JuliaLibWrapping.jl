@@ -1022,6 +1022,15 @@ using Test
         r = Core.eval(m, :(ApiTestSubStr_sliced(1)))
         @test r.status.code == JLWInterop._API_ERROR_CODES.generic
         @test status_message(r.status) == "tail end"
+
+        # Any other AbstractString in `msg` cannot be converted trim-safely,
+        # so the wrapper reports the exception's type name instead.
+        gs = Test.GenericString("odd")
+        Core.eval(m, :(exotic(x::Int64) = throw(ErrorException($gs))))
+        Core.eval(m, :(JLWInterop.@api exotic(x::Int64)::Int64))
+        r = Core.eval(m, :(ApiTestSubStr_exotic(1)))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.generic
+        @test status_message(r.status) == "ErrorException"
     end
 
     @testset "@api applies the declared return type" begin

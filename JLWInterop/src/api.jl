@@ -423,7 +423,11 @@ in the unrecognized case:
         if e isa Base.ErrorException
             code = 1
             field = e.msg
-            field isa String && (msg = field)          # plus SubString
+            if field isa String
+                msg = field                            # plus SubString
+            else
+                msg = String(string(nameof(typeof(e))))
+            end
         elseif e isa Base.ArgumentError
             ...
         else
@@ -446,6 +450,11 @@ function _api_status_expr(e::Symbol)
                 $msg = $field
             elseif $field isa SubString{String}
                 $msg = String($field)
+            else
+                # Some other AbstractString: converting it would be a dynamic
+                # call, so fall back to the type name like the unrecognized
+                # case.
+                $name_the_type
             end
         end
     end

@@ -226,7 +226,8 @@ becomes a [`JLWResult`](@ref) whose `status.code` names the exception type:
 A message is read only from a field already known to hold a `String` or a
 `SubString{String}`: the wrapper runs inside the trimmed library, where
 converting an `AbstractString` is a dynamic call the build rejects. Anything
-else reports its type name, which needs no conversion.
+else — an unrecognized exception, or a recognized one whose `msg` holds some
+other `AbstractString` — reports its type name, which needs no conversion.
 
 The declared return type is applied to the returned value *inside* the
 `try`, so a function whose actual return type differs from the declaration
