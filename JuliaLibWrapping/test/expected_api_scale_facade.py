@@ -31,8 +31,6 @@ def scale(x, *, factor=2.0, label):
     _x = CVector_borrowed_Float64.from_numpy(x)
     _label = CString_borrowed.from_str(label)
     _r = _lowlevel.mylib_scale(_x, factor, _label)
-    if _r.status.code != 0:
-        raise JLWError(_r.status.code, bytes(_r.status.message).rstrip(b"\x00").decode("utf-8", errors="replace"))
     try:
         _out = np.array(_r.value.as_numpy(), copy=True)
     finally:

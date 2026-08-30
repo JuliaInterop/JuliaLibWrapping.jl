@@ -1665,10 +1665,11 @@ Emit the façade wrapper's return handling for `call`, the
 `_lowlevel.<symbol>(...)` expression built from the converted arguments,
 classified as `ret` (a [`_classify_return_type`](@ref) result).
 `:passthrough` and `:jlwstatus_discard` return or discard `call` directly.
-`:jlwresult_unwrap` binds `_r = call`, raises `JLWError` on a non-zero
-`_r.status.code`, then delegates to [`_emit_value_unwrap`](@ref) for
-`ret.inner`, rooted at `_r.value`. Every other kind binds `_result = call`
-and delegates to `_emit_value_unwrap`.
+`:jlwresult_unwrap` binds `_r = call` and delegates to
+[`_emit_value_unwrap`](@ref) for `ret.inner`, rooted at `_r.value`; a
+non-zero status has already raised `JLWError` inside `_lowlevel`, so a
+result that reaches the façade is a success. Every other kind binds
+`_result = call` and delegates to `_emit_value_unwrap`.
 """
 function _emit_facade_return_body(f::IO, call::AbstractString, ret)
     if ret.kind === :passthrough
@@ -1678,12 +1679,9 @@ function _emit_facade_return_body(f::IO, call::AbstractString, ret)
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
     elseif ret.kind === :jlwresult_unwrap
+        # `_lowlevel` already raises JLWError on a non-zero status, so only
+        # the value needs unwrapping here.
         println(f, "    _r = ", call)
-        println(f, "    if _r.status.code != 0:")
-        println(
-            f, "        raise JLWError(_r.status.code, bytes(_r.status.message)",
-            ".rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\"))"
-        )
         _emit_value_unwrap(f, "_r.value", ret.inner.kind)
     else
         println(f, "    _result = ", call)
@@ -1747,6 +1745,16 @@ function _emit_facade_api_autowrapper(f::IO, method::MethodDesc, plan)
     pos_names = String[String(n) for n in entry["args"]]
     kw_specs = entry["kwargs"]
     declared = vcat(pos_names, String[String(kw["name"]) for kw in kw_specs])
+    # Positional and keyword arguments share one Python signature, so a name
+    # declared twice in the sidecar is an authoring error, not something to
+    # rename silently (the keyword's name is what callers must type).
+    if !allunique(declared)
+        dup = first(n for n in declared if count(==(n), declared) > 1)
+        error(
+            "`$(entry["name"])` ('$(method.symbol)') declares the argument " *
+                "name '$dup' more than once; rename one of them"
+        )
+    end
     seen = Set{String}()
     argnames = String[sanitize_python_argname(n, seen) for n in declared]
     npos = length(pos_names)

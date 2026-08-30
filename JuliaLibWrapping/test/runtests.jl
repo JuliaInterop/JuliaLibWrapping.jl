@@ -1510,7 +1510,10 @@ end
             facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
             @test occursin("def scale(x, *, factor=2.0, label):", facade)
             @test occursin("\"\"\"Scale every entry.\"\"\"", facade)
-            @test occursin("raise JLWError", facade)
+            # `_lowlevel` raises JLWError on a failed status; the façade
+            # re-exports the class but never re-checks the status itself.
+            @test occursin("JLWError", facade)
+            @test !occursin("status.code", facade)
             @test occursin("_label = CString_borrowed.from_str(label)", facade)
             @test facade == read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
             bindings_path = joinpath(dir, "mylib_py", "_lowlevel.py")
@@ -1651,6 +1654,27 @@ end
             @test err isa ErrorException
             @test occursin(pyname, err.msg)
             @test occursin("mylib_scale", err.msg)
+        end
+
+        # One argument name declared twice in the sidecar — positional and
+        # keyword names share the Python signature — is an error, not a
+        # silent rename (a renamed keyword changes what callers must type).
+        dup = Dict{String, Any}(
+            "mylib_scale" => merge(
+                entry, Dict{String, Any}(
+                    "kwargs" => Any[
+                        Dict{String, Any}("name" => "x"),
+                        Dict{String, Any}("name" => "label"),
+                    ],
+                )
+            ),
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            @test_throws(
+                "`scale` ('mylib_scale') declares the argument name 'x' more than once",
+                write_wrapper(dest, info; api_metadata = dup)
+            )
         end
     end
 
