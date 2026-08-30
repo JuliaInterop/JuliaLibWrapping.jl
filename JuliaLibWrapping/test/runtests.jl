@@ -2450,6 +2450,131 @@ end
         @test present(both) === true
     end
 
+    @testset "_check_release_entrypoint_signatures" begin
+        # A correctly shaped pair passes silently; fixtures elsewhere already
+        # exercise this via `write_wrapper` on `bindinginfo_cstrarray.json`.
+        check = JuliaLibWrapping._check_release_entrypoint_signatures
+        good = read_abi_info("bindinginfo_cstrarray.json")
+        @test check(good) === nothing
+
+        # Only one symbol present, or neither, is a legitimate "no release
+        # entrypoints" state and must not error.
+        only_free = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc("jlw_free", "jlw_free(p)", 1, JuliaLibWrapping.ArgDesc[]),
+            ]
+        )
+        @test check(only_free) === nothing
+        neither = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(), JuliaLibWrapping.MethodDesc[]
+        )
+        @test check(neither) === nothing
+
+        # Hand-built type table covering both correct and mismatched shapes.
+        i64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
+        u64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8)
+        i32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
+        u8 = PrimitiveTypeDesc("UInt8", false, 8, 1, 1)
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => i64, 2 => u64, 3 => i32, 4 => u8,
+            5 => PointerDesc("Ptr{UInt8}", 4),
+            6 => StructDesc(
+                "CString{:owned}", 16, 8, FieldDesc[FieldDesc("length", 1, 0), FieldDesc("data", 5, 8)]
+            ),
+            7 => StructDesc(
+                "CString{:borrowed}", 16, 8, FieldDesc[FieldDesc("length", 1, 0), FieldDesc("data", 5, 8)]
+            ),
+            8 => PointerDesc("Ptr{CString{:owned}}", 6),
+            9 => PointerDesc("Ptr{CString{:borrowed}}", 7),
+            10 => PointerDesc("Ptr{Cvoid}", nothing),
+        )
+        valid_free = JuliaLibWrapping.MethodDesc(
+            "jlw_free", "jlw_free(p::Ptr{Cvoid})::Cvoid", nothing,
+            [JuliaLibWrapping.ArgDesc("p", 10, false)]
+        )
+        valid_free_strings = JuliaLibWrapping.MethodDesc(
+            "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid", nothing,
+            [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+        )
+        info(free, free_strings) = JuliaLibWrapping.ABIInfo(ti, BitSet(), [free, free_strings])
+        @test check(info(valid_free, valid_free_strings)) === nothing
+
+        mutants = (
+            # jlw_free mutations:
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{Cvoid}, extra::Int64)::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 10, false), JuliaLibWrapping.ArgDesc("extra", 1, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{UInt8})::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 5, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            (
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free", "jlw_free(p::Ptr{Cvoid})::Int64", 1,
+                    [JuliaLibWrapping.ArgDesc("p", 10, false)]
+                ),
+                valid_free_strings, "`jlw_free`",
+            ),
+            # jlw_free_strings mutations:
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}})::Cvoid", nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:borrowed}}, n::Int64)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 9, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::UInt64)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 2, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int32)::Cvoid",
+                    nothing,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 3, false)]
+                ),
+                "jlw_free_strings",
+            ),
+            (
+                valid_free,
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Int64", 1,
+                    [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
+                ),
+                "jlw_free_strings",
+            ),
+        )
+        for (free, free_strings, symbol) in mutants
+            @test_throws symbol check(info(free, free_strings))
+        end
+    end
+
     @testset "CStrArray without release symbols" begin
         # Owning returns require release entrypoints; borrowed arguments do not.
         abi = read_abi_info("bindinginfo_cstrarray_nofree.json")

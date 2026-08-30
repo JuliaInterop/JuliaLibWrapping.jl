@@ -325,3 +325,68 @@ function _release_symbols_present(abi_info::ABIInfo)
     symbols = Set{String}(m.symbol for m in abi_info.entrypoints)
     return all(sym -> sym in symbols, _RELEASE_ENTRYPOINT_SYMBOLS)
 end
+
+"""
+    _check_release_entrypoint_signatures(abi_info::ABIInfo)
+
+When the ABI exports both [`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref), check that
+each has the signature [`JLWInterop.@export_release_entrypoints`](@ref)
+emits, and `error` naming the symbol and the expected signature on a
+mismatch. When only one symbol is present, or neither, this does nothing: a
+library with no release entrypoints at all is a legitimate state, handled
+elsewhere by [`_release_symbols_present`](@ref).
+"""
+function _check_release_entrypoint_signatures(abi_info::ABIInfo)
+    symbols = Dict{String, MethodDesc}()
+    for m in abi_info.entrypoints
+        m.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && (symbols[m.symbol] = m)
+    end
+    length(symbols) == length(_RELEASE_ENTRYPOINT_SYMBOLS) || return nothing
+
+    typeinfo = abi_info.typeinfo
+    _check_jlw_free_signature(symbols["jlw_free"], typeinfo)
+    _check_jlw_free_strings_signature(symbols["jlw_free_strings"], typeinfo)
+    return nothing
+end
+
+function _check_jlw_free_signature(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    ok = method.return_type === nothing && length(method.args) == 1
+    if ok
+        t = typeinfo[only(method.args).type]
+        ok = t isa PointerDesc && t.pointee_type === nothing
+    end
+    ok || error(
+        "release entrypoint `jlw_free` has signature `" * method.name *
+            "`, but JLWInterop.@export_release_entrypoints requires " *
+            "`jlw_free(p::Ptr{Cvoid})::Cvoid`"
+    )
+    return nothing
+end
+
+function _check_jlw_free_strings_signature(
+        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc}
+    )
+    ok = method.return_type === nothing && length(method.args) == 2
+    if ok
+        p_type = typeinfo[method.args[1].type]
+        ok = p_type isa PointerDesc && p_type.pointee_type !== nothing
+        if ok
+            pointee = typeinfo[p_type.pointee_type]
+            ok = pointee isa StructDesc
+            if ok
+                info = cstring_struct_info(pointee, typeinfo)
+                ok = !isnothing(info) && info.ownership === :owned
+            end
+        end
+    end
+    if ok
+        len = _integer_field_info(typeinfo[method.args[2].type])
+        ok = !isnothing(len) && len.bits == 64
+    end
+    ok || error(
+        "release entrypoint `jlw_free_strings` has signature `" * method.name *
+            "`, but JLWInterop.@export_release_entrypoints requires " *
+            "`jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid`"
+    )
+    return nothing
+end

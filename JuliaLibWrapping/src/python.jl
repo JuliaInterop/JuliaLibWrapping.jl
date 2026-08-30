@@ -942,7 +942,11 @@ function _write_bindings(
     )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
-    # Carrier `.free()` methods use this to diagnose missing entrypoints.
+    # Carrier `.free()` methods use this to diagnose missing entrypoints. A
+    # hand-written entrypoint with the right name but the wrong signature
+    # would otherwise bind with real ABI argtypes and fail only at the first
+    # owning return, at call time.
+    _check_release_entrypoint_signatures(abi_info)
     release_present = _release_symbols_present(abi_info)
 
     # Every entrypoint becomes `_lib.<symbol>` and `def <symbol>(…)`, so a
