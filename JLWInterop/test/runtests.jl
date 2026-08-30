@@ -1929,14 +1929,19 @@ using Test
     end
 
     @testset "release entrypoints" begin
+        # Only the macro name is imported, so this fails if the macro's body
+        # resolves anything else (e.g. `Libc.free`) in this module by name.
         m = Module()
-        Core.eval(m, :(using JLWInterop))
-        Core.eval(m, :(JLWInterop.@export_release_entrypoints))
-        # Functions exist and run on malloc'd data without crashing:
+        Core.eval(m, :(import JLWInterop: @export_release_entrypoints))
+        Core.eval(m, :(@export_release_entrypoints))
+        @test only(methods(m.jlw_free)).sig ==
+            Tuple{typeof(m.jlw_free), Ptr{Cvoid}}
+        @test only(methods(m.jlw_free_strings)).sig ==
+            Tuple{typeof(m.jlw_free_strings), Ptr{JLWInterop.CString{:owned}}, Int64}
+        # The functions also run correctly on malloc'd data:
         a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
-        @test true
     end
 end

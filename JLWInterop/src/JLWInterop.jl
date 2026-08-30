@@ -616,12 +616,14 @@ returns. `jlw_free` frees one allocation; `jlw_free_strings` frees an array of
 macro export_release_entrypoints()
     return esc(
         quote
-            Base.@ccallable function jlw_free(p::Ptr{Cvoid})::Cvoid
-                Libc.free(p)
+            Base.@ccallable function jlw_free(p::$(Ptr{Cvoid}))::$(Cvoid)
+                $(Libc.free)(p)
                 return nothing
             end
-            Base.@ccallable function jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid
-                JLWInterop._free_strings(p, n)
+            Base.@ccallable function jlw_free_strings(
+                    p::$(Ptr{CString{:owned}}), n::$(Int64),
+                )::$(Cvoid)
+                $(_free_strings)(p, n)
                 return nothing
             end
         end
