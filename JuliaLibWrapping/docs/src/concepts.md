@@ -126,7 +126,11 @@ package directory:
 
 - `_lowlevel.py` — the mechanical `ctypes` bindings: `Structure`
   subclasses and functions carrying the raw C signature. **Always
-  regenerated** on every `write_wrapper` call.
+  regenerated** on every `write_wrapper` call. Each `Structure` class is
+  followed by a layout check comparing the size and field offsets ctypes
+  computed against the ones the library was compiled with (from the ABI
+  JSON); a divergence raises at import instead of silently misreading
+  fields.
 - `_facade.py` — the package's public API. JuliaLibWrapping creates this
   file only if it does not exist. Its initial version wraps entrypoints whose
   arguments and return are recognized — primitive scalars,

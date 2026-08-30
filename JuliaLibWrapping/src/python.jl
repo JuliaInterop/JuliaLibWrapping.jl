@@ -1051,6 +1051,21 @@ function _write_bindings(
         println(f)
     end
 
+    if any(t isa StructDesc for t in values(typeinfo))
+        # Each emitted class is followed by a `_check_layout` call comparing
+        # what ctypes computed against the layout the library was compiled
+        # with; a divergence would otherwise misread every field silently.
+        println(f, "def _check_layout(cls, size, offsets):")
+        println(f, "    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))")
+        println(f, "    if actual != (size, *offsets):")
+        println(f, "        raise RuntimeError(")
+        println(f, "            f\"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the \"")
+        println(f, "            f\"library was compiled with {(size, *offsets)}; the generated \"")
+        println(f, "            \"bindings do not match this platform's ABI\"")
+        println(f, "        )")
+        println(f)
+    end
+
     # Forward declarations: emit empty Structure subclasses for any recursive
     # type that the dependency sort could not place.
     if !isempty(forward_declared)
@@ -1117,6 +1132,11 @@ function _write_bindings(
                 _write_copt_helpers(f, coinfo)
             end
         end
+        offs = join((string(fld.offset) for fld in type.fields), ", ")
+        println(
+            f, "_check_layout(", name, ", ", type.size, ", (", offs,
+            length(type.fields) == 1 ? ",))" : "))"
+        )
         println(f)
     end
 

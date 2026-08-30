@@ -54,6 +54,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 class CString_owned(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
@@ -85,6 +94,7 @@ class CString_owned(ctypes.Structure):
         if not self.data:
             return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
+_check_layout(CString_owned, 16, (0, 8))
 
 class CVector_owned_Float64(ctypes.Structure):
     _fields_ = [
@@ -111,6 +121,7 @@ class CVector_owned_Float64(ctypes.Structure):
         if not self.data:
             return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
+_check_layout(CVector_owned_Float64, 16, (0, 8))
 
 _lib.give_vec.argtypes = []
 _lib.give_vec.restype = CVector_owned_Float64

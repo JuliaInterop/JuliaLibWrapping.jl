@@ -53,6 +53,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 class CString_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int64),
@@ -89,6 +98,7 @@ class CString_borrowed(ctypes.Structure):
     def as_str(self):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
+_check_layout(CString_borrowed, 16, (0, 8))
 
 class CString_owned(ctypes.Structure):
     _fields_ = [
@@ -126,6 +136,7 @@ class CString_owned(ctypes.Structure):
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.data = type(self.data)()
         self.length = 0
+_check_layout(CString_owned, 16, (0, 8))
 
 class CDict_borrowed_Float64(ctypes.Structure):
     _fields_ = [
@@ -153,6 +164,7 @@ class CDict_borrowed_Float64(ctypes.Structure):
             k = ctypes.string_at(e.data, e.length).decode("utf-8")
             out[k] = self.values[i]
         return out
+_check_layout(CDict_borrowed_Float64, 24, (0, 8, 16))
 
 class CDict_owned_Float64(ctypes.Structure):
     _fields_ = [
@@ -191,6 +203,7 @@ class CDict_owned_Float64(ctypes.Structure):
         self.keys = type(self.keys)()
         self.values = type(self.values)()
         self.length = 0
+_check_layout(CDict_owned_Float64, 24, (0, 8, 16))
 
 _lib.take_dict.argtypes = [CDict_borrowed_Float64]
 _lib.take_dict.restype = ctypes.c_int64
