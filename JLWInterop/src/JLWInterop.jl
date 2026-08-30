@@ -369,9 +369,9 @@ Array of length-prefixed UTF-8 [`CString`](@ref)s for C ABI boundaries.
 property of its type rather than of the value.
 
 `CStrArray{:owned}` holds Julia-allocated storage, produced by
-`CStrArray{:owned}(::Vector{String})`. The consumer releases it exactly once
-with `_free_strings` or the `jlw_free_strings` entrypoint emitted by
-[`@export_release_entrypoints`](@ref).
+`CStrArray{:owned}(::AbstractVector{<:AbstractString})`. The consumer releases
+it exactly once with `_free_strings` or the `jlw_free_strings` entrypoint
+emitted by [`@export_release_entrypoints`](@ref).
 
 `CStrArray{:borrowed}` wraps memory the caller owns and keeps alive; the
 consumer never releases it. Converting to `Vector{String}` copies without
@@ -431,15 +431,15 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Allocate a copy of `v` as length-prefixed CStrings.
-function CStrArray{:owned}(v::Vector{String})
+# Allocate a copy of `v` as length-prefixed CStrings, in iteration order.
+function CStrArray{:owned}(v::AbstractVector{<:AbstractString})
     n = length(v)
     data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
     completed = 0
     try
-        for i in 1:n
-            unsafe_store!(data, CString{:owned}(v[i]), i)
-            completed = i
+        for (slot, s) in enumerate(v)
+            unsafe_store!(data, CString{:owned}(s), slot)
+            completed = slot
         end
     catch
         # An element that throws leaves this carrier unreachable to the caller,
@@ -456,8 +456,9 @@ end
 
 Free `n` string buffers pointed to by the `CString`s at `p` (each one's
 `.data`), then free `p` itself. Matches the allocation made by
-`CStrArray{:owned}(::Vector{String})`. Internal; exposed at a `@ccallable`
-boundary as `jlw_free_strings` by [`@export_release_entrypoints`](@ref).
+`CStrArray{:owned}(::AbstractVector{<:AbstractString})`. Internal; exposed at
+a `@ccallable` boundary as `jlw_free_strings` by
+[`@export_release_entrypoints`](@ref).
 """
 function _free_strings(p::Ptr{CString{:owned}}, n::Int64)
     for i in 1:n
@@ -491,9 +492,10 @@ String-keyed dictionary for C ABI boundaries. Keys are length-prefixed
 property of its type.
 
 `CDict{:owned,V}` holds Julia-allocated storage, produced by
-`CDict{:owned}(::Dict)`. The consumer releases `keys` with `_free_strings` and
-`values` with `Libc.free`, or uses the corresponding entrypoints emitted by
-[`@export_release_entrypoints`](@ref), exactly once.
+`CDict{:owned}(::AbstractDict{<:AbstractString,V})`. The consumer releases
+`keys` with `_free_strings` and `values` with `Libc.free`, or uses the
+corresponding entrypoints emitted by [`@export_release_entrypoints`](@ref),
+exactly once.
 
 `CDict{:borrowed,V}` wraps memory the caller owns and keeps alive; the consumer
 never releases it. Converting to a `Dict` copies without freeing the source.
@@ -545,7 +547,7 @@ for V in CDICT_VALUE_TYPES
             end
             return out
         end
-        function CDict{:owned}(dict::Dict{String, $V})
+        function CDict{:owned}(dict::AbstractDict{<:AbstractString, $V})
             n = length(dict)
             kp = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))

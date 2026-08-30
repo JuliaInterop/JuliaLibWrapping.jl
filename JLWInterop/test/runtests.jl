@@ -596,6 +596,21 @@ using Test
         JLWInterop._free_strings(a2.data, a2.length)
     end
 
+    @testset "CStrArray{:owned} from other AbstractVector{<:AbstractString}" begin
+        # Values arrive in iteration order regardless of the source's axes
+        # or concrete element type.
+        o = OffsetArray(["hello", "wörld", "a\0b"], -1)
+        a = CStrArray{:owned}(o)
+        @test a.length == 3
+        @test Vector{String}(a) == collect(o)
+        JLWInterop._free_strings(a.data, a.length)
+
+        v = ["the", "quick", "brown", "fox"]
+        b = CStrArray{:owned}(view(v, 2:3))   # view of a Vector{String}
+        @test Vector{String}(b) == ["quick", "brown"]
+        JLWInterop._free_strings(b.data, b.length)
+    end
+
     @testset "CStrArray AbstractVector interface" begin
         a = CStrArray{:owned}(["hello", "wörld", ""])
         @test a isa AbstractVector{CString{:owned}}
@@ -682,6 +697,16 @@ using Test
         @test Dict{String, Float64}(borrowed) == Dict("b" => 2.5)
         JLWInterop._free_strings(c2.keys, c2.length)
         Libc.free(c2.values)
+    end
+
+    @testset "CDict{:owned} from other AbstractDict{<:AbstractString,V}" begin
+        d = Dict(SubString("aa", 1, 1) => 1.5, SubString("bb", 1, 1) => -2.0)
+        c = CDict{:owned}(d)
+        @test c isa CDict{:owned, Float64}
+        @test c.length == 2
+        @test Dict{String, Float64}(c) == Dict("a" => 1.5, "b" => -2.0)
+        JLWInterop._free_strings(c.keys, c.length)
+        Libc.free(c.values)
     end
 
     @testset "an owning constructor releases partial work when an element throws" begin
