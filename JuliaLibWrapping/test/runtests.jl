@@ -1977,6 +1977,60 @@ end
         end
     end
 
+    @testset "JLWResult wrapping owning payloads" begin
+        # A JLWResult's payload can be any owning carrier, not just a
+        # CArray: the lowlevel wrapper raises JLWError on a failed status,
+        # and the façade converts the payload (as_str / as_dict), then frees
+        # it in a `finally`.
+        abi = read_abi_info("bindinginfo_jlwresult_owned.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "jlwresult_owned_demo", "libjlwresultowned")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "jlwresult_owned_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test occursin("class JLWResult_CString_owned(ctypes.Structure):", bindings)
+            @test occursin("class JLWResult_CDict_owned_Float64(ctypes.Structure):", bindings)
+            # The lowlevel def raises for both result shapes.
+            @test occursin(
+                "def greet():\n    _result = _lib.greet()\n    if _result.status.code != 0:",
+                bindings
+            )
+            @test occursin(
+                "def tally():\n    _result = _lib.tally()\n    if _result.status.code != 0:",
+                bindings
+            )
+            @test bindings == read(joinpath(@__DIR__, "expected_jlwresult_owned_lowlevel.py"), String)
+
+            facade = read(joinpath(path, "jlwresult_owned_demo", "_facade.py"), String)
+            @test occursin(
+                "def greet():\n    _r = _lowlevel.greet()\n" *
+                    "    try:\n        _out = _r.value.as_str()\n" *
+                    "    finally:\n        _r.value.free()\n    return _out",
+                facade
+            )
+            @test occursin(
+                "def tally():\n    _r = _lowlevel.tally()\n" *
+                    "    try:\n        _out = _r.value.as_dict()\n" *
+                    "    finally:\n        _r.value.free()\n    return _out",
+                facade
+            )
+            # The façade never re-checks the status `_lowlevel` raised on.
+            @test !occursin("status.code", facade)
+            @test facade == read(joinpath(@__DIR__, "expected_jlwresult_owned_facade.py"), String)
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                for p in (bindings_path, joinpath(path, "jlwresult_owned_demo", "_facade.py"))
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
     @testset "CString owning return without release symbols" begin
         # Same gate as CArray/CStrArray/CDict: an owning return with no
         # release entrypoints falls back to a mechanical TODO naming the macro
