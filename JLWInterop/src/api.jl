@@ -160,10 +160,11 @@ type: an argument borrows the caller's buffer, while a return is a fresh
 Julia allocation the consumer must release, so it is `:owned`. A `String`
 return is one of these — its bytes are copied into a [`CString`](@ref) the
 consumer frees — whereas a `String` argument borrows the caller's.
-`Vector{String}` needs its own method: the `Array` method below is the more
-specific signature and would otherwise shadow its [`CStrArray`](@ref)
-carrier. The concrete-payload demand is the same as in
-[`carrier_type`](@ref).
+`Vector{String}` needs its own method: the `Array` method below excludes a
+`String` payload (`String` is not a scalar), so without one the fallback
+method would answer with `carrier_type`'s [`CStrArray`](@ref)`{:borrowed}` —
+the wrong ownership for a return. The concrete-payload demand is the same as
+in [`carrier_type`](@ref).
 """
 carrier_return_type(::Type{String}) = CString{:owned}
 carrier_return_type(::Type{Vector{String}}) = CStrArray{:owned}
@@ -280,6 +281,10 @@ end
 
 # One positional argument `a::T` -> (name::Symbol, type_expr).
 function _parse_api_arg(a)
+    a isa Expr && a.head === :... && error(
+        "@api: varargs `$a` are not supported; a C entry point has a fixed " *
+            "arity, so declare each argument by name"
+    )
     a isa Expr && a.head === :(::) && length(a.args) == 2 ||
         error("@api: positional arguments must be annotated, got `$a`")
     argname = a.args[1]
@@ -290,6 +295,10 @@ end
 # One keyword argument `k::K` or `k::K = default`.
 # -> (name, type_expr, has_default::Bool, default_expr)
 function _parse_api_kwarg(k)
+    k isa Expr && k.head === :... && error(
+        "@api: varargs `$k` are not supported; a C entry point has a fixed " *
+            "arity, so declare each keyword by name"
+    )
     if k isa Expr && k.head === :kw
         lhs, default, has_default = k.args[1], k.args[2], true
     else
@@ -326,6 +335,10 @@ _api_default_value(x) = x
 function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String, texpr)
     T = Core.eval(__module__, texpr)
     T isa Type || error("@api $__module__.$fname: `$label` is not a type")
+    return _api_carrier_or_error(__module__, fname, label, T)
+end
+
+function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String, T::Type)
     C = label == "return" ? carrier_return_type(T) : carrier_type(T)
     isnothing(C) &&
         error(
@@ -575,7 +588,7 @@ macro api(args...)
     ret_type isa Type || error("@api $__module__.$name: `return` is not a type")
     is_void = ret_type === Nothing
     ret_opt_inner = is_void ? nothing : _api_opt_inner(ret_type)
-    ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_expr))
+    ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_type))
     symbol = _api_symbol(__module__, name)
 
     # Two declarations of one name would claim one C symbol, and the second
