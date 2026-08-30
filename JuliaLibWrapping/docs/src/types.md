@@ -21,10 +21,14 @@ reinterpreted.
 | `Dict{String,V}` for scalar `V` | `CDict{:borrowed,V}` | `CDict{:owned,V}` | `dict[str, V]` |
 | `Union{T,Nothing}` for scalar `T` | `COpt{T}` | `COpt{T}` | `T \| None` |
 | `Array{T,N}` for scalar `T` | `CArray{:borrowed,T,N}` | `CArray{:owned,T,N}` | `numpy.ndarray` |
+| `Tuple{…}` of 2–8 mapped types (return only) | — | `CTupleN{…}` | `tuple` |
 | `Nothing` (return only) | — | `JLWStatus` | `None` |
 | `Ptr{T}` | same type, by value | same type, by value | a `ctypes` pointer |
 | concrete `Base.Enum{B}` with scalar base `B` | `B`, validated | `B` | generated `enum.IntEnum` |
 | registered concrete type | its registered carrier | its registered carrier | target-dependent |
+
+A tuple is a return type only. Each element carries its own ownership, so an
+owning element is released while a scalar beside it is not.
 
 `Vector{T}` and `Matrix{T}` use the one- and two-dimensional `CArray`
 specializations. Optional enums and nested containers such as

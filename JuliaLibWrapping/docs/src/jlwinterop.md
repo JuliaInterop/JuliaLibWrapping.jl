@@ -213,6 +213,36 @@ The generated `from_optional` and `as_optional` helpers convert the value
 without a keepalive or release operation.
 
 
+## `CTupleN{…}` — tuple returns
+
+A tuple return is carried by the struct for its arity, `CTuple2` through
+`CTuple8`, with one field per element named `v1`…`vN`. Each field holds that
+element's own carrier, so ownership is per element: a `CTuple2{CVector{:owned,
+Float64}, Int64}` has one buffer to release and one scalar to read.
+
+There is no borrowed form, because a tuple has no argument mapping.
+
+### Python target
+
+| Julia | Python |
+|---|---|
+| `Tuple{T1,…,TN}` for mapped `Ti` | `tuple` |
+
+The generated façade converts each field by its own kind and releases the
+owning fields afterwards.
+
+```@docs
+CTuple2
+CTuple3
+CTuple4
+CTuple5
+CTuple6
+CTuple7
+CTuple8
+_CTUPLE_MAX_ARITY
+_ctuple_type
+```
+
 ## Owning carrier returns
 
 Libraries returning an owning `CArray`, `CString`, `CStrArray`, or `CDict`
