@@ -2181,4 +2181,43 @@ using Test
         @test c2.v2 === Int64(2)
         Libc.free(c2.v1.data)
     end
+
+    @testset "@api tuple return end to end" begin
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+        m = Module(:ApiTestTuple)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                function stats(a::Vector{Float64})
+                    return (2 .* a, Int64(length(a)))
+                end
+                function bad(a::Vector{Float64})
+                    return error("no stats")
+                end
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api stats(a::Vector{Float64})::Tuple{Vector{Float64}, Int64}))
+        Core.eval(m, :(JLWInterop.@api bad(a::Vector{Float64})::Tuple{Vector{Float64}, Int64}))
+
+        e = only(x for x in JLWInterop.api_entries(m) if x.name === :stats)
+        @test e.ret === Tuple{Vector{Float64}, Int64}
+
+        buf = [1.0, 2.0, 3.0]
+        GC.@preserve buf begin
+            arg = CVector{:borrowed, Float64}((Int32(3),), pointer(buf))
+            r = Core.eval(m, :(ApiTestTuple_stats($arg)))
+            @test iszero(r.status.code)
+            @test collect(r.value.v1) == [2.0, 4.0, 6.0]
+            @test r.value.v2 === Int64(3)
+            Libc.free(r.value.v1.data)
+
+            # On the error path every element is zeroed, so releasing is a
+            # no-op and nothing dangles.
+            rb = Core.eval(m, :(ApiTestTuple_bad($arg)))
+            @test rb.status.code == JLWInterop._API_ERROR_CODES.generic
+            @test status_message(rb.status) == "no stats"
+            @test rb.value.v1.data === Ptr{Float64}(C_NULL)
+            @test rb.value.v2 === Int64(0)
+        end
+    end
 end
