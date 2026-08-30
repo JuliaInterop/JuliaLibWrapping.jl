@@ -111,6 +111,12 @@ obligation is visible in the wrapper's signature; see
 [Owning carrier returns](@ref) in [JLWInterop](@ref) for what a target does
 with each.
 
+The `Array` argument's zero-copy view is valid only for the duration of the
+call: a function that stores it for later use reads memory the caller may
+have freed or repurposed by then. And because mutation is visible to the
+caller, a caller must not pass a read-only buffer — a NumPy array with
+`writeable=False`, for example — to a function that mutates its argument.
+
 A `Ptr{T}` is the one row that carries nothing but the address: no length, no
 element count, no ownership. The library reads and writes through it on the
 caller's terms, and the caller keeps the memory alive for the duration of the

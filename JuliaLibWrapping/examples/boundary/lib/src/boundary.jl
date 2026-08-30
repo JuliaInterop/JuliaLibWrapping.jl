@@ -45,7 +45,7 @@ JLWInterop.from_carrier(::Type{Extent}, c::Extent) = c
 @api widen(e::Extent, by::Int32)::Extent
 
 # The rest is hand-written: `@api` and `Base.@ccallable` entrypoints coexist
-# in one library. These four keep carrier ownership visible at the boundary,
+# in one library. These keep carrier ownership visible at the boundary,
 # which `@api`'s value-level signatures hide.
 
 # A borrowed pass-through must not free the caller's buffer.
