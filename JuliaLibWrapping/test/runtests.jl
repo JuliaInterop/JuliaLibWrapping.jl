@@ -1454,6 +1454,43 @@ end
         end
     end
 
+    @testset "ctuple recognizer" begin
+        # Matches on the name prefix plus `v1`…`vN` fields, the shape
+        # every arity renders as.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+        )
+        desc = StructDesc(
+            "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
+                FieldDesc("v1", 1, 0),
+                FieldDesc("v2", 2, 8),
+            ]
+        )
+        info = JuliaLibWrapping.ctuple_struct_info(desc, typeinfo)
+        @test !isnothing(info)
+        @test info.arity == 2
+        @test info.element_type_ids == [1, 2]
+
+        # A struct with the right name but the wrong fields is not one.
+        wrong = StructDesc(
+            "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
+                FieldDesc("a", 1, 0),
+                FieldDesc("b", 2, 8),
+            ]
+        )
+        @test isnothing(JuliaLibWrapping.ctuple_struct_info(wrong, typeinfo))
+
+        # A different carrier is not one either.
+        other = StructDesc(
+            "COpt{Float64}", 16, 8, FieldDesc[
+                FieldDesc("has_value", 2, 0),
+                FieldDesc("value", 1, 8),
+            ]
+        )
+        @test isnothing(JuliaLibWrapping.ctuple_struct_info(other, typeinfo))
+    end
+
     @testset "jlwstatus_location" begin
         # Three outcomes: no status, the return type *is* a JLWStatus, and a
         # JLWStatus embedded as a top-level field of the return struct. The

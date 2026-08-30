@@ -179,6 +179,25 @@ function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc}
 end
 
 """
+    ctuple_struct_info(desc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Describe a `CTupleN` carrier — the return carrier for a tuple — or `nothing`
+when `desc` is not one. Returns `(; arity, element_type_ids)`, the element
+type ids in field order.
+
+Every arity renders the same way, as a struct with fields `v1`…`vN`, so one
+shape check covers the family.
+"""
+function ctuple_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CTuple") || return nothing
+    n = length(desc.fields)
+    n >= 2 || return nothing
+    m = _match_fields(desc, ntuple(i -> "v" * string(i), n))
+    isnothing(m) && return nothing
+    return (; arity = n, element_type_ids = [m[i].type for i in 1:n])
+end
+
+"""
     jlwresult_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize the generated `JLWResult{C}` return carrier: a struct named
