@@ -608,13 +608,27 @@ using Test
             v[1:100] .= "small"          # v[101] is left undefined
 
             @test_throws UndefRefError CStrArray{:owned}(v)   # also compiles it
+
+            # The runtime itself allocates one-time state (compiled code,
+            # exception machinery, allocator internals) at unpredictable
+            # points, so any single window can see growth that is not the
+            # constructor's. A leak here grows every window — about 2 KiB per
+            # call, ~200 KiB per window — so it is enough that one window
+            # holds the counter still.
+            settled = false
             GC.gc()
             before = uordblks()
-            for _ in 1:100
-                @test_throws UndefRefError CStrArray{:owned}(v)
+            for _ in 1:5
+                for _ in 1:100
+                    @test_throws UndefRefError CStrArray{:owned}(v)
+                end
+                GC.gc()
+                after = uordblks()
+                settled = after == before
+                settled && break
+                before = after
             end
-            GC.gc()
-            @test uordblks() == before
+            @test settled
         end
     end
 
