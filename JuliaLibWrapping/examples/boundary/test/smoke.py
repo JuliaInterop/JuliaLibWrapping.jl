@@ -33,6 +33,40 @@ try:
 except Exception as exc:
     assert "not positive" in str(exc)
 
+# An `@api` enum kwarg (with a member default) and an `@api` enum return.
+# The façade accepts a member, a member name, or a raw int, and always
+# hands back a `RoundMode` member.
+assert b.round_value(3.2) == 3.0  # default mode=round_nearest
+assert b.round_value(3.7, mode=b.RoundMode.round_down) == 3.0
+assert b.round_value(3.2, mode="round_up") == 4.0
+assert b.round_value(3.2, mode=2) == 4.0  # 2 is round_up's ordinal
+assert b.sign_mode(5.0) == b.RoundMode.round_up
+assert b.sign_mode(-5.0) == b.RoundMode.round_down
+assert b.sign_mode(0.0) == b.RoundMode.round_nearest
+
+try:
+    b.round_value(1.0, mode="bogus")
+    raise AssertionError("expected ValueError")
+except ValueError as exc:
+    assert "bogus" in str(exc)
+
+try:
+    b.round_value(1.0, mode=99)
+    raise AssertionError("expected ValueError")
+except ValueError:
+    pass
+
+# A direct `_lowlevel` call bypasses `_enum_coerce` and hands the library a
+# raw out-of-range int; `from_carrier`'s member-by-member validation catches
+# it and the wrapper raises `JLWError` with the ArgumentError code (2).
+ll = b._lowlevel
+try:
+    ll.boundary_round_value(1.0, 99)
+    raise AssertionError("expected JLWError")
+except b.JLWError as exc:
+    assert exc.code == 2
+    assert "invalid value" in str(exc)
+
 # A raw pointer and a library-registered struct cross unconverted, and still
 # get their `@api` name, docstring and error boundary.
 buf = np.asfortranarray([1.0, 2.0, 4.0])

@@ -32,12 +32,14 @@ sidecar" section below), or `nothing` when the entry project has no
 When `project`'s `Project.toml` lists `JLWInterop` in `[deps]`, `build_library`
 runs a subprocess, before the `juliac` step, that includes `entry` and calls
 `JLWInterop.write_metadata` to dump every `@api`-annotated function's name,
-positional and keyword arguments, and docstring to `<libname>.jlw.json` in
-`libdir`. Once `juliac` has run, [`check_metadata_consistency`](@ref)
-validates the sidecar against the ABI JSON: an unknown symbol or an
-argument mismatch is a build error. Targets can use the validated metadata's
-public names, keyword arguments, and docstrings. The current
-[`PythonTarget`](@ref) receives it as `write_wrapper`'s `api_metadata` keyword.
+positional and keyword arguments, enum-typed argument/return types, and
+docstring to `<libname>.jlw.json` in `libdir`. Once `juliac` has run,
+[`check_metadata_consistency`](@ref) validates the sidecar against the ABI
+JSON: an unknown symbol, an argument mismatch, or an enum reference that does
+not resolve is a build error. Targets can use the validated metadata's public
+names, keyword arguments, enum types, and docstrings. The current
+[`PythonTarget`](@ref) receives them as `write_wrapper`'s `api_metadata` and
+`api_enums` keywords.
 An entry file that defines no `@api` functions produces no sidecar, and every
 target emits as it would without one.
 
@@ -160,6 +162,7 @@ function build_library(
     sidecar = _maybe_dump_api_metadata(entry, project, libdir, libname; verbose)
     metadata_path = isnothing(sidecar) ? nothing : sidecar.path
     api_metadata = isnothing(sidecar) ? Dict{String, Any}() : sidecar.metadata
+    api_enums = isnothing(sidecar) ? Dict{String, Any}() : sidecar.enums
 
     ext = Base.get_extension(@__MODULE__, :JuliaLibWrappingJuliaCExt)
     isnothing(ext) &&
@@ -181,7 +184,7 @@ function build_library(
         error("juliac completed but no ABI JSON was written to $abi_path")
     abi_info = read_abi_info(abi_path)
 
-    isnothing(sidecar) || check_metadata_consistency(abi_info, api_metadata)
+    isnothing(sidecar) || check_metadata_consistency(abi_info, api_metadata, api_enums)
 
     if bundle
         isdir(bundle_dir) ||
@@ -195,8 +198,8 @@ function build_library(
     target_outputs = Vector{NamedTuple}(undef, length(targets))
     for (i, t) in pairs(targets)
         target = _apply_privatization(t, privatize)
-        # Only `write_wrapper(::PythonTarget, …)` declares `api_metadata`.
-        target isa PythonTarget ? write_wrapper(target, abi_info; api_metadata) :
+        # Only `write_wrapper(::PythonTarget, …)` declares `api_metadata`/`api_enums`.
+        target isa PythonTarget ? write_wrapper(target, abi_info; api_metadata, api_enums) :
             write_wrapper(target, abi_info)
         target_outputs[i] = (target = typeof(t), dir = t.dir)
     end
@@ -420,17 +423,19 @@ end
 
 """
     _maybe_dump_api_metadata(entry, project, libdir, libname; verbose)
-        -> Union{Nothing, NamedTuple{(:path, :metadata)}}
+        -> Union{Nothing, NamedTuple{(:path, :metadata, :enums)}}
 
 When `project`'s Project.toml lists `JLWInterop` in `[deps]`, run a
 subprocess (`Base.julia_cmd()`, `--project=project`) that includes `entry`
 and calls `JLWInterop.write_metadata` to write the `<libname>.jlw.json` API
-metadata sidecar into `libdir`; returns the sidecar's path and its parsed
-`exports` map. Returns `nothing` when `entry` is not a single file, `project`
-has no `JLWInterop` dependency, or the entry file registers no `@api`
-functions, in which case the empty sidecar is deleted. Each of those three
-is an error when the entry's sources call `@api` — a directory entry is
-scanned through its `src/` tree — and an `@info` under `verbose` otherwise.
+metadata sidecar into `libdir`; returns the sidecar's path, its parsed
+`exports` map, and its parsed `enums` table (empty for a version-1 sidecar —
+see [`read_api_metadata`](@ref)). Returns `nothing` when `entry` is not a
+single file, `project` has no `JLWInterop` dependency, or the entry file
+registers no `@api` functions, in which case the empty sidecar is deleted.
+Each of those three is an error when the entry's sources call `@api` — a
+directory entry is scanned through its `src/` tree — and an `@info` under
+`verbose` otherwise.
 
 Paths reach the subprocess through `ARGS` rather than interpolation into the
 `-e` script, which would mangle the backslashes in a Windows path. The
@@ -489,10 +494,10 @@ function _maybe_dump_api_metadata(
     )
 
     meta = read_api_metadata(meta_path)
-    if isempty(meta)
+    if isempty(meta.exports)
         rm(meta_path)
         _no_api_sidecar(entry, "including $entry registered no @api function"; verbose)
         return nothing
     end
-    return (path = meta_path, metadata = meta)
+    return (path = meta_path, metadata = meta.exports, enums = meta.enums)
 end

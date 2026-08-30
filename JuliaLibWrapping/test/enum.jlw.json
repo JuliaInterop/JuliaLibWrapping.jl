@@ -1,0 +1,25 @@
+{
+  "jlw_metadata_version": 2,
+  "enums": {
+    "PenaltyKind": {
+      "basetype": "Int32",
+      "members": [{"name": "abslog1", "value": 0}, {"name": "square", "value": 1}]
+    }
+  },
+  "exports": {
+    "EnumFixture_pick": {
+      "name": "pick",
+      "args": ["x"],
+      "kwargs": [],
+      "return_enum": "PenaltyKind",
+      "doc": "Classify the sign of `x` as a PenaltyKind."
+    },
+    "EnumFixture_scale_by": {
+      "name": "scale_by",
+      "args": ["x"],
+      "kwargs": [{"name": "penalty", "default": "abslog1"}],
+      "arg_enums": {"penalty": "PenaltyKind"},
+      "doc": "Scale `x`, squaring it when `penalty` is not `abslog1`."
+    }
+  }
+}

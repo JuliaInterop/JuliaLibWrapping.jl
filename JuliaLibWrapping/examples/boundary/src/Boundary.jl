@@ -52,6 +52,28 @@ struct Extent
     hi::Int32
 end
 
+"""
+    RoundMode
+
+How [`round_value`](@ref) rounds: `round_down` (`floor`), `round_nearest`, or
+`round_up` (`ceil`).
+"""
+@enum RoundMode round_down round_nearest round_up
+
+"Round `x` according to `mode`."
+function round_value(x::Float64; mode::RoundMode = round_nearest)
+    mode === round_down && return floor(x)
+    mode === round_up && return ceil(x)
+    return round(x)
+end
+
+"Classify the sign of `x` as a `RoundMode`."
+function sign_mode(x::Float64)
+    x > 0 && return round_up
+    x < 0 && return round_down
+    return round_nearest
+end
+
 "Sum `n` Float64s at `data`."
 function sum_at(data::Ptr{Float64}, n::Int64)
     n >= 0 || error("negative length")
