@@ -227,8 +227,7 @@ end
 """
     _CARRIER_FAMILY_PREFIXES
 
-Leading name (each ending in `{`) of every JLWInterop carrier family that
-[`_carrier_ownership`](@ref) knows how to parse an ownership token from.
+Prefixes of carrier families recognized by [`_carrier_ownership`](@ref).
 """
 const _CARRIER_FAMILY_PREFIXES = (
     "CArray{", "CVector{", "CMatrix{", "CString{", "CStrArray{", "CDict{",
@@ -237,13 +236,8 @@ const _CARRIER_FAMILY_PREFIXES = (
 """
     carrier_missing_ownership(name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES) -> Union{Nothing, String}
 
-Return the bare carrier family name (e.g. `"CVector"`) when `name` looks like
-one of the carrier families named by `prefixes` (each ending in `{`) but
-states no `:owned`/`:borrowed` ownership token — either a parametric name
-whose leading type parameter is not the token (`"CVector{Float64}"`) or an
-unparameterized name (`"CStrArray"`). Return `nothing` when `name` matches no
-family, or when it already carries a valid ownership token (recognized by
-[`_carrier_ownership`](@ref) instead).
+Return the carrier family when `name` lacks an `:owned` or `:borrowed` token.
+Return `nothing` for other names and valid carrier names.
 """
 function carrier_missing_ownership(
         name::AbstractString, prefixes = _CARRIER_FAMILY_PREFIXES
@@ -329,12 +323,7 @@ end
 """
     _check_release_entrypoint_signatures(abi_info::ABIInfo)
 
-When the ABI exports both [`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref), check that
-each has the signature [`JLWInterop.@export_release_entrypoints`](@ref)
-emits, and `error` naming the symbol and the expected signature on a
-mismatch. When only one symbol is present, or neither, this does nothing: a
-library with no release entrypoints at all is a legitimate state, handled
-elsewhere by [`_release_symbols_present`](@ref).
+Validate release entrypoint signatures when both symbols are present.
 """
 function _check_release_entrypoint_signatures(abi_info::ABIInfo)
     symbols = Dict{String, MethodDesc}()

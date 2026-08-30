@@ -675,8 +675,7 @@ end
         @test ownership("MyCVector{:owned, Float64}") === nothing  # noidiom
         @test ownership("CVector{") === nothing                # unterminated # noidiom
 
-        # A carrier-family name with no ownership token is reported by
-        # family, so a demotion reason can name it specifically.
+        # Identify carrier names that lack an ownership token.
         missing_ownership(name) = JuliaLibWrapping.carrier_missing_ownership(
             name, ("CArray{", "CVector{", "CMatrix{")
         )
@@ -1882,10 +1881,7 @@ end
     end
 
     @testset "carrier lacking an ownership token" begin
-        # `CVector{Float64}` matches no recognizer (all require an ownership
-        # token), so it demotes; the reason should name the carrier family
-        # rather than the generic "unrecognized type" message, since it may
-        # come from an older JLWInterop.
+        # Demotion identifies the carrier and missing token.
         typeinfo = OrderedDict{Int, TypeDesc}(
             1 => PrimitiveTypeDesc("Float64", false, 64, 8, 8),
             2 => PointerDesc("Ptr{Float64}", 1),
@@ -2331,7 +2327,7 @@ end
 
             @test occursin("_lib.take_dict_i32.argtypes = [CDict_borrowed_Int32]", bindings)
             @test occursin("_lib.give_dict_i32.restype = CDict_owned_Int32", bindings)
-            # Round-2 fix re-exercised on an independent fixture.
+            # `Ptr{Cvoid}` maps to `c_void_p`.
             @test occursin("_lib.jlw_free.argtypes = [ctypes.c_void_p]", bindings)
             @test occursin("_lib.jlw_free.restype = None", bindings)
             @test !occursin("ctypes.POINTER(Nothing)", bindings)
@@ -2451,14 +2447,12 @@ end
     end
 
     @testset "_check_release_entrypoint_signatures" begin
-        # A correctly shaped pair passes silently; fixtures elsewhere already
-        # exercise this via `write_wrapper` on `bindinginfo_cstrarray.json`.
+        # A valid pair passes.
         check = JuliaLibWrapping._check_release_entrypoint_signatures
         good = read_abi_info("bindinginfo_cstrarray.json")
         @test check(good) === nothing
 
-        # Only one symbol present, or neither, is a legitimate "no release
-        # entrypoints" state and must not error.
+        # Validation requires both symbols.
         only_free = JuliaLibWrapping.ABIInfo(
             OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
             BitSet(),
@@ -2473,7 +2467,7 @@ end
         )
         @test check(neither) === nothing
 
-        # Hand-built type table covering both correct and mismatched shapes.
+        # Types used by the signature variants below.
         i64 = PrimitiveTypeDesc("Int64", true, 64, 8, 8)
         u64 = PrimitiveTypeDesc("UInt64", false, 64, 8, 8)
         i32 = PrimitiveTypeDesc("Int32", true, 32, 4, 4)
@@ -2503,7 +2497,7 @@ end
         @test check(info(valid_free, valid_free_strings)) === nothing
 
         mutants = (
-            # jlw_free mutations:
+            # Invalid jlw_free signatures.
             (
                 JuliaLibWrapping.MethodDesc(
                     "jlw_free", "jlw_free(p::Ptr{Cvoid}, extra::Int64)::Cvoid", nothing,
@@ -2525,7 +2519,7 @@ end
                 ),
                 valid_free_strings, "`jlw_free`",
             ),
-            # jlw_free_strings mutations:
+            # Invalid jlw_free_strings signatures.
             (
                 valid_free,
                 JuliaLibWrapping.MethodDesc(

@@ -431,7 +431,7 @@ function Base.Vector{String}(a::CStrArray)
     return v
 end
 
-# Allocate a copy of `v` as length-prefixed CStrings, in iteration order.
+# Copy `v` to length-prefixed C strings in iteration order.
 function CStrArray{:owned}(v::AbstractVector{<:AbstractString})
     n = length(v)
     data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))

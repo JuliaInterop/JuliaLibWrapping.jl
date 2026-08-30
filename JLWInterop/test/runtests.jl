@@ -597,8 +597,7 @@ using Test
     end
 
     @testset "CStrArray{:owned} from other AbstractVector{<:AbstractString}" begin
-        # Values arrive in iteration order regardless of the source's axes
-        # or concrete element type.
+        # Preserve iteration order across axes and element types.
         o = OffsetArray(["hello", "wörld", "a\0b"], -1)
         a = CStrArray{:owned}(o)
         @test a.length == 3
@@ -1954,8 +1953,7 @@ using Test
     end
 
     @testset "release entrypoints" begin
-        # Only the macro name is imported, so this fails if the macro's body
-        # resolves anything else (e.g. `Libc.free`) in this module by name.
+        # The expansion must not depend on other imports.
         m = Module()
         Core.eval(m, :(import JLWInterop: @export_release_entrypoints))
         Core.eval(m, :(@export_release_entrypoints))
@@ -1963,7 +1961,7 @@ using Test
             Tuple{typeof(m.jlw_free), Ptr{Cvoid}}
         @test only(methods(m.jlw_free_strings)).sig ==
             Tuple{typeof(m.jlw_free_strings), Ptr{JLWInterop.CString{:owned}}, Int64}
-        # The functions also run correctly on malloc'd data:
+        # The functions accept malloc'd data.
         a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
