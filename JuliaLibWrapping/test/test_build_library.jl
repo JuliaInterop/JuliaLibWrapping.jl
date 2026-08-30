@@ -168,7 +168,8 @@ end
                 p, """{"jlw_metadata_version": 1, "exports": {"M_f": {"name": "f", "args": ["x"], "kwargs": [], "doc": ""}}}"""
             )
             meta = JuliaLibWrapping.read_api_metadata(p)
-            @test haskey(meta, "M_f")
+            @test haskey(meta.exports, "M_f")
+            @test isempty(meta.enums)
             bad = joinpath(dir, "bad.jlw.json")
             write(bad, """{"jlw_metadata_version": 99, "exports": {}}""")
             @test_throws ErrorException JuliaLibWrapping.read_api_metadata(bad)

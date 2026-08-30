@@ -83,7 +83,11 @@ reinterpreted.
 | `Array{T,N}` / `Vector{T}` / `Matrix{T}` (`T` scalar) | `CArray{:borrowed,T,N}`, a zero-copy view (`unsafe_wrap`, `own=false`) — mutation through the argument is visible to the caller | `CArray{:owned,T,N}`, a fresh allocation |
 | `Nothing` (return only) | — | bare [`JLWStatus`](@ref), no `value` field |
 | `Ptr{T}` | itself, by value | itself, by value |
+| a concrete `Base.Enum{B}` (`B` scalar) | its base integer type `B`, validated against the enum's members | its base integer type `B` |
 | a type the library registers (see [Registering your own type](@ref)) | its own carrier | its own carrier |
+
+Enum arguments are validated against `instances(E)`. Invalid values raise
+`ArgumentError` (see [Errors](@ref)). Optional enums have no carrier mapping.
 
 Each carrier states its ownership in its type, so an argument and a return
 of the same Julia type are two distinct carrier types and the release
@@ -166,9 +170,12 @@ else — a symbol, an expression, `[]` — fails at expansion with
 keyword's declared type, so `k::Float64 = 2` is rejected and
 `k::Float64 = 2.0` is accepted.
 
+An enum keyword default must be a bare member name or dotted member path,
+resolved in the declaring module. Other expressions fail at expansion.
+
 The default travels to the sidecar as a JSON value of its own type — a
-number, a JSON string, `true`/`false`, or `null` — and the Python target
-writes that value as a Python literal, `None` for `null`.
+number, a JSON string, `true`/`false`, or `null`. Enum defaults use the member
+name. The Python target renders these as Python literals or enum members.
 
 ```julia
 sum_dict(d::Dict{String,Float64}; scale::Float64 = 1.0) =
@@ -178,6 +185,30 @@ sum_dict(d::Dict{String,Float64}; scale::Float64 = 1.0) =
 ```
 
 becomes `def sum_dict(d, *, scale=1.0)` in the generated façade.
+
+## Enums
+
+Arguments and returns may use concrete `Base.Enum` types.
+
+The version 2 sidecar records each enum's base integer type and members:
+
+```json
+{"jlw_metadata_version": 2,
+ "enums": {"PenaltyKind": {"basetype": "Int32",
+                           "members": [{"name": "abslog1", "value": 0},
+                                       {"name": "square", "value": 1}]}},
+ "exports": {"Boundary_scale_by": {"name": "scale_by", "args": ["x"],
+                                   "kwargs": [{"name": "penalty", "default": "abslog1"}],
+                                   "arg_enums": {"penalty": "PenaltyKind"},
+                                   "doc": ""}}}
+```
+
+`arg_enums` maps arguments to entries in `enums`; `return_enum` identifies an
+enum return. Sidecars without enums retain the version 1 format.
+
+The Python target emits and re-exports an `enum.IntEnum` for each entry. Enum
+arguments accept a member, member name, or integer; enum returns are members.
+Invalid names and values raise `ValueError`.
 
 ## Errors
 
@@ -379,4 +410,5 @@ _api_as
 _julia_docstring
 _zero_carrier
 _api_opt_inner
+_collect_enums
 ```

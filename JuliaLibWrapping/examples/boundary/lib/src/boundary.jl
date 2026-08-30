@@ -12,8 +12,9 @@ it is meant to reach.
 module boundary
 
 using JLWInterop
-using Boundary: Boundary, Extent, boom, check_positive, count_strs, make_dict,
-    maybe_sqrt, scale_vec, shout, str_len, sum_at, sum_dict, upcase_strs, widen
+using Boundary: Boundary, Extent, RoundMode, round_down, round_nearest, round_up,
+    boom, check_positive, count_strs, make_dict, maybe_sqrt, round_value, scale_vec,
+    shout, sign_mode, str_len, sum_at, sum_dict, upcase_strs, widen
 
 @export_release_entrypoints
 
@@ -32,6 +33,8 @@ using Boundary: Boundary, Extent, boom, check_positive, count_strs, make_dict,
 @api str_len(s::String)::Int64
 @api shout(s::String)::String
 @api check_positive(x::Float64)::Nothing
+@api round_value(x::Float64; mode::RoundMode = round_nearest)::Float64
+@api sign_mode(x::Float64)::RoundMode
 
 # A raw pointer and a struct the *binding* registers as its own carrier. The
 # struct belongs to the package; the three protocol methods that carry it

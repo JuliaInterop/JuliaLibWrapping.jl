@@ -130,7 +130,8 @@ package directory:
   followed by a layout check comparing the size and field offsets ctypes
   computed against the ones the library was compiled with (from the ABI
   JSON); a divergence raises at import instead of silently misreading
-  fields.
+  fields. It also defines enums declared in the `@api` metadata (see
+  [Enums](@ref)).
 - `_facade.py` — the package's public API. JuliaLibWrapping creates this
   file only if it does not exist. Its initial version wraps entrypoints whose
   arguments and return are recognized — primitive scalars,

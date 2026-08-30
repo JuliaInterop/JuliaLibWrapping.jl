@@ -1954,6 +1954,162 @@ using Test
         end
     end
 
+    @testset "@api enums" begin
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+
+        m = Module(:ApiEnum)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(@enum PenaltyKind::Int32 abslog1 = 0 square = 1))
+        Core.eval(
+            m, quote
+                function scale_by(x::Float64, kind::PenaltyKind; penalty::PenaltyKind = abslog1)
+                    (kind === abslog1 ? x : x^2) + (penalty === abslog1 ? 0.0 : 1.0)
+                end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api scale_by(
+                    x::Float64, kind::PenaltyKind; penalty::PenaltyKind = abslog1,
+                )::Float64
+            )
+        )
+        Core.eval(
+            m, quote
+                function pick(x::Float64)
+                    x > 0 ? square : abslog1
+                end
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api pick(x::Float64)::PenaltyKind))
+
+        # `carrier_type` maps a concrete enum to its base integer type; the
+        # abstract/non-concrete forms have no carrier.
+        @test JLWInterop.carrier_type(m.PenaltyKind) === Int32
+        @test JLWInterop.carrier_return_type(m.PenaltyKind) === Int32
+        @test isnothing(JLWInterop.carrier_type(Union{m.PenaltyKind, Nothing}))
+        @test JLWInterop.to_carrier(m.abslog1) === Int32(0)
+        @test JLWInterop.to_carrier(m.square) === Int32(1)
+        @test JLWInterop.from_carrier(m.PenaltyKind, Int32(1)) === m.square
+
+        e = only(e for e in JLWInterop.api_entries(m) if e.name === :scale_by)
+        @test e.args == [(:x, Float64), (:kind, m.PenaltyKind)]
+        @test e.kwargs == [(:penalty, m.PenaltyKind, true, m.abslog1)]
+        @test only(e2.ret for e2 in JLWInterop.api_entries(m) if e2.name === :pick) === m.PenaltyKind
+
+        # Round-trip through the generated wrapper: enum positional arg, enum
+        # kwarg with a member default (every call still supplies it — the
+        # default is a binding-layer concern, per `@api`'s docstring), and an
+        # enum return.
+        r = Core.eval(m, :(ApiEnum_scale_by(2.0, Int32(0), Int32(0))))
+        @test iszero(r.status.code)
+        @test r.value == 2.0
+        r = Core.eval(m, :(ApiEnum_scale_by(2.0, Int32(1), Int32(1))))
+        @test iszero(r.status.code)
+        @test r.value == 5.0
+
+        r = Core.eval(m, :(ApiEnum_pick(1.0)))
+        @test iszero(r.status.code)
+        @test r.value == Int32(1)
+        r = Core.eval(m, :(ApiEnum_pick(-1.0)))
+        @test iszero(r.status.code)
+        @test r.value == Int32(0)
+
+        # An invalid integer for an enum argument is an `ArgumentError`
+        # (status code 2), not a crash or a silently wrapped value.
+        r = Core.eval(m, :(ApiEnum_scale_by(2.0, Int32(9), Int32(0))))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.argument
+        @test status_message(r.status) == "invalid value 9 for enum PenaltyKind"
+
+        # Expansion errors: a numeric literal default for an enum kwarg is
+        # not a symbol or dotted name, so it takes the ordinary
+        # literal-type-mismatch path (rejected: `9 isa PenaltyKind` is
+        # false); a symbol that resolves to a non-member value is rejected
+        # by the enum-default path itself; and a non-enum kwarg still
+        # rejects a symbol default.
+        @test_throws "is declared ::Main.ApiEnum.PenaltyKind but its default 9 is a Int64" Core.eval(
+            m, :(
+                JLWInterop.@api bad1(x::Float64; k::PenaltyKind = 9)::Float64
+            )
+        )
+        Core.eval(m, :(const not_a_penalty = 1))
+        @test_throws "is not a member of" Core.eval(
+            m, :(
+                JLWInterop.@api bad2(x::Float64; k::PenaltyKind = not_a_penalty)::Float64
+            )
+        )
+        @test_throws "keyword 'k' default must be a literal" Core.eval(
+            m, :(
+                JLWInterop.@api bad3(x::Float64; k::Float64 = abslog1)::Float64
+            )
+        )
+
+        # `Union{PenaltyKind,Nothing}` has no carrier mapping: an optional
+        # enum is out of scope and rejected the same way any other
+        # unsupported type is.
+        @test_throws "has no carrier mapping" Core.eval(
+            m, :(
+                JLWInterop.@api bad4(x::Union{PenaltyKind, Nothing})::Float64
+            )
+        )
+
+        mktempdir() do dir
+            p = joinpath(dir, "enum.jlw.json")
+            JLWInterop.write_metadata(p, m)
+            txt = read(p, String)
+            @test occursin("\"jlw_metadata_version\": 2", txt)
+            @test occursin("\"enums\"", txt)
+            @test occursin("\"PenaltyKind\"", txt)
+            @test occursin("\"basetype\": \"Int32\"", txt)
+            @test occursin(
+                "\"members\": [{\"name\": \"abslog1\", \"value\": 0}, {\"name\": \"square\", \"value\": 1}]",
+                txt
+            )
+            @test occursin("\"arg_enums\": {\"kind\": \"PenaltyKind\", \"penalty\": \"PenaltyKind\"}", txt)
+            @test occursin("\"return_enum\": \"PenaltyKind\"", txt)
+            @test occursin("{\"name\": \"penalty\", \"default\": \"abslog1\"}", txt)
+        end
+
+        # A module with no enums still writes the old version-1 shape,
+        # byte-identical to what it produced before enum support existed.
+        m2 = Module(:ApiEnumNone)
+        Core.eval(m2, :(using JLWInterop))
+        Core.eval(m2, quote
+            twice(x::Float64) = 2x
+        end)
+        Core.eval(m2, :(JLWInterop.@api twice(x::Float64)::Float64))
+        mktempdir() do dir
+            p = joinpath(dir, "none.jlw.json")
+            JLWInterop.write_metadata(p, m2)
+            txt = read(p, String)
+            @test occursin("\"jlw_metadata_version\": 1", txt)
+            @test !occursin("enums", txt)
+            @test !occursin("arg_enums", txt)
+            @test !occursin("return_enum", txt)
+        end
+
+        # Two distinct enum types sharing a name collide in the sidecar's
+        # `enums` table, keyed by name — an error, not a silent merge.
+        m3 = Module(:ApiEnumCollide)
+        Core.eval(m3, :(using JLWInterop))
+        Core.eval(m3, :(module A
+            @enum PenaltyKind::Int32 a = 0
+        end))
+        Core.eval(m3, :(module B
+            @enum PenaltyKind::Int32 b = 0
+        end))
+        Core.eval(m3, quote
+            f(x::A.PenaltyKind) = x
+            g(x::B.PenaltyKind) = x
+        end)
+        Core.eval(m3, :(JLWInterop.@api f(x::A.PenaltyKind)::A.PenaltyKind))
+        Core.eval(m3, :(JLWInterop.@api g(x::B.PenaltyKind)::B.PenaltyKind))
+        mktempdir() do dir
+            p = joinpath(dir, "collide.jlw.json")
+            @test_throws "two distinct enum types are both named 'PenaltyKind'" JLWInterop.write_metadata(p, m3)
+        end
+    end
+
     @testset "release entrypoints" begin
         # The expansion must not depend on other imports.
         m = Module()

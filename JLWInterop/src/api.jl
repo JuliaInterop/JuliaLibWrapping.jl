@@ -108,6 +108,9 @@ pointer into a fresh Julia allocation dangles as soon as the collector runs;
 one into `Libc.malloc` memory leaks, because nothing on the far side knows to
 free it.
 
+A concrete `Base.Enum{B}` subtype is carried as `B`. Incoming values are
+validated against the enum's members. Optional enums have no mapping.
+
 The mapping is open. A type outside this table becomes an `@api` type once
 its own module adds methods for it to `carrier_type`, [`to_carrier`](@ref)
 and [`from_carrier`](@ref); an `isbits` struct can be its own carrier, with
@@ -129,6 +132,8 @@ carrier_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:borrowed, T, N} : nothing
 carrier_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:borrowed, T, N} : nothing
+carrier_type(::Type{E}) where {B <: _API_SCALARS, E <: Base.Enum{B}} =
+    isconcretetype(E) ? B : nothing
 carrier_type(::Type) = nothing
 
 """
@@ -166,6 +171,7 @@ Convert a native value to its C-ABI carrier, per [`carrier_type`](@ref).
 """
 to_carrier(x::_API_SCALARS) = x
 to_carrier(p::Ptr) = p
+to_carrier(x::Base.Enum) = Base.Enums.basetype(typeof(x))(x)
 # No to_carrier(::String): String returns are rejected at expansion, and
 # argument CStrings are built by the caller, which Julia only reads.
 to_carrier(s::String) = CString{:owned}(s)
@@ -212,6 +218,15 @@ from_carrier(::Type{A}, c::CArray{owned, T, N}) where {owned, T, N, A <: Array{T
     unsafe_wrap(Array, c.data, Int.(Tuple(c.dims)); own = false)
 from_carrier(::Type{StridedArray{T, N}}, c::CArray{:borrowed, T, N}) where {T, N} = c
 from_carrier(::Type{Union{T, Nothing}}, c::COpt{T}) where {T} = get(c, nothing)
+
+# Avoid `E(c)`, whose generated error handling cannot be compiled with
+# `--trim=safe`.
+function from_carrier(::Type{E}, c::B) where {B <: _API_SCALARS, E <: Base.Enum{B}}
+    for x in instances(E)
+        B(x) == c && return x
+    end
+    throw(ArgumentError("invalid value " * string(c) * " for enum " * String(nameof(E))))
+end
 
 # --- @api ----------------------------------------------------------------
 
@@ -294,6 +309,12 @@ end
 _api_default_value(x::Symbol) = nothing
 _api_default_value(x::Expr) = -x.args[2]
 _api_default_value(x) = x
+
+# Enum defaults may be bare names or dotted member paths. Leave `nothing` to
+# the literal-default validation.
+_api_enum_default_expr(x::Symbol) = x !== :nothing
+_api_enum_default_expr(x::Expr) = x.head === :(.) && length(x.args) == 2
+_api_enum_default_expr(x) = false
 
 # Resolve a type expression to (native Type, carrier Type), or error naming
 # the offending argument/return.
@@ -462,7 +483,8 @@ declaring module) to a type with a carrier mapping. Types are resolved at
 macro-expansion time, so any alias used in the signature must already be
 defined. Keyword defaults must be literals (`Int`, `Float`, `Bool`, `String`,
 or `nothing`) of the keyword's declared type: `k::Float64 = 2` is rejected,
-`k::Float64 = 2.0` is accepted.
+`k::Float64 = 2.0` is accepted. An enum keyword default must be a bare member
+name or dotted member path, resolved in the declaring module.
 
 Keyword arguments are positional in the C ABI. They follow the positional
 arguments, in declaration order, and every one is passed on every call: a
@@ -510,13 +532,20 @@ macro api(args...)
         T, C = _api_carrier_or_error(__module__, name, String(kname), texpr)
         default_value = nothing
         if has_default
-            _api_valid_default(default) ||
-                error("@api $__module__.$name: keyword '$kname' default must be a literal")
-            default_value = _api_default_value(default)
-            default_value isa T || error(
-                "@api $__module__.$name: keyword '$kname' is declared ::$T but its " *
-                    "default $(repr(default_value)) is a $(typeof(default_value))"
-            )
+            if T <: Base.Enum && _api_enum_default_expr(default)
+                default_value = Core.eval(__module__, default)
+                default_value isa T || error(
+                    "@api $__module__.$name: keyword '$kname' default `$default` is not a member of $T"
+                )
+            else
+                _api_valid_default(default) ||
+                    error("@api $__module__.$name: keyword '$kname' default must be a literal")
+                default_value = _api_default_value(default)
+                default_value isa T || error(
+                    "@api $__module__.$name: keyword '$kname' is declared ::$T but its " *
+                        "default $(repr(default_value)) is a $(typeof(default_value))"
+                )
+            end
         end
         push!(kw_names, kname)
         push!(kw_types, T)
@@ -679,29 +708,95 @@ function _json_value(x::AbstractFloat)
 end
 _json_value(x::AbstractString) = _json_str(x)
 _json_value(::Nothing) = "null"
+# Serialize enum defaults by member name.
+_json_value(x::Base.Enum) = _json_str(string(x))
+
+"""
+    JLWInterop._collect_enums(entries::Vector{ApiEntry}) -> Dict{String, Type}
+
+Collect the enum types used by `entries`, keyed by name. Enum names must be
+unique across the exported API.
+"""
+function _collect_enums(entries::Vector{ApiEntry})
+    enums = Dict{String, Type}()
+    register! = function (T::Type)
+        key = String(nameof(T))
+        existing = get(enums, key, nothing)
+        (isnothing(existing) || existing === T) || error(
+            "write_metadata: two distinct enum types are both named '$key' " *
+                "($existing and $T); enum names must be unique across the exported API"
+        )
+        enums[key] = T
+        return nothing
+    end
+    for e in entries
+        for (_, T) in e.args
+            T <: Base.Enum && register!(T)
+        end
+        for (_, T, _, _) in e.kwargs
+            T <: Base.Enum && register!(T)
+        end
+        e.ret <: Base.Enum && register!(e.ret)
+    end
+    return enums
+end
 
 """
     write_metadata(path::AbstractString, root::Module = Main)
 
 Write the JSON metadata sidecar for every [`@api`](@ref) declaration in
-`root` or a module nested under it (see [`api_entries`](@ref)) to `path`:
+`root` or a module nested under it (see [`api_entries`](@ref)) to `path`.
+
+Files without enums use version 1:
 
     {"jlw_metadata_version": 1, "exports": {symbol: {"name", "args", "kwargs", "doc"}}}
+
+Files with enums use version 2 and add an `enums` table:
+
+    {"jlw_metadata_version": 2,
+     "enums": {name: {"basetype", "members": [{"name", "value"}, ...]}},
+     "exports": {symbol: {"name", "args", "kwargs", "arg_enums"?, "return_enum"?, "doc"}}}
 
 `exports` entries are sorted by symbol for stable output. `args` is the
 positional argument names, in declaration order. `kwargs` is a list of
 `{"name": ...}` for a required keyword-only argument (see [`ApiEntry`](@ref))
-or `{"name": ..., "default": ...}` for one with a default, written as a JSON
-value of its own type: a number, a JSON string, `true`/`false`, or `null`.
-Types are not repeated here: they live in the separate ABI JSON that
-`juliac` produces, keyed by the same symbol.
+or `{"name": ..., "default": ...}` for one with a default. Enum defaults are
+stored by member name; other defaults retain their JSON type. ABI types remain
+in the JSON produced by `juliac`.
+
+Each `enums` entry records the base integer type and the members in declaration
+order. Enum names must be unique across the exported API.
+
+`arg_enums` maps argument names to enum names. `return_enum` names an enum
+return type. Empty annotations are omitted.
 
 The JSON is written by hand so that JLWInterop needs no JSON dependency.
 """
 function write_metadata(path::AbstractString, root::Module = Main)
     entries = sort(api_entries(root); by = e -> e.symbol)
+    enums = _collect_enums(entries)
     io = IOBuffer()
-    write(io, "{\n  \"jlw_metadata_version\": 1,\n  \"exports\": {\n")
+    if isempty(enums)
+        write(io, "{\n  \"jlw_metadata_version\": 1,\n  \"exports\": {\n")
+    else
+        write(io, "{\n  \"jlw_metadata_version\": 2,\n")
+        write(io, "  \"enums\": {\n")
+        enum_keys = sort!(collect(keys(enums)))
+        for (i, key) in enumerate(enum_keys)
+            T = enums[key]
+            B = Base.Enums.basetype(T)
+            write(io, "    ", _json_str(key), ": {\n")
+            write(io, "      \"basetype\": ", _json_str(String(nameof(B))), ",\n")
+            member_strs = [
+                "{\"name\": $(_json_str(string(x))), \"value\": $(_json_value(B(x)))}"
+                    for x in instances(T)
+            ]
+            write(io, "      \"members\": [", join(member_strs, ", "), "]\n")
+            write(io, "    }", i < length(enum_keys) ? "," : "", "\n")
+        end
+        write(io, "  },\n")
+        write(io, "  \"exports\": {\n")
+    end
     for (i, e) in enumerate(entries)
         write(io, "    ", _json_str(e.symbol), ": {\n")
         write(io, "      \"name\": ", _json_str(String(e.name)), ",\n")
@@ -713,6 +808,19 @@ function write_metadata(path::AbstractString, root::Module = Main)
                 "{\"name\": $(_json_str(String(kname)))}"
         end
         write(io, "      \"kwargs\": [", join(kw_strs, ", "), "],\n")
+        if !isempty(enums)
+            arg_enum_strs = String[]
+            for (aname, T) in e.args
+                T <: Base.Enum && push!(arg_enum_strs, "$(_json_str(String(aname))): $(_json_str(String(nameof(T))))")
+            end
+            for (kname, T, _, _) in e.kwargs
+                T <: Base.Enum && push!(arg_enum_strs, "$(_json_str(String(kname))): $(_json_str(String(nameof(T))))")
+            end
+            isempty(arg_enum_strs) ||
+                write(io, "      \"arg_enums\": {", join(arg_enum_strs, ", "), "},\n")
+            e.ret <: Base.Enum &&
+                write(io, "      \"return_enum\": ", _json_str(String(nameof(e.ret))), ",\n")
+        end
         write(io, "      \"doc\": ", _json_str(e.doc), "\n")
         write(io, "    }", i < length(entries) ? "," : "", "\n")
     end
