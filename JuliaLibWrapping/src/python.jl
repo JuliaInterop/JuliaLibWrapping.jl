@@ -1549,7 +1549,7 @@ function _facade_classify_return(
 end
 
 # Answer `uses_numpy`/`adds_value` for a classification, recursing into a
-# `:jlwresult_unwrap`'s `inner` kind and a `:ctuple_unwrap`'s elements.
+# `:jlwresult_unwrap`'s `inner` kind.
 _ret_uses_numpy(ret) = ret.kind in (:carray_view, :carray_unwrap) ||
     (ret.kind === :jlwresult_unwrap && _ret_uses_numpy(ret.inner)) ||
     (ret.kind === :ctuple_unwrap && any(_ret_uses_numpy, ret.elements))
