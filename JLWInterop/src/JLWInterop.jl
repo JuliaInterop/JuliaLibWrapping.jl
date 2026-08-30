@@ -56,10 +56,13 @@ end
 
 # Extended help
 
-`T` should be an `isbits` type. `CArray` implements the `AbstractArray`
-interface with linear indexing, including bounds-checked access and mutation.
-The aliases [`CVector`](@ref) and [`CMatrix`](@ref) cover one and two
-dimensions.
+`T` should be an `isbits` type. `CArray <: DenseArray` and supports linear
+indexing, the strided-array interface, and conversion to `Ptr{T}`. The aliases
+[`CVector`](@ref) and [`CMatrix`](@ref) cover one and two dimensions.
+
+`GC.@preserve` on a carrier protects nothing: the buffer is not
+garbage-collected memory. An owned buffer is valid until it is released; a
+borrowed one is valid for as long as its true owner keeps it so.
 
 Every construction path names an ownership: there is no defaulting
 constructor, and any parameter other than `:owned` or `:borrowed` is
@@ -70,7 +73,7 @@ changing the ABI. They must preserve column-major dimension and stride
 semantics. The two ownerships are two distinct types, so a target reads
 "release this" or "do not release this" off the signature alone.
 """
-struct CArray{owned, T, N} <: AbstractArray{T, N}
+struct CArray{owned, T, N} <: DenseArray{T, N}
     dims::NTuple{N, Int64}
     data::Ptr{T}
 
@@ -189,6 +192,15 @@ Base.@propagate_inbounds function Base.setindex!(a::CArray{owned, T}, x, i::Int)
     unsafe_store!(a.data, convert(T, x), i)
     return a
 end
+
+# `strides` and `pointer` use the `DenseArray` fallbacks.
+Base.unsafe_convert(::Type{Ptr{T}}, a::CArray{owned, T}) where {owned, T} = a.data
+Base.elsize(::Type{<:CArray{owned, T}}) where {owned, T} = sizeof(T)
+
+# Distinct carriers may wrap the same buffer.
+Base.dataids(a::CArray) = (UInt(a.data),)
+Base.mightalias(A::CArray, B::CArray) = !isdisjoint(Base.dataids(A), Base.dataids(B))
+Base.unaliascopy(a::CArray) = copy(a)
 
 """
     CString{owned}
@@ -371,6 +383,10 @@ Elements share the container's ownership — `data` points to `CString{owned}`s
 There is no default ownership or constructor that borrows a `Vector{String}`;
 borrowed carriers arrive across the ABI.
 
+`CStrArray{owned} <: AbstractVector{CString{owned}}` and is read-only.
+Collected elements still alias the carrier's buffers, which must be released
+only through the original carrier.
+
 # Example
 
 ```julia
@@ -378,10 +394,11 @@ using JLWInterop
 
 a = CStrArray{:owned}(["hello", "world"])
 Vector{String}(a) == ["hello", "world"]
+String.(a) == ["hello", "world"]
 JLWInterop._free_strings(a.data, a.length)
 ```
 """
-struct CStrArray{owned}
+struct CStrArray{owned} <: AbstractVector{CString{owned}}
     length::Int64
     data::Ptr{CString{owned}}     # each element a length-prefixed CString
 
@@ -394,6 +411,16 @@ struct CStrArray{owned}
         return new{owned}(length, data)
     end
 end
+
+Base.size(a::CStrArray) = (Int(a.length),)
+Base.IndexStyle(::Type{<:CStrArray}) = IndexLinear()
+
+Base.@propagate_inbounds function Base.getindex(a::CStrArray, i::Int)
+    @boundscheck checkbounds(a, i)
+    return unsafe_load(a.data, i)
+end
+
+# Replacing an owned descriptor would leak its buffer, so no `setindex!` is defined.
 
 # Copy without freeing the source.
 function Base.Vector{String}(a::CStrArray)
