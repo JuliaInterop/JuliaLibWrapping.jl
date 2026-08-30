@@ -1,16 +1,10 @@
-name = "boundary"
+name = "Boundary"
 uuid = "d6ef1b8b-8768-406c-8849-246498603918"
 version = "0.0.1"
 
-[deps]
-JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
-
-# Note: `[sources]` is intentionally absent. `build.jl` materializes a
-# transient project in a temp directory with `[sources]` pointing at an
-# absolute path to the in-tree `JLWInterop/`, so this file stays free of
-# any machine-specific path. Tutorial readers who hand-write their own
-# entry project will add their own `[sources]` here.
+# The package a Julia user installs. It carries no binding dependencies: the
+# declarations that expose it to other languages live in `lib/`, which depends
+# on this project rather than the other way round.
 
 [compat]
-JLWInterop = "0.2"
 julia = "1.13"

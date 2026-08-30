@@ -3,10 +3,11 @@ import ctypes
 import os
 import sys
 import pathlib
+import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcstrarray"
-_LIBRARY_ENV_VAR = "CSTRARRAY_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "mylib"
+_LIBRARY_ENV_VAR = "MYLIB_PY_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -53,6 +54,86 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+class JLWError(RuntimeError):
+    """Raised when a wrapped function returns a non-zero JLWStatus.code."""
+    def __init__(self, code, message):
+        super().__init__(f"[{code}] {message}")
+        self.code = code
+        self.message = message
+
+class JLWStatus(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_int32),
+        ("message", (ctypes.c_uint8 * 256)),
+    ]
+
+class CVector_borrowed_Float64(ctypes.Structure):
+    _fields_ = [
+        ("dims", (ctypes.c_int32 * 1)),
+        ("data", ctypes.POINTER(ctypes.c_double)),
+    ]
+
+    @classmethod
+    def from_numpy(cls, arr):
+        """Return a CArray view of the 1-D numpy array `arr`.
+
+        Raises ValueError on ndim, contiguity, or dtype mismatch (fail-fast: no
+        silent reinterpretation). The returned object holds a reference to `arr`,
+        so the caller must keep it alive for the duration of any C call that uses
+        the buffer."""
+        if arr.ndim != 1:
+            raise ValueError(f"expected 1-D array, got {arr.ndim}-D")
+        if not (arr.flags.c_contiguous or arr.flags.f_contiguous):
+            raise ValueError("array must be contiguous")
+        expected_dtype = np.dtype("float64")
+        if arr.dtype != expected_dtype:
+            raise ValueError(f"expected dtype float64, got {arr.dtype}")
+        obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
+                  data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+        obj._buffer = arr
+        return obj
+
+    def as_numpy(self):
+        """Return a 1-D numpy view of the underlying buffer (no copy)."""
+        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
+
+class CVector_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("dims", (ctypes.c_int32 * 1)),
+        ("data", ctypes.POINTER(ctypes.c_double)),
+    ]
+
+    def as_numpy(self):
+        """Return a 1-D numpy view of the underlying buffer (no copy)."""
+        if not self.data:
+            raise RuntimeError("CVector_owned_Float64 has already been freed")
+        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `data` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `data` and resets the other fields; an accessor
+        called afterwards sees the null and raises RuntimeError rather than
+        reading the released memory or returning an empty result.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.data:
+            return
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self.data = type(self.data)()
+        self.dims = type(self.dims)()
+
+class JLWResult_CVector_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CVector_owned_Float64),
+    ]
+
 class CString_borrowed(ctypes.Structure):
     _fields_ = [
         ("length", ctypes.c_int32),
@@ -89,30 +170,6 @@ class CString_borrowed(ctypes.Structure):
     def as_str(self):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
-
-class CStrArray_borrowed(ctypes.Structure):
-    _fields_ = [
-        ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(CString_borrowed)),
-    ]
-
-    @classmethod
-    def from_list(cls, items):
-        if not isinstance(items, (list, tuple)):
-            raise TypeError("expected a list of str")
-        bufs = [s.encode("utf-8") for s in items]
-        arr = (CString_borrowed * len(bufs))(
-            *[CString_borrowed(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in bufs])
-        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(CString_borrowed)))
-        obj._buffer = (bufs, arr)   # keep buffers alive
-        return obj
-
-    def as_list(self):
-        out = []
-        for i in range(self.length):
-            e = self.data[i]
-            out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
-        return out
 
 class CString_owned(ctypes.Structure):
     _fields_ = [
@@ -151,49 +208,15 @@ class CString_owned(ctypes.Structure):
         self.data = type(self.data)()
         self.length = 0
 
-class CStrArray_owned(ctypes.Structure):
-    _fields_ = [
-        ("length", ctypes.c_int64),
-        ("data", ctypes.POINTER(CString_owned)),
-    ]
-
-    def as_list(self):
-        if not self.data:
-            raise RuntimeError("CStrArray_owned has already been freed")
-        out = []
-        for i in range(self.length):
-            e = self.data[i]
-            out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
-        return out
-
-    def free(self):
-        """Free the Julia-allocated buffer.
-
-        Idempotent: a second call is a no-op. The guard is this struct's own
-        `data` field rather than a Python attribute: reading a struct field
-        nested in a result yields a fresh wrapper each time, so a flag set on the
-        wrapper would be lost, while a field write reaches the shared buffer.
-        Freeing nulls `data` and resets the other fields; an accessor
-        called afterwards sees the null and raises RuntimeError rather than
-        reading the released memory or returning an empty result.
-
-        For callers who bypass the façade's convert-then-free wrapper and talk
-        to `_lowlevel` directly."""
-        if not self.data:
-            return
-        _lib.jlw_free_strings(self.data, self.length)
-        self.data = type(self.data)()
-        self.length = 0
-
-_lib.take_strs.argtypes = [CStrArray_borrowed]
-_lib.take_strs.restype = ctypes.c_int64
-def take_strs(a):
-    return _lib.take_strs(a)
-
-_lib.give_strs.argtypes = []
-_lib.give_strs.restype = CStrArray_owned
-def give_strs():
-    return _lib.give_strs()
+_lib.mylib_scale.argtypes = [CVector_borrowed_Float64, ctypes.c_double, CString_borrowed]
+_lib.mylib_scale.restype = JLWResult_CVector_owned_Float64
+def mylib_scale(x, factor, label):
+    """Scale every entry."""
+    _result = _lib.mylib_scale(x, factor, label)
+    if _result.status.code != 0:
+        _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
+        raise JLWError(_result.status.code, _msg)
+    return _result
 
 _lib.jlw_free.argtypes = [ctypes.c_void_p]
 _lib.jlw_free.restype = None

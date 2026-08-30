@@ -62,18 +62,27 @@ class CString_owned(ctypes.Structure):
 
     def as_bytes(self):
         """Return a copy of the underlying bytes as a Python `bytes` object."""
+        if not self.data:
+            raise RuntimeError("CString_owned has already been freed")
         return ctypes.string_at(self.data, self.length)
 
     def as_str(self):
         """Return the underlying bytes decoded as UTF-8."""
+        if not self.data:
+            raise RuntimeError("CString_owned has already been freed")
         return self.as_bytes().decode("utf-8")
 
     def free(self):
         """Free the Julia-allocated buffer.
 
-        Idempotent: a second call is a no-op. For callers who bypass the
-        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
-        if getattr(self, "_freed", False):
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `data` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.data:
             return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 
@@ -85,14 +94,21 @@ class CVector_owned_Float64(ctypes.Structure):
 
     def as_numpy(self):
         """Return a 1-D numpy view of the underlying buffer (no copy)."""
+        if not self.data:
+            raise RuntimeError("CVector_owned_Float64 has already been freed")
         return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
 
     def free(self):
         """Free the Julia-allocated buffer.
 
-        Idempotent: a second call is a no-op. For callers who bypass the
-        façade's convert-then-free wrapper and talk to `_lowlevel` directly."""
-        if getattr(self, "_freed", False):
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `data` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.data:
             return
         raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
 

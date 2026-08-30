@@ -20,6 +20,7 @@ makedocs(;
         "Concepts" => "concepts.md",
         "JLWInterop" => "jlwinterop.md",
         "Error handling" => "error_handling.md",
+        "Annotating a library with `@api`" => "annotations.md",
         "API reference" => "api.md",
     ],
 )

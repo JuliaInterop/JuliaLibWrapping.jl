@@ -102,7 +102,7 @@ end
         @test length(typeinfo) == 4
         @test !any(
             desc isa PrimitiveTypeDesc && desc.name == "Cvoid"
-            for desc in values(typeinfo)
+                for desc in values(typeinfo)
         )
 
         # `zero_first(p::Ptr{Cvoid}, n::Int32)::Cvoid`: null return and null
@@ -1331,6 +1331,362 @@ end
         @test JuliaLibWrapping._python_status_path(method, ti) == ".lambda_"
     end
 
+    @testset "jlwresult_struct_info" begin
+        info = read_abi_info("bindinginfo_jlwresult.json")
+        desc = first(d for (_, d) in info.typeinfo if d isa StructDesc && startswith(d.name, "JLWResult"))
+        got = JuliaLibWrapping.jlwresult_struct_info(desc, info.typeinfo)
+        @test !isnothing(got)
+        @test info.typeinfo[got.value_type_id] isa PrimitiveTypeDesc
+        # A plain JLWStatus struct is not a JLWResult.
+        st = first(d for (_, d) in info.typeinfo if d isa StructDesc && d.name == "JLWStatus")
+        @test isnothing(JuliaLibWrapping.jlwresult_struct_info(st, info.typeinfo))
+    end
+
+    @testset "api scale vocabulary" begin
+        info = read_abi_info("bindinginfo_api_scale.json")
+        meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test occursin("def scale(x, *, factor=2.0, label):", facade)
+            @test occursin("\"\"\"Scale every entry.\"\"\"", facade)
+            @test occursin("raise JLWError", facade)
+            @test occursin("_label = CString_borrowed.from_str(label)", facade)
+            @test facade == read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+            bindings_path = joinpath(dir, "mylib_py", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test bindings == read(joinpath(@__DIR__, "expected_api_scale_lowlevel.py"), String)
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(dir, "mylib_py", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "api kwarg defaults are typed values" begin
+        @test JuliaLibWrapping._api_kwarg_default_python(2.5) == "2.5"
+        @test JuliaLibWrapping._api_kwarg_default_python(3) == "3"
+        @test JuliaLibWrapping._api_kwarg_default_python(true) == "True"
+        @test JuliaLibWrapping._api_kwarg_default_python(false) == "False"
+        @test JuliaLibWrapping._api_kwarg_default_python(nothing) == "None"
+        @test JuliaLibWrapping._api_kwarg_default_python("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\""
+        @test_throws ErrorException JuliaLibWrapping._api_kwarg_default_python([1])
+
+        # A string default carrying a backslash and a quote reaches the
+        # façade as a Python literal, not as Julia's `repr` of one.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        meta = Dict{String, Any}(
+            "mylib_scale" => Dict{String, Any}(
+                "name" => "scale", "args" => ["x"],
+                "kwargs" => Any[
+                    Dict{String, Any}("name" => "factor", "default" => 1.5),
+                    Dict{String, Any}("name" => "label", "default" => "a\\b\"c"),
+                ],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            facade_path = joinpath(dir, "mylib_py", "_facade.py")
+            @test occursin(
+                "def scale(x, *, factor=1.5, label=\"a\\\\b\\\"c\"):",
+                read(facade_path, String)
+            )
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "duplicate façade names" begin
+        # Two entrypoints claiming one Python name would leave only the
+        # second defined on the façade.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        scale = only(m for m in info.entrypoints if m.symbol == "mylib_scale")
+        twin = JuliaLibWrapping.MethodDesc("mylib_scale2", scale.name, scale.return_type, scale.args)
+        doubled = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared, [info.entrypoints..., twin]
+        )
+        entry = Dict{String, Any}(
+            "name" => "scale", "args" => ["x"],
+            "kwargs" => Any[Dict{String, Any}("name" => "factor"), Dict{String, Any}("name" => "label")],
+            "doc" => "",
+        )
+        meta = Dict{String, Any}("mylib_scale" => entry, "mylib_scale2" => entry)
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, doubled; api_metadata = meta)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale2", err.msg)
+        end
+
+        # A Julia name that is not a Python identifier is rejected rather
+        # than emitted as `def bump!(...)`.
+        @test JuliaLibWrapping._is_python_identifier("bump")
+        @test !JuliaLibWrapping._is_python_identifier("bump!")
+        @test !JuliaLibWrapping._is_python_identifier("2fast")
+        @test !JuliaLibWrapping._is_python_identifier("")
+        @test !JuliaLibWrapping._is_python_identifier("class")
+        bang = Dict{String, Any}("mylib_scale" => merge(entry, Dict{String, Any}("name" => "scale!")))
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, info; api_metadata = bang)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("scale!", err.msg)
+        end
+
+        # A name already claimed by something emitted ABOVE the `def`s — a
+        # struct class, `JLWError`, or another entrypoint's re-export —
+        # leaves that name shadowed and duplicated in `__all__`.
+        shadowed(pyname, extra_symbol = nothing) = begin
+            entries = Dict{String, Any}(
+                "mylib_scale" => merge(entry, Dict{String, Any}("name" => pyname))
+            )
+            abi = if isnothing(extra_symbol)
+                info
+            else
+                twin = JuliaLibWrapping.MethodDesc(
+                    extra_symbol, scale.name, scale.return_type, scale.args
+                )
+                JuliaLibWrapping.ABIInfo(
+                    info.typeinfo, info.forward_declared, [info.entrypoints..., twin]
+                )
+            end
+            mktempdir() do dir
+                dest = PythonTarget(dir, "mylib_py", "mylib")
+                try
+                    write_wrapper(dest, abi; api_metadata = entries)
+                    nothing
+                catch e
+                    e
+                end
+            end
+        end
+        for (pyname, extra) in (
+                ("CString_borrowed", nothing), ("JLWError", nothing), ("shadow", "shadow"),
+            )
+            err = shadowed(pyname, extra)
+            @test err isa ErrorException
+            @test occursin(pyname, err.msg)
+            @test occursin("mylib_scale", err.msg)
+        end
+    end
+
+    @testset "entrypoint symbols must be Python identifiers" begin
+        # `!` is the Julia convention for a mutating function and is illegal
+        # in a Python identifier, so `_lib.mylib_bump!.argtypes` and
+        # `def mylib_bump!(…)` would be two SyntaxErrors on disk. A
+        # hand-written `Base.@ccallable` has no sidecar entry, so the
+        # façade's own name check never sees it.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        scale = onlymatch(m -> m.symbol == "mylib_scale", info.entrypoints)
+        bang = JuliaLibWrapping.MethodDesc(
+            "mylib_bump!", scale.name, scale.return_type, scale.args
+        )
+        broken = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared, [info.entrypoints..., bang]
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, broken)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_bump!", err.msg)
+            # Nothing reaches disk: the check runs before the first write,
+            # and the emitter renames a complete temporary file into place.
+            @test isempty(readdir(joinpath(dir, "mylib_py")))
+        end
+
+        # Every fixture's symbols are legal, which is why this seam went
+        # untested: assert the emitter's own output satisfies the rule.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info)
+            bindings = read(joinpath(dir, "mylib_py", "_lowlevel.py"), String)
+            for m in eachmatch(r"(?m)^def ([^(]*)\(", bindings)
+                @test JuliaLibWrapping._is_python_identifier(m.captures[1])
+            end
+        end
+    end
+
+    @testset "api docstrings are escaped" begin
+        # A docstring carrying `\"\"\"`, a backslash escape, and a trailing
+        # quote reaches Python as a valid `\"\"\"…\"\"\"` body.
+        nasty = "ends with \"\"\" and \\d and a quote\""
+        @test JuliaLibWrapping._python_docstring(nasty) ==
+            "ends with \\\"\\\"\\\" and \\\\d and a quote\\\""
+        info = read_abi_info("bindinginfo_api_scale.json")
+        src = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+        entry = Dict{String, Any}(String(k) => v for (k, v) in src["mylib_scale"])
+        entry["doc"] = nasty
+        meta = Dict{String, Any}("mylib_scale" => entry)
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info; api_metadata = meta)
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                for name in ("_lowlevel.py", "_facade.py")
+                    path = joinpath(dir, "mylib_py", name)
+                    cmd = `$python3 -c "import ast; ast.parse(open('$path').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+    end
+
+    @testset "JLWResult over an unreleasable payload" begin
+        # An owning payload with no release entrypoints has no unwrap to
+        # emit, so the whole JLWResult return is opaque.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        nofree = JuliaLibWrapping.ABIInfo(
+            info.typeinfo, info.forward_declared,
+            [m for m in info.entrypoints if m.symbol ∉ ("jlw_free", "jlw_free_strings")]
+        )
+        @test JuliaLibWrapping._release_symbols_present(nofree) === false
+        meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+
+        # With a sidecar entry the function is `@api`-annotated, so degrading
+        # it would silently drop its Python name, kwargs and docstring: the
+        # build fails instead, naming the macro to add (D9).
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            err = try
+                write_wrapper(dest, nofree; api_metadata = meta)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("mylib_scale", err.msg)
+            @test occursin("JLWInterop.@export_release_entrypoints", err.msg)
+        end
+
+        # The same shape without a sidecar entry is a hand-written
+        # `Base.@ccallable`, which still degrades to a mechanical re-export.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, nofree)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test !occursin("def scale(", facade)
+            @test occursin(
+                "from ._lowlevel import mylib_scale  # TODO: hand-wrap — owning return needs release entrypoints",
+                facade
+            )
+        end
+
+        # Every classification the planner can hand to `_emit_value_unwrap`
+        # has a body; anything else throws instead of emitting nothing.
+        @test_throws ErrorException JuliaLibWrapping._emit_value_unwrap(devnull, "_result", :opaque)
+    end
+
+    @testset "shape-matched carrier with an unsupported payload" begin
+        # `Bool` matches `carray_struct_info`'s shape but has no numpy
+        # dtype, so the emitted carrier class gets neither `from_numpy` nor
+        # `as_numpy` nor `free`. The façade must decline it in both
+        # directions; `pass_opaque` waves through only structs no
+        # recognizer matched at all.
+        info = read_abi_info("bindinginfo_carray_bool.json")
+        typedict = Dict{Int, String}()
+        for (id, t) in pairs(info.typeinfo)
+            t isa StructDesc && JuliaLibWrapping.mangle_python!(typedict, id, info.typeinfo)
+        end
+        owned = onlymatch(
+            d -> d isa StructDesc && d.name == "CVector{:owned, Bool}",
+            collect(values(info.typeinfo))
+        )
+        @test isnothing(JuliaLibWrapping._python_carray_info(owned, info.typeinfo))
+        @test occursin(
+            "has no numpy dtype",
+            JuliaLibWrapping._unsupported_payload_reason(owned, info.typeinfo)
+        )
+        # A struct no recognizer matched reports nothing, which is what keeps
+        # a library-registered carrier crossing under `pass_opaque`.
+        cstr = onlymatch(
+            d -> d isa StructDesc && d.name == "CString{:owned}",
+            collect(values(info.typeinfo))
+        )
+        @test isnothing(JuliaLibWrapping._unsupported_payload_reason(cstr, info.typeinfo))
+
+        mask = onlymatch(m -> m.symbol == "mylib_mask", info.entrypoints)
+        count_true = onlymatch(m -> m.symbol == "mylib_count_true", info.entrypoints)
+        for pass_opaque in (false, true)
+            ret = JuliaLibWrapping._facade_classify_return(
+                mask, info.typeinfo, typedict, true; pass_opaque
+            )
+            @test ret.kind === :opaque
+            @test occursin("Bool", ret.reason)
+            arg = JuliaLibWrapping._facade_classify_arg(
+                only(count_true.args), info.typeinfo, typedict; pass_opaque
+            )
+            @test arg.kind === :opaque
+            @test occursin("Bool", arg.reason)
+        end
+
+        # With a sidecar entry each direction is a build error naming the
+        # symbol, not a wrapper that leaks on every call.
+        meta = Dict{String, Any}(
+            "mylib_mask" => Dict{String, Any}(
+                "name" => "mask", "args" => ["n"], "kwargs" => Any[], "doc" => "Boolean mask."
+            ),
+            "mylib_count_true" => Dict{String, Any}(
+                "name" => "count_true", "args" => ["v"], "kwargs" => Any[], "doc" => ""
+            ),
+        )
+        for sym in ("mylib_mask", "mylib_count_true")
+            mktempdir() do dir
+                dest = PythonTarget(dir, "mylib_py", "mylib")
+                err = try
+                    write_wrapper(dest, info; api_metadata = Dict{String, Any}(sym => meta[sym]))
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin(sym, err.msg)
+                @test occursin("Bool", err.msg)
+            end
+        end
+
+        # Without a sidecar both degrade to a mechanical re-export carrying
+        # the `TODO` that tells the author to hand-wrap.
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            write_wrapper(dest, info)
+            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
+            @test occursin("import mylib_mask  # TODO: hand-wrap", facade)
+            @test occursin("import mylib_count_true  # TODO: hand-wrap", facade)
+        end
+    end
+
     @testset "CString vocabulary" begin
         # Borrowed CString conversion requires no numpy or release function.
         abi = read_abi_info("bindinginfo_cstring.json")
@@ -1406,9 +1762,9 @@ end
             @test !occursin("def from_bytes(cls, b):", bindings)
             @test occursin("def as_bytes(self):", bindings)
             @test occursin("def as_str(self):", bindings)
-            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
+            @test occursin("        if not self.data:\n            return", bindings)
             @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
-            @test occursin("        self._freed = True", bindings)
+            @test occursin("        self.data = type(self.data)()\n        self.length = 0", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_cstring_owned_lowlevel.py"), String)
             @test bindings == golden
@@ -1531,8 +1887,8 @@ end
             @test !occursin("def from_list(cls, items):", owned_body)
             # Low-level release is idempotent.
             @test occursin("def free(self):", owned_body)
-            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
-            @test occursin("self._freed = True", owned_body)
+            @test occursin("if not self.data:\n            return", owned_body)
+            @test occursin("self.data = type(self.data)()\n        self.length = 0", owned_body)
 
             golden = read(joinpath(@__DIR__, "expected_cstrarray_lowlevel.py"), String)
             @test bindings == golden
@@ -1615,8 +1971,11 @@ end
             @test !occursin("def free(self):", borrowed_body)
             @test !occursin("def from_dict(cls, d):", owned_body)
             @test occursin("def free(self):", owned_body)
-            @test occursin("if getattr(self, \"_freed\", False):\n            return", owned_body)
-            @test occursin("self._freed = True", owned_body)
+            @test occursin("if not self.keys:\n            return", owned_body)
+            @test occursin(
+                "self.keys = type(self.keys)()\n        self.values = type(self.values)()\n" *
+                    "        self.length = 0", owned_body
+            )
 
             golden = read(joinpath(@__DIR__, "expected_cdict_lowlevel.py"), String)
             @test bindings == golden
@@ -2044,13 +2403,13 @@ end
 
             # An owning class has no `from_numpy`: Python has no Julia
             # allocation to hand over. It does get `free()`, made idempotent by
-            # a Python-side attribute since the struct carries no flag.
+            # nulling the struct's own data pointer.
             @test occursin("class CVector_owned_Float64(ctypes.Structure):", bindings)
             @test !occursin("def from_numpy(cls, arr):", bindings)
             @test !occursin("owned=0", bindings)
-            @test occursin("        if getattr(self, \"_freed\", False):\n            return", bindings)
+            @test occursin("        if not self.data:\n            return", bindings)
             @test occursin("_lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))", bindings)
-            @test occursin("        self._freed = True", bindings)
+            @test occursin("        self.data = type(self.data)()\n        self.dims = type(self.dims)()", bindings)
 
             golden = read(joinpath(@__DIR__, "expected_carray_owned_lowlevel.py"), String)
             @test bindings == golden
@@ -2305,6 +2664,224 @@ end
         abi_cm = read_abi_info("bindinginfo_cmatrix.json")
         method_cm = only(abi_cm.entrypoints)
         @test isempty(JuliaLibWrapping.raw_primitive_pointer_args(method_cm, abi_cm.typeinfo))
+    end
+
+    @testset "a failed façade emission leaves no file" begin
+        # `_facade.py` is written once and then kept, so an empty one left
+        # behind by a failed emission would be shipped by every later build.
+        info = read_abi_info("bindinginfo_api_scale.json")
+        bad = Dict{String, Any}(
+            "mylib_scale" => Dict{String, Any}(
+                "name" => "scale!", "args" => ["x"],
+                "kwargs" => Any[
+                    Dict{String, Any}("name" => "factor"),
+                    Dict{String, Any}("name" => "label"),
+                ],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do dir
+            dest = PythonTarget(dir, "mylib_py", "mylib")
+            @test_throws ErrorException write_wrapper(dest, info; api_metadata = bad)
+            @test !isfile(joinpath(dir, "mylib_py", "_facade.py"))
+            # Nor does the scratch file the emission wrote into survive.
+            @test readdir(joinpath(dir, "mylib_py")) == ["_lowlevel.py"]
+
+            # The next build still emits a complete façade.
+            meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json"))
+            write_wrapper(dest, info; api_metadata = meta)
+            @test read(joinpath(dir, "mylib_py", "_facade.py"), String) ==
+                read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+        end
+    end
+
+    @testset "owned free() guards on the carrier's own field" begin
+        # An owning carrier is normally reached as `result.value`, and every
+        # read of a nested `ctypes` struct field builds a fresh Python wrapper
+        # over the same buffer. A flag stored on the wrapper is therefore gone
+        # by the next read, and `free()` would release the same buffer on every
+        # call. The guard is a field of the struct instead, nulled after the
+        # release; the counts are reset with it so an accessor called after
+        # `free()` cannot read the released memory. `test/smoke.py` in
+        # `examples/boundary` calls `free()` twice against the real allocator.
+        for (stem, pkg, lib) in (
+                ("carray_owned", "carray_owned_demo", "libcarrayowned"),
+                ("cstrarray", "cstrarray_demo", "libcstrarray"),
+                ("cdict", "cdict_demo", "libcdict"),
+            )
+            abi = read_abi_info("bindinginfo_$stem.json")
+            mktempdir() do path
+                write_wrapper(PythonTarget(path, pkg, lib), abi)
+                bindings = read(joinpath(path, pkg, "_lowlevel.py"), String)
+                @test occursin("def free(self):", bindings)
+                @test !occursin("_freed", bindings)
+                # Every owned carrier here holds strings, so `CString_owned`
+                # is emitted alongside the kind under test.
+                @test occursin("if not self.data:", bindings)
+                @test occursin("self.data = type(self.data)()", bindings)
+                @test occursin("self.length = 0", bindings)
+            end
+        end
+
+        # Per kind: the guard field and what `free()` resets.
+        abi = read_abi_info("bindinginfo_carray_owned.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "carray_owned_demo", "libcarrayowned"), abi)
+            bindings = read(joinpath(path, "carray_owned_demo", "_lowlevel.py"), String)
+            # A CArray counts through `dims`, which is a ctypes array.
+            @test occursin("self.dims = type(self.dims)()", bindings)
+        end
+        abi = read_abi_info("bindinginfo_cdict.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "cdict_demo", "libcdict"), abi)
+            bindings = read(joinpath(path, "cdict_demo", "_lowlevel.py"), String)
+            # A CDict owns two buffers; the keys pointer is the guard.
+            @test occursin("if not self.keys:", bindings)
+            @test occursin("self.keys = type(self.keys)()", bindings)
+            @test occursin("self.values = type(self.values)()", bindings)
+        end
+
+        # Without release symbols `free()` still guards on the field, so a
+        # zero-filled carrier is a no-op rather than a raise.
+        abi = read_abi_info("bindinginfo_cstrarray_nofree.json")
+        mktempdir() do path
+            write_wrapper(PythonTarget(path, "cstrarray_nofree_demo", "libcstrarraynofree"), abi)
+            bindings = read(joinpath(path, "cstrarray_nofree_demo", "_lowlevel.py"), String)
+            @test occursin("if not self.data:", bindings)
+            @test !occursin("_freed", bindings)
+            @test occursin("raise RuntimeError(\"this library does not export release", bindings)
+        end
+    end
+
+    @testset "owned accessors raise once the carrier is freed" begin
+        # `free()` nulls the pointer and zeroes the counts, so an unguarded
+        # accessor would read a null pointer with a zero count and return an
+        # empty result — an empty numpy array over address 0, an empty list,
+        # dict or string — which the caller cannot tell from a real answer.
+        # Every accessor on an owning class opens with the same guard on the
+        # field `free()` nulls. `test/smoke.py` in `examples/boundary` calls an
+        # accessor after freeing and asserts the raise against the real
+        # allocator.
+        bindings_for(stem, pkg, lib) = mktempdir() do path
+            write_wrapper(PythonTarget(path, pkg, lib), read_abi_info("bindinginfo_$stem.json"))
+            return read(joinpath(path, pkg, "_lowlevel.py"), String)
+        end
+
+        carray = bindings_for("carray_owned", "carray_owned_demo", "libcarrayowned")
+        @test occursin(
+            "    def as_numpy(self):\n" *
+                "        \"\"\"Return a 1-D numpy view of the underlying buffer (no copy).\"\"\"\n" *
+                "        if not self.data:\n" *
+                "            raise RuntimeError(\"CVector_owned_Float64 has already been freed\")\n",
+            carray
+        )
+
+        # A CString has two accessors and either is an entry point, so both
+        # guard rather than one leaning on the other.
+        cstring = bindings_for("cstring_owned", "cstring_owned_demo", "libcstringowned")
+        guard = "        if not self.data:\n" *
+            "            raise RuntimeError(\"CString_owned has already been freed\")\n"
+        @test occursin(
+            "    def as_bytes(self):\n" *
+                "        \"\"\"Return a copy of the underlying bytes as a Python `bytes` object.\"\"\"\n" *
+                guard, cstring
+        )
+        @test occursin(
+            "    def as_str(self):\n" *
+                "        \"\"\"Return the underlying bytes decoded as UTF-8.\"\"\"\n" *
+                guard, cstring
+        )
+
+        cstrarray = bindings_for("cstrarray", "cstrarray_demo", "libcstrarray")
+        @test occursin(
+            "    def as_list(self):\n" *
+                "        if not self.data:\n" *
+                "            raise RuntimeError(\"CStrArray_owned has already been freed\")\n",
+            cstrarray
+        )
+
+        # A CDict owns two buffers and guards on `keys`, the field `free()`
+        # nulls first.
+        cdict = bindings_for("cdict", "cdict_demo", "libcdict")
+        @test occursin(
+            "    def as_dict(self):\n" *
+                "        if not self.keys:\n" *
+                "            raise RuntimeError(\"CDict_owned_Float64 has already been freed\")\n",
+            cdict
+        )
+
+        # Owning earns the guard, not the presence of release entrypoints:
+        # without them `free()` raises, but the error path still hands back a
+        # zero-filled carrier that would otherwise read as empty.
+        nofree = bindings_for("cstrarray_nofree", "cstrarray_nofree_demo", "libcstrarraynofree")
+        @test occursin("raise RuntimeError(\"CStrArray_owned has already been freed\")", nofree)
+
+        # Borrowed classes get no guard: nothing nulls their pointer, and they
+        # have no `free()` for the message to refer to.
+        for (stem, pkg, lib) in (
+                ("cmatrix", "cmatrix_demo", "libcmatrix"),
+                ("cstring", "cstring_demo", "libcstring"),
+            )
+            borrowed = bindings_for(stem, pkg, lib)
+            @test occursin("(self):", borrowed)
+            @test !occursin("has already been freed", borrowed)
+        end
+    end
+
+    @testset "opaque payloads pass through only under `@api`" begin
+        # The same ABI, with and without a sidecar entry. A sidecar entry
+        # means the author wrote the signature for these bindings, so the
+        # pointer crosses as it stands; a hand-written entrypoint keeps the
+        # TODO.
+        abi = read_abi_info("bindinginfo_rawptr.json")
+        method = only(abi.entrypoints)
+        typedict = Dict{Int, String}()
+        argdesc = only(a for a in method.args if abi.typeinfo[a.type] isa PointerDesc)
+
+        @test JuliaLibWrapping._facade_classify_arg(argdesc, abi.typeinfo, typedict).kind ===
+            :opaque
+        @test JuliaLibWrapping._facade_classify_arg(
+            argdesc, abi.typeinfo, typedict; pass_opaque = true
+        ).kind === :primitive
+
+        @test JuliaLibWrapping._facade_plan(method, abi.typeinfo, typedict, false).category ===
+            :mechanical
+
+        entry = Dict{String, Any}(
+            "name" => "sum_doubles", "args" => ["data", "n"],
+            "kwargs" => Any[], "doc" => "Sum `n` doubles at `data`.",
+        )
+        plan = JuliaLibWrapping._facade_plan(method, abi.typeinfo, typedict, false, entry)
+        @test plan.category === :api_auto
+        @test all(c -> c.kind === :primitive, plan.args)
+
+        mktempdir() do path
+            dest = PythonTarget(path, "rawptr_demo", "librawptr")
+            write_wrapper(dest, abi; api_metadata = Dict{String, Any}("sum_doubles" => entry))
+            facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
+            @test occursin("def sum_doubles(data, n):", facade)
+            @test occursin("\"\"\"Sum `n` doubles at `data`.\"\"\"", facade)
+            @test !occursin("# TODO: hand-wrap", facade)
+        end
+
+        # A struct the emitter has no vocabulary for follows the same rule.
+        simple = read_abi_info("bindinginfo_libsimple.json")
+        pair_arg = only(onlymatch(md -> md.symbol == "copyto_and_sum", simple.entrypoints).args)
+        td = Dict{Int, String}()
+        for (id, type) in pairs(simple.typeinfo)
+            type isa StructDesc && JuliaLibWrapping.mangle_python!(td, id, simple.typeinfo)
+        end
+        @test JuliaLibWrapping._facade_classify_arg(pair_arg, simple.typeinfo, td).kind ===
+            :opaque
+        @test JuliaLibWrapping._facade_classify_arg(
+            pair_arg, simple.typeinfo, td; pass_opaque = true
+        ).kind === :primitive
+        @test JuliaLibWrapping._classify_return_type(
+            pair_arg.type, simple.typeinfo, td, false
+        ).kind === :opaque
+        @test JuliaLibWrapping._classify_return_type(
+            pair_arg.type, simple.typeinfo, td, false; pass_opaque = true
+        ).kind === :passthrough
     end
 
     @testset "JLWStatus convention" begin

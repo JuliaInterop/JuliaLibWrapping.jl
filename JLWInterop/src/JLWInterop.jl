@@ -1,7 +1,10 @@
 """
     JLWInterop
 
-Dependency-free ABI types for JuliaLibWrapping-generated libraries.
+Dependency-free ABI types for JuliaLibWrapping-generated libraries, plus
+[`@api`](@ref), the annotation macro that generates a `@ccallable` wrapper
+(argument/return conversion, `JLWResult`/`JLWStatus` error reporting, and a
+build-host metadata registry) from an ordinary Julia function.
 """
 module JLWInterop
 
@@ -9,7 +12,9 @@ export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
 export CDict, COpt, unwrap
+export JLWResult
 export @export_release_entrypoints
+export @api
 
 """
     JLW_MESSAGE_BYTES
@@ -145,12 +150,15 @@ b = CArray{:borrowed}(buf)  # aliases buf; keep buf alive while b is in use
 """
 function CArray{owned}(A::AbstractArray{T, N}) where {owned, T, N}
     if owned === :owned
+        # `dims` is `NTuple{N,Int32}` but `size` gives `Int`s, so this can
+        # throw. Narrow before the `malloc`: nothing would free that buffer.
+        dims = convert(NTuple{N, Int32}, size(A))
         dense = Array{T, N}(undef, size(A))
         copyto!(dense, A)
         n = length(dense)
         data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
         GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
-        return CArray{owned, T, N}(size(A), data)
+        return CArray{owned, T, N}(dims, data)
     elseif owned === :borrowed
         throw(
             ArgumentError(
@@ -248,9 +256,12 @@ end
 function CString{:owned}(s::AbstractString)
     str = String(s)
     nb = sizeof(str)
+    # `length` is `Int32` but `sizeof` gives an `Int`, so this can throw.
+    # Narrow before the `malloc`: nothing would free that buffer.
+    len = Int32(nb)
     p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
     GC.@preserve str unsafe_copyto!(p, pointer(str), nb)
-    return CString{:owned}(Int32(nb), p)
+    return CString{:owned}(len, p)
 end
 
 Base.ncodeunits(s::CString) = Int(s.length)
@@ -403,8 +414,18 @@ end
 function CStrArray{:owned}(v::Vector{String})
     n = length(v)
     data = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
-    for i in 1:n
-        unsafe_store!(data, CString{:owned}(v[i]), i)
+    completed = 0
+    try
+        for i in 1:n
+            unsafe_store!(data, CString{:owned}(v[i]), i)
+            completed = i
+        end
+    catch
+        # An element that throws leaves this carrier unreachable to the caller,
+        # so release what is built here. `catch`, not `finally`: on success the
+        # buffers belong to the caller.
+        _free_strings(data, Int64(completed))
+        rethrow()
     end
     return CStrArray{:owned}(Int64(n), data)
 end
@@ -507,11 +528,22 @@ for V in CDICT_VALUE_TYPES
             n = length(dict)
             kp = Ptr{CString{:owned}}(Libc.malloc(max(n, 1) * sizeof(CString{:owned})))
             vp = Ptr{$V}(Libc.malloc(max(n, 1) * sizeof($V)))
-            i = 0
-            for (k, v) in dict
-                i += 1
-                unsafe_store!(kp, CString{:owned}(k), i)
-                unsafe_store!(vp, v, i)
+            completed = 0
+            try
+                i = 0
+                for (k, v) in dict
+                    i += 1
+                    unsafe_store!(kp, CString{:owned}(k), i)
+                    unsafe_store!(vp, v, i)
+                    completed = i
+                end
+            catch
+                # A key that throws leaves this carrier unreachable to the
+                # caller, so release both arrays here. `catch`, not `finally`:
+                # on success they belong to the caller.
+                _free_strings(kp, Int64(completed))
+                Libc.free(vp)
+                rethrow()
             end
             return CDict{:owned, $V}(Int64(n), kp, vp)
         end
@@ -549,6 +581,9 @@ COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps th
 Convert a [`COpt{T}`](@ref) to `Union{T,Nothing}`.
 """
 unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
+
+include("result.jl")
+include("api.jl")
 
 """
     @export_release_entrypoints

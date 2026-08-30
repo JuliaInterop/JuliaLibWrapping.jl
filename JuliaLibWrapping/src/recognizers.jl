@@ -177,6 +177,24 @@ function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc}
 end
 
 """
+    jlwresult_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize the generated `JLWResult{C}` return carrier: a struct named
+`JLWResult…` whose fields are a `JLWStatus` (`status`) and the payload
+(`value`). Return `(; value_type_id)` on a match — the `typeinfo` id of the
+`value` field's type — otherwise `nothing`.
+"""
+function jlwresult_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "JLWResult") || return nothing
+    slots = _match_fields(desc, ("status", "value"))
+    isnothing(slots) && return nothing
+    status_desc = typeinfo[slots.status.type]
+    status_desc isa StructDesc || return nothing
+    is_jlwstatus_struct(status_desc, typeinfo) || return nothing
+    return (; value_type_id = slots.value.type)
+end
+
+"""
     _carrier_ownership(name::AbstractString, prefixes) -> Union{Nothing, Symbol}
 
 Return the ownership recorded in the leading type parameter of a carrier type

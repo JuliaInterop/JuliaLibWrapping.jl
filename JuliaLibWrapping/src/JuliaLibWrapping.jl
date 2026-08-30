@@ -30,6 +30,7 @@ const _DEFAULT_PACKAGE_VERSION = "0.0.0"
 
 include("c.jl")
 include("python.jl")
+include("metadata.jl")
 include("build.jl")
 
 end
