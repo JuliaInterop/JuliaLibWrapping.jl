@@ -40,7 +40,7 @@
       "id": 5,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 1, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
@@ -93,7 +93,7 @@
       "id": 11,
       "size": 16,
       "fields": [
-        { "name": "length", "type_id": 1, "offset": 0, "isptr": false, "isfieldatomic": false },
+        { "name": "length", "type_id": 2, "offset": 0, "isptr": false, "isfieldatomic": false },
         { "name": "data", "type_id": 4, "offset": 8, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8

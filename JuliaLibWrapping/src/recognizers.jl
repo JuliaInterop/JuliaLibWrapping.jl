@@ -1,7 +1,7 @@
 # Target-independent, structural recognition of JLWInterop carriers.
 #
-# Recognizers report Julia-level facts (primitive type names, field names,
-# dimension counts); each emitter translates those into its own type names
+# Recognizers report Julia-level facts (primitive names and widths, field names,
+# and dimension counts); each emitter translates those into its own type names
 # and decides which element types it supports (e.g. `_python_carray_info`
 # in `python.jl`).
 
@@ -22,6 +22,19 @@ function _match_fields(desc::StructDesc, names::NTuple{N, String}) where {N}
 end
 
 """
+    _integer_field_info(desc) -> Union{Nothing, NamedTuple}
+
+Return `(; name, bits)` for a signed 32- or 64-bit primitive integer, or
+`nothing`.
+"""
+function _integer_field_info(@nospecialize(desc))
+    desc isa PrimitiveTypeDesc || return nothing
+    desc.signed || return nothing
+    desc.bits in (32, 64) || return nothing
+    return (; name = desc.name, bits = desc.bits)
+end
+
+"""
     is_jlwstatus_struct(desc::StructDesc, typeinfo) -> Bool
 
 Recognize `JLWStatus` by name and field layout.
@@ -32,9 +45,7 @@ function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
     code_field, msg_field = desc.fields
     code_field.name == "code" || return false
     msg_field.name == "message" || return false
-    code_type = typeinfo[code_field.type]
-    code_type isa PrimitiveTypeDesc || return false
-    code_type.name in ("Int32", "Int64") || return false
+    isnothing(_integer_field_info(typeinfo[code_field.type])) && return false
     msg_type = typeinfo[msg_field.type]
     msg_type isa ArrayDesc || return false
     eltype = typeinfo[msg_type.element_type]
@@ -69,48 +80,40 @@ end
 """
     cstring_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CString` by name and field layout. The name must carry an explicit
-leading ownership parameter (see [`_carrier_ownership`](@ref)) and the layout
-must be exactly two fields: `length`, a primitive integer, and `data`, a
-pointer to `UInt8`. Field order is unrestricted. On a match, return
-`(; ownership)` — `:owned` or `:borrowed`. Otherwise return `nothing`;
-ownership is never inferred from a name that does not state it.
+Recognize `CString` with explicit ownership, a signed 32- or 64-bit `length`,
+and a `data` pointer to `UInt8`. Return
+`(; ownership, length_type, length_bits)`, or `nothing`.
 """
 function cstring_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     ownership = _carrier_ownership(desc.name, ("CString{",))
     isnothing(ownership) && return nothing
     m = _match_fields(desc, ("length", "data"))
     isnothing(m) && return nothing
-    length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc || return nothing
-    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
+    len = _integer_field_info(typeinfo[m.length.type])
+    isnothing(len) && return nothing
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
     data_type.pointee_type === nothing && return nothing # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
     pointee.name == "UInt8" || return nothing
-    return (; ownership)
+    return (; ownership, length_type = len.name, length_bits = len.bits)
 end
 
 """
     cstrarray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CStrArray` by name and field layout. The name must carry an
-explicit leading ownership parameter (see [`_carrier_ownership`](@ref)) and
-the layout must be exactly two fields: `length`, a signed primitive integer,
-and `data`, a pointer to a struct matching [`cstring_struct_info`](@ref) whose
-own ownership is the same. Field order is unrestricted. On a match, return
-`(; ownership)` — `:owned` or `:borrowed`. Otherwise return `nothing`;
-ownership is never inferred from a name that does not state it.
+Recognize `CStrArray` with explicit ownership, a signed 32- or 64-bit
+`length`, and a `data` pointer to a matching `CString`. Return
+`(; ownership, length_type, length_bits)`, or `nothing`.
 """
 function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     ownership = _carrier_ownership(desc.name, ("CStrArray{",))
     isnothing(ownership) && return nothing
     m = _match_fields(desc, ("length", "data"))
     isnothing(m) && return nothing
-    length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc && length_type.signed || return nothing
+    len = _integer_field_info(typeinfo[m.length.type])
+    isnothing(len) && return nothing
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
     data_type.pointee_type === nothing && return nothing # `void` pointee
@@ -119,29 +122,23 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
     element = cstring_struct_info(pointee, typeinfo)
     isnothing(element) && return nothing
     element.ownership === ownership || return nothing
-    return (; ownership)
+    return (; ownership, length_type = len.name, length_bits = len.bits)
 end
 
 """
     cdict_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CDict` by name and field layout. The name must carry an explicit
-leading ownership parameter (see [`_carrier_ownership`](@ref)) and the layout
-must be exactly three fields: `length`, a primitive integer; `keys`, a pointer
-to a struct matching [`cstring_struct_info`](@ref) whose own ownership is the
-same; and `values`, a pointer to a primitive type. On a match, return
-`(; value_type, ownership)` — the Julia name of the value type (e.g.
-`"Float64"`) and `:owned` or `:borrowed`. Otherwise return `nothing`;
-ownership is never inferred from a name that does not state it.
+Recognize `CDict` with explicit ownership, a signed 32- or 64-bit `length`,
+`CString` keys, and primitive values. Return
+`(; value_type, ownership, length_type, length_bits)`, or `nothing`.
 """
 function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     ownership = _carrier_ownership(desc.name, ("CDict{",))
     isnothing(ownership) && return nothing
     m = _match_fields(desc, ("length", "keys", "values"))
     isnothing(m) && return nothing
-    length_type = typeinfo[m.length.type]
-    length_type isa PrimitiveTypeDesc || return nothing
-    (startswith(length_type.name, "Int") || startswith(length_type.name, "UInt")) || return nothing
+    len = _integer_field_info(typeinfo[m.length.type])
+    isnothing(len) && return nothing
     keys_type = typeinfo[m.keys.type]
     keys_type isa PointerDesc || return nothing
     keys_type.pointee_type === nothing && return nothing # `void` pointee
@@ -155,25 +152,30 @@ function cdict_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc
     values_type.pointee_type === nothing && return nothing # `void` pointee
     values_pointee = typeinfo[values_type.pointee_type]
     values_pointee isa PrimitiveTypeDesc || return nothing
-    return (; value_type = values_pointee.name, ownership)
+    return (;
+        value_type = values_pointee.name, ownership,
+        length_type = len.name, length_bits = len.bits,
+    )
 end
 
 """
     copt_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `COpt` by name and field layout. Return `(; value_type)` (the
-Julia name of the payload type, e.g. `"Float64"`), or `nothing`.
+Recognize `COpt` with a signed 32- or 64-bit `has_value` and primitive `value`.
+Return `(; value_type, has_value_type, has_value_bits)`, or `nothing`.
 """
 function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "COpt") || return nothing
     m = _match_fields(desc, ("has_value", "value"))
     isnothing(m) && return nothing
-    hv_type = typeinfo[m.has_value.type]
-    hv_type isa PrimitiveTypeDesc || return nothing
-    hv_type.name == "Int32" || return nothing
+    hv = _integer_field_info(typeinfo[m.has_value.type])
+    isnothing(hv) && return nothing
     value_type = typeinfo[m.value.type]
     value_type isa PrimitiveTypeDesc || return nothing
-    return (; value_type = value_type.name)
+    return (;
+        value_type = value_type.name,
+        has_value_type = hv.name, has_value_bits = hv.bits,
+    )
 end
 
 """
@@ -225,14 +227,9 @@ end
 """
     carray_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Recognize `CArray`, `CVector`, or `CMatrix` by name and field layout. The
-name must carry an explicit leading ownership parameter (see
-[`_carrier_ownership`](@ref)) and the layout must be exactly two fields:
-`dims`, an `NTuple` of a signed or unsigned integer type, and `data`, a
-pointer to a primitive type. On a match, return
-`(; eltype, ndim, ownership)` — the Julia name of the element type, the
-`dims` array's `count`, and `:owned` or `:borrowed`. Otherwise return
-`nothing`; ownership is never inferred from a name that does not state it.
+Recognize `CArray`, `CVector`, or `CMatrix` with explicit ownership, signed
+32- or 64-bit dimensions, and primitive data. Return
+`(; eltype, ndim, ownership, dims_type, dims_bits)`, or `nothing`.
 """
 function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     ownership = _carrier_ownership(desc.name, ("CArray{", "CVector{", "CMatrix{"))
@@ -241,15 +238,17 @@ function carray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDes
     isnothing(m) && return nothing
     dims_type = typeinfo[m.dims.type]
     dims_type isa ArrayDesc || return nothing
-    dims_eltype = typeinfo[dims_type.element_type]
-    dims_eltype isa PrimitiveTypeDesc || return nothing
-    (startswith(dims_eltype.name, "Int") || startswith(dims_eltype.name, "UInt")) || return nothing
+    dims_eltype = _integer_field_info(typeinfo[dims_type.element_type])
+    isnothing(dims_eltype) && return nothing
     data_type = typeinfo[m.data.type]
     data_type isa PointerDesc || return nothing
     data_type.pointee_type === nothing && return nothing # `void` pointee
     pointee = typeinfo[data_type.pointee_type]
     pointee isa PrimitiveTypeDesc || return nothing
-    return (; eltype = pointee.name, ndim = dims_type.count, ownership)
+    return (;
+        eltype = pointee.name, ndim = dims_type.count, ownership,
+        dims_type = dims_eltype.name, dims_bits = dims_eltype.bits,
+    )
 end
 
 """

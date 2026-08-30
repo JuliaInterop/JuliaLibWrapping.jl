@@ -61,15 +61,9 @@ class JLWError(RuntimeError):
         self.code = code
         self.message = message
 
-class JLWStatus(ctypes.Structure):
-    _fields_ = [
-        ("code", ctypes.c_int32),
-        ("message", (ctypes.c_uint8 * 256)),
-    ]
-
 class CVector_borrowed_Float64(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 1)),
+        ("dims", (ctypes.c_int64 * 1)),
         ("data", ctypes.POINTER(ctypes.c_double)),
     ]
 
@@ -88,7 +82,7 @@ class CVector_borrowed_Float64(ctypes.Structure):
         expected_dtype = np.dtype("float64")
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float64, got {arr.dtype}")
-        obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
+        obj = cls(dims=(ctypes.c_int64 * 1)(*arr.shape),
                   data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
         obj._buffer = arr
         return obj
@@ -99,7 +93,7 @@ class CVector_borrowed_Float64(ctypes.Structure):
 
 class CVector_owned_Float64(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 1)),
+        ("dims", (ctypes.c_int64 * 1)),
         ("data", ctypes.POINTER(ctypes.c_double)),
     ]
 
@@ -128,15 +122,9 @@ class CVector_owned_Float64(ctypes.Structure):
         self.data = type(self.data)()
         self.dims = type(self.dims)()
 
-class JLWResult_CVector_owned_Float64(ctypes.Structure):
-    _fields_ = [
-        ("status", JLWStatus),
-        ("value", CVector_owned_Float64),
-    ]
-
 class CString_borrowed(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 
@@ -173,7 +161,7 @@ class CString_borrowed(ctypes.Structure):
 
 class CString_owned(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 
@@ -207,6 +195,18 @@ class CString_owned(ctypes.Structure):
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.data = type(self.data)()
         self.length = 0
+
+class JLWStatus(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_int32),
+        ("message", (ctypes.c_uint8 * 256)),
+    ]
+
+class JLWResult_CVector_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CVector_owned_Float64),
+    ]
 
 _lib.mylib_scale.argtypes = [CVector_borrowed_Float64, ctypes.c_double, CString_borrowed]
 _lib.mylib_scale.restype = JLWResult_CVector_owned_Float64

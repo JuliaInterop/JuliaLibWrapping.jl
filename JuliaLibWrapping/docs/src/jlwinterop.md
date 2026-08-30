@@ -58,7 +58,7 @@ JLW_MESSAGE_BYTES
 
 ## `CArray{owned,T,N}` — N-D numeric buffer (column-major)
 
-`CArray{owned,T,N}` is `(dims::NTuple{N,Int32}, data::Ptr{T})` in column-major
+`CArray{owned,T,N}` is `(dims::NTuple{N,Int64}, data::Ptr{T})` in column-major
 order. Targets may map this layout to native array types.
 
 ### `CArray` ownership contract
@@ -124,7 +124,7 @@ CMatrix
 
 ## `CString{owned}` — length-prefixed UTF-8
 
-`CString{owned}` is `(length::Int32, data::Ptr{UInt8})`. It is length-prefixed,
+`CString{owned}` is `(length::Int64, data::Ptr{UInt8})`. It is length-prefixed,
 so it permits embedded NUL bytes.
 
 `CString{owned} <: AbstractString`; call `String(s)` to copy the bytes into a
@@ -159,9 +159,6 @@ CString
 `CStrArray{owned}` is `(length::Int64, data::Ptr{CString{owned}})`: a pointer
 to `length` [`CString`](@ref)s with matching ownership. Converting it to
 `Vector{String}` copies the strings without freeing the source.
-
-Each string uses an `Int32` byte length; oversized strings throw
-`InexactError` rather than being truncated.
 
 ### `CStrArray` ownership contract
 

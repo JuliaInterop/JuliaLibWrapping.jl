@@ -138,11 +138,11 @@
     {
       "id": 13,
       "kind": "array",
-      "name": "NTuple{1, Int32}",
-      "element_type_id": 4,
+      "name": "NTuple{1, Int64}",
+      "element_type_id": 6,
       "count": 1,
-      "size": 4,
-      "alignment": 4
+      "size": 8,
+      "alignment": 8
     }
   ]
 }

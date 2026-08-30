@@ -55,7 +55,7 @@ _jlw_loaded.add(_jlw_this_pkg)
 
 class CString_borrowed(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 
@@ -90,36 +90,9 @@ class CString_borrowed(ctypes.Structure):
         """Return the underlying bytes decoded as UTF-8."""
         return self.as_bytes().decode("utf-8")
 
-class CDict_borrowed_Int32(ctypes.Structure):
-    _fields_ = [
-        ("length", ctypes.c_int64),
-        ("keys", ctypes.POINTER(CString_borrowed)),
-        ("values", ctypes.POINTER(ctypes.c_int32)),
-    ]
-
-    @classmethod
-    def from_dict(cls, d):
-        keys = [k.encode("utf-8") for k in d.keys()]
-        karr = (CString_borrowed * len(keys))(
-            *[CString_borrowed(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
-        varr = (ctypes.c_int32 * len(keys))(*d.values())
-        obj = cls(length=len(keys),
-                  keys=ctypes.cast(karr, ctypes.POINTER(CString_borrowed)),
-                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
-        obj._buffer = (keys, karr, varr)
-        return obj
-
-    def as_dict(self):
-        out = {}
-        for i in range(self.length):
-            e = self.keys[i]
-            k = ctypes.string_at(e.data, e.length).decode("utf-8")
-            out[k] = self.values[i]
-        return out
-
 class CString_owned(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 
@@ -153,6 +126,33 @@ class CString_owned(ctypes.Structure):
         _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
         self.data = type(self.data)()
         self.length = 0
+
+class CDict_borrowed_Int32(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("keys", ctypes.POINTER(CString_borrowed)),
+        ("values", ctypes.POINTER(ctypes.c_int32)),
+    ]
+
+    @classmethod
+    def from_dict(cls, d):
+        keys = [k.encode("utf-8") for k in d.keys()]
+        karr = (CString_borrowed * len(keys))(
+            *[CString_borrowed(length=len(b), data=ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_uint8))) for b in keys])
+        varr = (ctypes.c_int32 * len(keys))(*d.values())
+        obj = cls(length=len(keys),
+                  keys=ctypes.cast(karr, ctypes.POINTER(CString_borrowed)),
+                  values=ctypes.cast(varr, ctypes.POINTER(ctypes.c_int32)))
+        obj._buffer = (keys, karr, varr)
+        return obj
+
+    def as_dict(self):
+        out = {}
+        for i in range(self.length):
+            e = self.keys[i]
+            k = ctypes.string_at(e.data, e.length).decode("utf-8")
+            out[k] = self.values[i]
+        return out
 
 class CDict_owned_Int32(ctypes.Structure):
     _fields_ = [

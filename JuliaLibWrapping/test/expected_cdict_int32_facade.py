@@ -17,8 +17,8 @@ from . import _lowlevel  # noqa: F401
 
 from ._lowlevel import (
     CString_borrowed,
-    CDict_borrowed_Int32,
     CString_owned,
+    CDict_borrowed_Int32,
     CDict_owned_Int32,
 )
 
@@ -34,4 +34,4 @@ def give_dict_i32():
         _result.free()
     return _out
 
-__all__ = ["CString_borrowed", "CDict_borrowed_Int32", "CString_owned", "CDict_owned_Int32", "take_dict_i32", "give_dict_i32"]
+__all__ = ["CString_borrowed", "CString_owned", "CDict_borrowed_Int32", "CDict_owned_Int32", "take_dict_i32", "give_dict_i32"]

@@ -220,18 +220,17 @@ const scalar_payload_types = Dict{String, String}(
 [`carray_struct_info`](@ref) with this emitter's type tables applied:
 `nothing` unless the struct matches the `CArray` shape and its element type
 has a [`numpy_dtypes`](@ref) entry; otherwise
-`(; eltype, ndim, ownership, ctype, dtype)`, adding the element type's
-`ctypes` expression ([`pytypes`](@ref)) and numpy dtype to the recognizer's
-fields.
+`(; eltype, ndim, ownership, dims_bits, ctype, dtype, dims_ctype)`.
 """
 function _python_carray_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     info = carray_struct_info(desc, typeinfo)
     info === nothing && return nothing
     haskey(numpy_dtypes, info.eltype) || return nothing
     return (;
-        info.eltype, info.ndim, info.ownership,
+        info.eltype, info.ndim, info.ownership, info.dims_bits,
         ctype = pytypes[info.eltype],
         dtype = numpy_dtypes[info.eltype],
+        dims_ctype = pytypes[info.dims_type],
     )
 end
 
@@ -241,13 +240,16 @@ end
 [`cdict_struct_info`](@ref) with this emitter's type tables applied:
 `nothing` unless the struct matches the `CDict` shape and its value type
 has a [`scalar_payload_types`](@ref) entry; otherwise
-`(; value_type, ownership, ctype)`.
+`(; value_type, ownership, length_bits, ctype)`.
 """
 function _python_cdict_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     info = cdict_struct_info(desc, typeinfo)
     info === nothing && return nothing
     haskey(scalar_payload_types, info.value_type) || return nothing
-    return (; info.value_type, info.ownership, ctype = scalar_payload_types[info.value_type])
+    return (;
+        info.value_type, info.ownership, info.length_bits,
+        ctype = scalar_payload_types[info.value_type],
+    )
 end
 
 """
@@ -311,21 +313,40 @@ function _python_status_path(method::MethodDesc, typeinfo::OrderedDict{Int, Type
 end
 
 """
-    _cstring_pointee_classname(desc, fieldname, typeinfo, typedict) -> String
+    _cstring_pointee_info(desc, fieldname, typeinfo, typedict) -> NamedTuple
 
-Return the mangled Python `ctypes.Structure` class name for the
-`CString` struct pointed to by `desc`'s field named `fieldname`
-(`"data"` for [`cstrarray_struct_info`](@ref), `"keys"` for
-[`cdict_struct_info`](@ref)). The caller must first verify that the field
-points to a `CString` with matching ownership.
+Return the Python class name and `length` width of the `CString` pointed to by
+the field named `fieldname`. The caller must first validate the field.
 """
-function _cstring_pointee_classname(
+function _cstring_pointee_info(
         desc::StructDesc, fieldname::String,
         typeinfo::OrderedDict{Int, TypeDesc}, typedict::Dict{Int, String}
     )
     field = only(f for f in desc.fields if f.name == fieldname)
     pointee_id = (typeinfo[field.type]::PointerDesc).pointee_type
-    return typedict[pointee_id]
+    pointee = typeinfo[pointee_id]::StructDesc
+    info = cstring_struct_info(pointee, typeinfo)
+    return (; classname = typedict[pointee_id], length_bits = info.length_bits)
+end
+
+"""
+    _emit_length_guard(f, indent, expr, bits, what)
+
+Emit a range check before assigning the Python expression `expr` to a signed
+`bits`-wide field. No check is emitted for 64-bit fields. `expr` must be
+side-effect free.
+"""
+function _emit_length_guard(
+        f::IO, indent::AbstractString, expr::AbstractString,
+        bits::Integer, what::AbstractString
+    )
+    bits >= 64 && return nothing
+    limit = "0x" * string(2^(bits - 1) - 1; base = 16)
+    println(f, indent, "if ", expr, " > ", limit, ":")
+    return println(
+        f, indent, "    raise OverflowError(f\"", what, " {", expr,
+        "} exceeds the library's ", bits, "-bit length field\")"
+    )
 end
 
 const PYTHON_KEYWORDS = Set{String}(
@@ -666,7 +687,15 @@ function _write_carray_helpers(
         println(f, "        expected_dtype = np.dtype(", repr(dtype), ")")
         println(f, "        if arr.dtype != expected_dtype:")
         println(f, "            raise ValueError(f\"expected dtype ", dtype, ", got {arr.dtype}\")")
-        println(f, "        obj = cls(dims=(ctypes.c_int32 * ", ndim, ")(*arr.shape),")
+        if cainfo.dims_bits < 64
+            limit = "0x" * string(2^(cainfo.dims_bits - 1) - 1; base = 16)
+            println(f, "        if any(d > ", limit, " for d in arr.shape):")
+            println(
+                f, "            raise OverflowError(f\"array shape {arr.shape} exceeds ",
+                "the library's ", cainfo.dims_bits, "-bit dims field\")"
+            )
+        end
+        println(f, "        obj = cls(dims=(", cainfo.dims_ctype, " * ", ndim, ")(*arr.shape),")
         println(f, "                  data=arr.ctypes.data_as(ctypes.POINTER(", ctype, ")))")
         println(f, "        obj._buffer = arr")
         println(f, "        return obj")
@@ -727,6 +756,7 @@ function _write_cstring_helpers(
         println(f, "        if not isinstance(b, (bytes, bytearray)):")
         println(f, "            raise TypeError(f\"expected bytes-like, got {type(b).__name__}\")")
         println(f, "        n = len(b)")
+        _emit_length_guard(f, "        ", "n", csinfo.length_bits, "string length")
         println(f, "        buf = (ctypes.c_uint8 * n).from_buffer_copy(b) if n else (ctypes.c_uint8 * 0)()")
         println(f, "        obj = cls(length=n,")
         println(f, "                  data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))")
@@ -752,7 +782,7 @@ function _write_cstring_helpers(
 end
 
 """
-    _emit_cstring_array(f, list_var, arr_var, source_expr, item_var, cstring_classname)
+    _emit_cstring_array(f, list_var, arr_var, source_expr, item_var, cstring_classname, element_bits)
 
 Emit the "encode each string into a raw (non-NUL-terminated) buffer, then
 build a `ctypes` array of `<cstring_classname>` structs, each holding that
@@ -768,16 +798,22 @@ only — the inner per-buffer comprehension's loop variable is always `b`, so
 both call sites emit identical text apart from the substituted names.
 Embedded NUL bytes in the source strings survive intact: each element's
 `length` is the exact byte count, not a NUL-terminator search.
+
+`element_bits` controls the per-element length check.
 """
 function _emit_cstring_array(
         f::IO, list_var::AbstractString, arr_var::AbstractString,
         source_expr::AbstractString, item_var::AbstractString,
-        cstring_classname::AbstractString
+        cstring_classname::AbstractString, element_bits::Integer
     )
     println(
         f, "        ", list_var, " = [", item_var, ".encode(\"utf-8\") for ",
         item_var, " in ", source_expr, "]"
     )
+    if element_bits < 64
+        println(f, "        for b in ", list_var, ":")
+        _emit_length_guard(f, "            ", "len(b)", element_bits, "string length")
+    end
     println(f, "        ", arr_var, " = (", cstring_classname, " * len(", list_var, "))(")
     return println(
         f, "            *[", cstring_classname, "(length=len(b), data=ctypes.cast(",
@@ -787,24 +823,26 @@ function _emit_cstring_array(
 end
 
 """
-    _write_cstrarray_helpers(f, csainfo, classname, cstring_classname, release_present)
+    _write_cstrarray_helpers(f, csainfo, classname, cstring, release_present)
 
 Emit the conversion methods on a recognized `CStrArray` `ctypes` class. The
 borrowed class gets `from_list` and `as_list`; the owned class gets `as_list`
-and `free()`.
+and `free()`. `cstring` describes the element type and length width.
 """
 function _write_cstrarray_helpers(
         f::IO, csainfo, classname::AbstractString,
-        cstring_classname::AbstractString, release_present::Bool
+        cstring, release_present::Bool
     )
     owned = csainfo.ownership === :owned
+    cstring_classname = cstring.classname
     if csainfo.ownership === :borrowed
         println(f, "")
         println(f, "    @classmethod")
         println(f, "    def from_list(cls, items):")
         println(f, "        if not isinstance(items, (list, tuple)):")
         println(f, "            raise TypeError(\"expected a list of str\")")
-        _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname)
+        _emit_cstring_array(f, "bufs", "arr", "items", "s", cstring_classname, cstring.length_bits)
+        _emit_length_guard(f, "        ", "len(bufs)", csainfo.length_bits, "list length")
         println(
             f, "        obj = cls(length=len(bufs), data=ctypes.cast(arr, ctypes.POINTER(",
             cstring_classname, ")))"
@@ -829,23 +867,25 @@ function _write_cstrarray_helpers(
 end
 
 """
-    _write_cdict_helpers(f, cdinfo, classname, cstring_classname, release_present)
+    _write_cdict_helpers(f, cdinfo, classname, cstring, release_present)
 
 Emit the conversion methods on a recognized `CDict` `ctypes` class. The
 borrowed class gets `from_dict` and `as_dict`; the owned class gets `as_dict`
-and `free()`.
+and `free()`. `cstring` describes the key type and length width.
 """
 function _write_cdict_helpers(
         f::IO, cdinfo, classname::AbstractString,
-        cstring_classname::AbstractString, release_present::Bool
+        cstring, release_present::Bool
     )
     ctype = cdinfo.ctype
     owned = cdinfo.ownership === :owned
+    cstring_classname = cstring.classname
     if cdinfo.ownership === :borrowed
         println(f, "")
         println(f, "    @classmethod")
         println(f, "    def from_dict(cls, d):")
-        _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname)
+        _emit_cstring_array(f, "keys", "karr", "d.keys()", "k", cstring_classname, cstring.length_bits)
+        _emit_length_guard(f, "        ", "len(keys)", cdinfo.length_bits, "dict length")
         println(f, "        varr = (", ctype, " * len(keys))(*d.values())")
         println(f, "        obj = cls(length=len(keys),")
         println(f, "                  keys=ctypes.cast(karr, ctypes.POINTER(", cstring_classname, ")),")
@@ -1066,12 +1106,12 @@ function _write_bindings(
                 _write_cstring_helpers(f, csinfo, name, release_present)
             elseif !isnothing(csainfo)
                 # Emit CStrArray conversion helpers.
-                cs_classname = _cstring_pointee_classname(type, "data", typeinfo, typedict)
-                _write_cstrarray_helpers(f, csainfo, name, cs_classname, release_present)
+                cs = _cstring_pointee_info(type, "data", typeinfo, typedict)
+                _write_cstrarray_helpers(f, csainfo, name, cs, release_present)
             elseif !isnothing(cdinfo)
                 # Emit CDict conversion helpers.
-                cs_classname = _cstring_pointee_classname(type, "keys", typeinfo, typedict)
-                _write_cdict_helpers(f, cdinfo, name, cs_classname, release_present)
+                cs = _cstring_pointee_info(type, "keys", typeinfo, typedict)
+                _write_cdict_helpers(f, cdinfo, name, cs, release_present)
             elseif !isnothing(coinfo)
                 # Emit COpt conversion helpers.
                 _write_copt_helpers(f, coinfo)

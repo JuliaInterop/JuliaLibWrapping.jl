@@ -55,7 +55,7 @@ _jlw_loaded.add(_jlw_this_pkg)
 
 class CString_borrowed(ctypes.Structure):
     _fields_ = [
-        ("length", ctypes.c_int32),
+        ("length", ctypes.c_int64),
         ("data", ctypes.POINTER(ctypes.c_uint8)),
     ]
 

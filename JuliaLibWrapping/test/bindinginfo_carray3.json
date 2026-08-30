@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored fixture for CArray{owned,T,3} — locks in coverage of higher-rank arrays beyond the CVector (N=1) and CMatrix (N=2) special cases. Mirrors the layout juliac emits for `struct CArray{:borrowed,Float64,3}; dims::NTuple{3,Int32}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape and emit the rank-agnostic, borrowed-flavored from_numpy/as_numpy helpers (column-major, no free).",
+  "_comment": "Hand-authored fixture for CArray{owned,T,3} — locks in coverage of higher-rank arrays beyond the CVector (N=1) and CMatrix (N=2) special cases. Mirrors the layout juliac emits for `struct CArray{:borrowed,Float64,3}; dims::NTuple{3,Int64}; data::Ptr{Float64}; end` with a single @ccallable function consuming one. The Python emitter must recognize this shape and emit the rank-agnostic, borrowed-flavored from_numpy/as_numpy helpers (column-major, no free).",
   "types": [
     {
       "kind": "primitive",
@@ -12,12 +12,12 @@
     },
     {
       "kind": "primitive",
-      "name": "Int32",
+      "name": "Int64",
       "id": 2,
-      "size": 4,
-      "bits": 32,
+      "size": 8,
+      "bits": 64,
       "signed": true,
-      "alignment": 4
+      "alignment": 8
     },
     {
       "kind": "pointer",
@@ -27,21 +27,21 @@
     },
     {
       "kind": "array",
-      "name": "NTuple{3, Int32}",
+      "name": "NTuple{3, Int64}",
       "id": 5,
       "element_type_id": 2,
       "count": 3,
-      "size": 12,
-      "alignment": 4
+      "size": 24,
+      "alignment": 8
     },
     {
       "kind": "struct",
       "name": "CArray{:borrowed, Float64, 3}",
       "id": 4,
-      "size": 24,
+      "size": 32,
       "fields": [
         { "name": "dims", "type_id": 5, "offset": 0, "isptr": false, "isfieldatomic": false },
-        { "name": "data", "type_id": 3, "offset": 16, "isptr": false, "isfieldatomic": false }
+        { "name": "data", "type_id": 3, "offset": 24, "isptr": false, "isfieldatomic": false }
       ],
       "alignment": 8
     }

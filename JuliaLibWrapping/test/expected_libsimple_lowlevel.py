@@ -58,15 +58,9 @@ _jlw_loaded.add(_jlw_this_pkg)
 class CTree_Float64(ctypes.Structure):
     pass
 
-class MyTwoVec(ctypes.Structure):
-    _fields_ = [
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
-    ]
-
 class CVector_borrowed_Float32(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 1)),
+        ("dims", (ctypes.c_int64 * 1)),
         ("data", ctypes.POINTER(ctypes.c_float)),
     ]
 
@@ -85,7 +79,7 @@ class CVector_borrowed_Float32(ctypes.Structure):
         expected_dtype = np.dtype("float32")
         if arr.dtype != expected_dtype:
             raise ValueError(f"expected dtype float32, got {arr.dtype}")
-        obj = cls(dims=(ctypes.c_int32 * 1)(*arr.shape),
+        obj = cls(dims=(ctypes.c_int64 * 1)(*arr.shape),
                   data=arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
         obj._buffer = arr
         return obj
@@ -100,9 +94,15 @@ class CVectorPair_Float32(ctypes.Structure):
         ("to", CVector_borrowed_Float32),
     ]
 
+class MyTwoVec(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int32),
+        ("y", ctypes.c_int32),
+    ]
+
 class CVector_borrowed_CTree_Float64(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int32 * 1)),
+        ("dims", (ctypes.c_int64 * 1)),
         ("data", ctypes.POINTER(CTree_Float64)),
     ]
 

@@ -71,7 +71,7 @@ semantics. The two ownerships are two distinct types, so a target reads
 "release this" or "do not release this" off the signature alone.
 """
 struct CArray{owned, T, N} <: AbstractArray{T, N}
-    dims::NTuple{N, Int32}
+    dims::NTuple{N, Int64}
     data::Ptr{T}
 
     function CArray{owned, T, N}(dims, data) where {owned, T, N}
@@ -150,15 +150,12 @@ b = CArray{:borrowed}(buf)  # aliases buf; keep buf alive while b is in use
 """
 function CArray{owned}(A::AbstractArray{T, N}) where {owned, T, N}
     if owned === :owned
-        # `dims` is `NTuple{N,Int32}` but `size` gives `Int`s, so this can
-        # throw. Narrow before the `malloc`: nothing would free that buffer.
-        dims = convert(NTuple{N, Int32}, size(A))
         dense = Array{T, N}(undef, size(A))
         copyto!(dense, A)
         n = length(dense)
         data = Ptr{T}(Libc.malloc(max(n, 1) * sizeof(T)))
         GC.@preserve dense unsafe_copyto!(data, pointer(dense), n)
-        return CArray{owned, T, N}(dims, data)
+        return CArray{owned, T, N}(size(A), data)
     elseif owned === :borrowed
         throw(
             ArgumentError(
@@ -239,7 +236,7 @@ rejected.
 Julia `String`.
 """
 struct CString{owned} <: AbstractString
-    length::Int32
+    length::Int64
     data::Ptr{UInt8}
 
     function CString{owned}(length, data) where {owned}
@@ -256,12 +253,9 @@ end
 function CString{:owned}(s::AbstractString)
     str = String(s)
     nb = sizeof(str)
-    # `length` is `Int32` but `sizeof` gives an `Int`, so this can throw.
-    # Narrow before the `malloc`: nothing would free that buffer.
-    len = Int32(nb)
     p = Ptr{UInt8}(Libc.malloc(max(nb, 1)))  # never malloc(0): an empty string still needs a non-NULL, freeable p
     GC.@preserve str unsafe_copyto!(p, pointer(str), nb)
-    return CString{:owned}(len, p)
+    return CString{:owned}(Int64(nb), p)
 end
 
 Base.ncodeunits(s::CString) = Int(s.length)
