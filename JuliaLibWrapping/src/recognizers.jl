@@ -181,12 +181,9 @@ end
 """
     ctuple_struct_info(desc, typeinfo) -> Union{Nothing, NamedTuple}
 
-Describe a `CTupleN` carrier — the return carrier for a tuple — or `nothing`
-when `desc` is not one. Returns `(; arity, element_type_ids)`, the element
-type ids in field order.
-
-Every arity renders the same way, as a struct with fields `v1`…`vN`, so one
-shape check covers the family.
+Recognize `CTupleN`, the carrier for a tuple return: a struct with fields
+`v1`…`vN` at every arity. Return `(; arity, element_type_ids)` with the
+element type ids in field order, or `nothing`.
 """
 function ctuple_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
     startswith(desc.name, "CTuple") || return nothing

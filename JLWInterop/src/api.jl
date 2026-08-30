@@ -151,10 +151,9 @@ carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
 carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
 
-# A tuple return maps onto the carrier for its arity, composing each element's
-# own return carrier. `nothing` for an unsupported arity or an element with no
-# mapping, so `@api` reports its usual error rather than building a carrier
-# with a `nothing` parameter.
+# A tuple return composes each element's own return carrier into the carrier
+# for its arity. An unsupported arity, or an element with no mapping, leaves
+# the tuple unmapped.
 function carrier_return_type(::Type{T}) where {T <: Tuple}
     isconcretetype(T) || return nothing
     S = _ctuple_type(fieldcount(T))
@@ -192,8 +191,8 @@ to_carrier(v::Vector{String}) = CStrArray{:owned}(v)
 to_carrier(d::Dict{String, V}) where {V} = CDict{:owned}(d)
 to_carrier(A::AbstractArray) = CArray{:owned}(A)
 
-# One concrete method per arity keeps the conversion trim-safe: the element
-# calls are resolved statically, as they are for the other carriers.
+# One method per arity, so the element calls resolve statically and the
+# conversion stays trim-safe.
 for n in 2:_CTUPLE_MAX_ARITY
     name = Symbol("CTuple", n)
     values = [:(to_carrier(t[$i])) for i in 1:n]
@@ -791,9 +790,8 @@ order. Enum names must be unique across the exported API.
 `arg_enums` maps argument names to enum names. `return_enum` names an enum
 return type. Empty annotations are omitted.
 
-`target` names the targets that may consume the entry, and is `"any"` for
-every declaration; a consumer filters on it, so a sidecar written without the
-field reads as `"any"`.
+`target` names the targets that may consume the entry. It is `"any"` for every
+declaration, and a sidecar written without the field reads as `"any"`.
 
 The JSON is written by hand so that JLWInterop needs no JSON dependency.
 """
@@ -847,10 +845,8 @@ function write_metadata(path::AbstractString, root::Module = Main)
                 write(io, "      \"return_enum\": ", _json_str(String(nameof(e.ret))), ",\n")
         end
         write(io, "      \"doc\": ", _json_str(e.doc), ",\n")
-        # Reserved: which targets may consume this entry. Every declaration is
-        # portable today, so every entry is "any"; a consumer filters on it so
-        # that a target-specific declaration can be added without changing the
-        # metadata version. A sidecar written before this field reads as "any".
+        # A consumer filters on this, so a target-specific declaration can be
+        # added without changing the metadata version.
         write(io, "      \"target\": \"any\"\n")
         write(io, "    }", i < length(entries) ? "," : "", "\n")
     end

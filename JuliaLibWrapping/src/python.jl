@@ -1487,10 +1487,8 @@ function _classify_return_type(
                         id, typeinfo, typedict, release_present; pass_opaque
                     ) for id in ctinfo.element_type_ids
             ]
-            # One unclassifiable element makes the whole tuple unclassifiable:
-            # there is no partial unwrap to emit. An element the façade has no
-            # conversion for — a nested tuple, say — is just as unclassifiable
-            # as an `:opaque` one.
+            # One element without a conversion makes the whole tuple opaque;
+            # there is no partial unwrap to emit.
             for el in elements
                 el.kind === :opaque && return (kind = :opaque, reason = el.reason)
                 el.kind in _CTUPLE_ELEMENT_KINDS || return (
@@ -1774,9 +1772,8 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
         # COpt is stored by value.
         println(f, "    return ", root, ".as_optional()")
     elseif kind === :ctuple_unwrap
-        # Each element is unwrapped by its own kind, and every owning element
-        # is released in `finally` — including when a later element's
-        # conversion raises.
+        # Every element is converted before any is released, so a later
+        # element's conversion cannot read freed memory.
         println(f, "    _v = ", root)
         parts = String[]
         for (i, el) in pairs(ret.elements)
@@ -1786,8 +1783,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
         tuple_expr = "(" * join(parts, ", ") * ",)"
         owning = [i for (i, el) in pairs(ret.elements) if el.kind in _CTUPLE_OWNING_KINDS]
         if isempty(owning)
-            # Nothing to release, so no `finally` — an empty one is a syntax
-            # error in Python.
+            # No `finally`: an empty one is a syntax error in Python.
             println(f, "    return ", tuple_expr)
         else
             println(f, "    try:")
@@ -1805,8 +1801,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
 end
 
 # The element kinds `_ctuple_element_expr` can convert. A tuple with an element
-# outside this set classifies `:opaque`, so every `:ctuple_unwrap` the
-# classifier produces can be emitted.
+# outside this set classifies `:opaque`.
 const _CTUPLE_ELEMENT_KINDS = (
     :passthrough, :carray_view, :carray_unwrap, :cstring_convert,
     :cstring_unwrap, :cstrarray_convert, :cstrarray_unwrap, :cdict_convert,
@@ -1818,9 +1813,8 @@ const _CTUPLE_OWNING_KINDS = (
     :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap, :cdict_unwrap,
 )
 
-# The expression that converts one tuple element, without releasing it: the
-# release happens in the tuple's own `finally`, after every element has been
-# converted.
+# Convert one tuple element without releasing it; the release happens in the
+# tuple's own `finally`.
 function _ctuple_element_expr(field::AbstractString, el)
     el.kind === :passthrough && return field
     el.kind in (:carray_view, :carray_unwrap) &&
