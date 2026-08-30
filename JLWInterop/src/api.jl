@@ -95,6 +95,11 @@ The C-ABI argument carrier for `T`, or `nothing` when no mapping exists.
 Storage-backed argument carriers are borrowed. Dictionary values, optional
 payloads, and array elements must be concrete scalar bits types.
 
+`Array{T,N}` and `StridedArray{T,N}` arguments use the same borrowed `CArray`
+carrier. An `Array` argument receives an `unsafe_wrap`ped view; resizing it
+detaches it from the carrier's buffer. A `StridedArray` argument receives the
+carrier directly.
+
 A `Ptr{T}` is its own carrier and crosses unconverted: neither a length nor
 an owner travels with it. An argument addresses memory the caller owns. A
 return must address memory that outlives the call and that the caller can
@@ -122,6 +127,8 @@ carrier_type(::Type{Union{T, Nothing}}) where {T <: _API_SCALARS} =
     isconcretetype(T) ? COpt{T} : nothing
 carrier_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:borrowed, T, N} : nothing
+carrier_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
+    isconcretetype(T) ? CArray{:borrowed, T, N} : nothing
 carrier_type(::Type) = nothing
 
 """
@@ -135,6 +142,8 @@ carrier_return_type(::Type{Vector{String}}) = CStrArray{:owned}
 carrier_return_type(::Type{Dict{String, V}}) where {V <: _API_SCALARS} =
     isconcretetype(V) ? CDict{:owned, V} : nothing
 carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
+    isconcretetype(T) ? CArray{:owned, T, N} : nothing
+carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
 carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 
@@ -200,7 +209,8 @@ from_carrier(::Type{String}, c::CString) = String(c)
 from_carrier(::Type{Vector{String}}, c::CStrArray) = Vector{String}(c)
 from_carrier(::Type{Dict{String, V}}, c::CDict{owned, V}) where {owned, V} = Dict{String, V}(c)
 from_carrier(::Type{A}, c::CArray{owned, T, N}) where {owned, T, N, A <: Array{T, N}} =
-    unsafe_wrap(Array, c.data, Int.(Tuple(c.dims)); own = false)   # zero-copy view
+    unsafe_wrap(Array, c.data, Int.(Tuple(c.dims)); own = false)
+from_carrier(::Type{StridedArray{T, N}}, c::CArray{:borrowed, T, N}) where {T, N} = c
 from_carrier(::Type{Union{T, Nothing}}, c::COpt{T}) where {T} = unwrap(c)
 
 # --- @api ----------------------------------------------------------------

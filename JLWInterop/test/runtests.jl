@@ -1,4 +1,5 @@
 using JLWInterop
+using LinearAlgebra
 using OffsetArrays
 using Test
 
@@ -271,6 +272,74 @@ using Test
         end
     end
 
+    @testset "CArray strided interface" begin
+        # A CArray is a contiguous, column-major StridedArray.
+        @test CArray{:borrowed, Float64, 2} <: DenseArray{Float64, 2}
+        @test CMatrix{:owned, Float64} <: StridedMatrix{Float64}
+        @test CVector{:borrowed, Float64} <: StridedVector{Float64}
+
+        A = [1.0 2.0; 3.0 4.0; 5.0 6.0]
+        GC.@preserve A begin
+            c = CArray{:borrowed}(A)
+            @test strides(c) === (1, 3)
+            @test Base.elsize(typeof(c)) === sizeof(Float64)
+            @test Base.unsafe_convert(Ptr{Float64}, c) === pointer(A)
+            @test pointer(c) === pointer(A)
+            @test pointer(c, 4) === pointer(A, 4)
+
+            # A ccall expecting Ptr{T} accepts the carrier.
+            dest = zeros(6)
+            GC.@preserve dest begin
+                cdest = CArray{:borrowed}(dest)
+                ccall(
+                    :memcpy, Ptr{Cvoid}, (Ptr{Float64}, Ptr{Float64}, Csize_t),
+                    cdest, c, 6 * sizeof(Float64)
+                )
+            end
+            @test dest == vec(A)
+        end
+
+        # BLAS operates on the buffers in place.
+        B, C, D = rand(4, 3), rand(3, 5), zeros(4, 5)
+        GC.@preserve B C D begin
+            mul!(CArray{:borrowed}(D), CArray{:borrowed}(B), CArray{:borrowed}(C))
+            @test D ≈ B * C
+        end
+        v = rand(8)
+        GC.@preserve v begin
+            cv = CArray{:borrowed}(v)
+            @test dot(cv, cv) ≈ dot(v, v)
+        end
+
+        # The all-zero error-path carrier is a well-formed empty array.
+        z = JLWInterop._zero_carrier(CArray{:owned, Float64, 2})
+        @test size(z) == (0, 0)
+        @test strides(z) === (1, 0)
+        @test isempty(collect(z))
+        @test sum(z) === 0.0
+    end
+
+    @testset "CArray aliasing" begin
+        # Aliasing is keyed on the data pointer rather than carrier identity.
+        v = collect(1.0:6.0)
+        other = zeros(6)
+        GC.@preserve v other begin
+            c6 = CArray{:borrowed}(v)
+            c23 = CMatrix{:borrowed, Float64}(2, 3, pointer(v))
+            cother = CArray{:borrowed}(other)
+
+            @test Base.dataids(c6) === (UInt(pointer(v)),)
+            @test Base.mightalias(c6, c23)
+            @test !Base.mightalias(c6, cother)
+
+            # `unalias` copies a detected alias.
+            u = Base.unalias(c23, c6)
+            @test u isa Vector{Float64}
+            @test u == v
+            @test Base.unalias(cother, c6) === c6
+        end
+    end
+
     @testset "CArray layout" begin
         # C and Python emitters rely on this field layout.
         @test fieldnames(CArray) == (:dims, :data)
@@ -410,7 +479,18 @@ using Test
             @test m isa CMatrix{:borrowed, Float64}
             @test m.dims === (Int64(2), Int64(2))
             @test collect(m) == M
+
+            # Re-borrowing a carrier returns the same descriptor.
+            @test CArray{:borrowed}(m) === m
         end
+
+        # Borrowing an owned carrier aliases without transferring ownership.
+        o = CArray{:owned}([1.0, 2.0])
+        b = CArray{:borrowed}(o)
+        @test b isa CVector{:borrowed, Float64}
+        @test b.data === o.data
+        @test b.dims === o.dims
+        Libc.free(o.data)
 
         # Non-`DenseArray` storage cannot be aliased safely, even when it
         # happens to be contiguous: the layout guarantee lives in the type.
@@ -514,6 +594,33 @@ using Test
         borrowed = CStrArray{:borrowed}(a2.length, a2.data)
         @test Vector{String}(borrowed) == ["p", "q"]
         JLWInterop._free_strings(a2.data, a2.length)
+    end
+
+    @testset "CStrArray AbstractVector interface" begin
+        a = CStrArray{:owned}(["hello", "wörld", ""])
+        @test a isa AbstractVector{CString{:owned}}
+        @test IndexStyle(typeof(a)) === IndexLinear()
+        @test size(a) == (3,)
+        @test length(a) == 3
+        @test eltype(a) === CString{:owned}
+
+        # Indexing and iteration yield the descriptors in place.
+        @test a[1] isa CString{:owned}
+        @test String(a[2]) == "wörld"
+        @test String.(a) == ["hello", "wörld", ""]
+        @test map(ncodeunits, a) == [5, 6, 0]
+        @test_throws BoundsError a[0]
+        @test_throws BoundsError a[4]
+
+        # Read-only: replacing a descriptor would leak the buffer it points to.
+        @test_throws CanonicalIndexError a[1] = a[2]
+
+        # `collect` copies descriptors, not buffers, so the elements alias.
+        descs = collect(a)
+        @test descs isa Vector{CString{:owned}}
+        @test descs[1].data === a[1].data
+
+        JLWInterop._free_strings(a.data, a.length)
     end
 
     @testset "CDict layout" begin
@@ -1489,6 +1596,65 @@ using Test
         st = Core.eval(m, :(ApiCall_outside(1))).status
         @test status_message(st) == "DomainError"
         @test st.code == JLWInterop._API_ERROR_CODES.generic
+    end
+
+    @testset "@api StridedArray arguments receive the carrier" begin
+        # A StridedArray argument receives the CArray carrier directly.
+        @test JLWInterop.carrier_type(StridedArray{Float64, 2}) === CArray{:borrowed, Float64, 2}
+        @test JLWInterop.carrier_type(StridedVector{Int32}) === CArray{:borrowed, Int32, 1}
+        @test JLWInterop.carrier_return_type(StridedArray{Float64, 1}) === CArray{:owned, Float64, 1}
+        # Only supported concrete scalars have a fixed ABI.
+        @test JLWInterop.carrier_type(StridedArray{Real, 2}) === nothing
+        @test JLWInterop.carrier_type(StridedArray{String, 1}) === nothing
+
+        c = CArray{:borrowed, Float64, 1}((Int64(2),), Ptr{Float64}(0))
+        @test JLWInterop.from_carrier(StridedArray{Float64, 1}, c) === c
+
+        m = Module(:ApiStrided)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                function colsum(A::StridedArray{Float64, 2})
+                    A isa CMatrix{:borrowed, Float64} ||
+                        error("expected the carrier, got " * string(typeof(A)))
+                    vec(sum(A; dims = 1))
+                end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api colsum(A::StridedArray{Float64, 2})::StridedArray{Float64, 1}
+            )
+        )
+        Core.eval(
+            m, quote
+                function dbl(A::StridedArray{Float64, 1})
+                    A .*= 2.0
+                    nothing
+                end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api dbl(A::StridedArray{Float64, 1})::Nothing
+            )
+        )
+
+        # The declared return is copied into an owned carrier.
+        A = [1.0 2.0; 3.0 4.0]
+        r = GC.@preserve A Core.eval(m, :(ApiStrided_colsum($(CArray{:borrowed}(A)))))
+        @test iszero(r.status.code)
+        @test r.value isa CVector{:owned, Float64}
+        @test unsafe_load(r.value.data, 1) == 4.0
+        @test unsafe_load(r.value.data, 2) == 6.0
+        Libc.free(r.value.data)
+
+        # Mutation through the carrier reaches the caller's buffer.
+        v = [1.0, 2.0, 3.0]
+        st = GC.@preserve v Core.eval(m, :(ApiStrided_dbl($(CArray{:borrowed}(v)))))
+        @test st isa JLWStatus
+        @test iszero(st.code)
+        @test v == [2.0, 4.0, 6.0]
     end
 
     @testset "@api raw pointers and library-registered carriers" begin
