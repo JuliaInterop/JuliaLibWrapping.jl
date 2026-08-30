@@ -150,6 +150,19 @@ carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
 carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
+
+# A tuple return maps onto the carrier for its arity, composing each element's
+# own return carrier. `nothing` for an unsupported arity or an element with no
+# mapping, so `@api` reports its usual error rather than building a carrier
+# with a `nothing` parameter.
+function carrier_return_type(::Type{T}) where {T <: Tuple}
+    isconcretetype(T) || return nothing
+    S = _ctuple_type(fieldcount(T))
+    isnothing(S) && return nothing
+    elements = map(carrier_return_type, fieldtypes(T))
+    any(isnothing, elements) && return nothing
+    return S{elements...}
+end
 carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 
 """
@@ -178,6 +191,14 @@ to_carrier(s::String) = CString{:owned}(s)
 to_carrier(v::Vector{String}) = CStrArray{:owned}(v)
 to_carrier(d::Dict{String, V}) where {V} = CDict{:owned}(d)
 to_carrier(A::AbstractArray) = CArray{:owned}(A)
+
+# One concrete method per arity keeps the conversion trim-safe: the element
+# calls are resolved statically, as they are for the other carriers.
+for n in 2:_CTUPLE_MAX_ARITY
+    name = Symbol("CTuple", n)
+    values = [:(to_carrier(t[$i])) for i in 1:n]
+    @eval to_carrier(t::Tuple{Vararg{Any, $n}}) = $name($(values...))
+end
 
 """
     to_carrier_opt(::Type{T}, x) -> COpt{T}

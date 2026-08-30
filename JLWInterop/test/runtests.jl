@@ -2147,4 +2147,38 @@ using Test
         @test JLWInterop._ctuple_type(2) === CTuple2
         @test JLWInterop._ctuple_type(8) === CTuple8
     end
+
+    @testset "tuple returns map onto CTupleN" begin
+        @test JLWInterop.carrier_return_type(Tuple{Float64, Int64}) ===
+            CTuple2{Float64, Int64}
+        @test JLWInterop.carrier_return_type(Tuple{Vector{Float64}, Int64}) ===
+            CTuple2{CVector{:owned, Float64}, Int64}
+        @test JLWInterop.carrier_return_type(Tuple{String, Vector{String}}) ===
+            CTuple2{CString{:owned}, CStrArray{:owned}}
+
+        # Tuples are return-only: the argument direction still has no mapping.
+        @test isnothing(JLWInterop.carrier_type(Tuple{Float64, Int64}))
+
+        # An element with no carrier makes the whole tuple unmapped, so the
+        # macro reports its usual error instead of building a broken carrier.
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64, Function}))
+
+        # Outside the supported arity range.
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64}))
+        @test isnothing(
+            JLWInterop.carrier_return_type(
+                Tuple{Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64}
+            )
+        )
+
+        # `to_carrier` builds the carrier element-wise.
+        c = JLWInterop.to_carrier((2.5, Int64(7)))
+        @test c === CTuple2{Float64, Int64}(2.5, Int64(7))
+
+        c2 = JLWInterop.to_carrier(([1.0, 2.0], Int64(2)))
+        @test c2 isa CTuple2{CVector{:owned, Float64}, Int64}
+        @test collect(c2.v1) == [1.0, 2.0]
+        @test c2.v2 === Int64(2)
+        Libc.free(c2.v1.data)
+    end
 end
