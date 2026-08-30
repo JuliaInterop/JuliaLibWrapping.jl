@@ -28,4 +28,8 @@ makedocs(;
 deploydocs(;
     repo = "github.com/JuliaInterop/JuliaLibWrapping.jl",
     devbranch = "main",
+    # TagBot tags releases of this subdir package as JuliaLibWrapping-vX.Y.Z;
+    # without the prefix, deploydocs skips tag builds and never deploys
+    # versioned (stable) docs.
+    tag_prefix = "JuliaLibWrapping-",
 )
