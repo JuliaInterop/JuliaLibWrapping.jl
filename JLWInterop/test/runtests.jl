@@ -2220,4 +2220,24 @@ using Test
             @test rb.value.v2 === Int64(0)
         end
     end
+
+    @testset "sidecar records a target" begin
+        # Reserved for a future target-specific declaration macro. Every
+        # entry is portable today, so every entry is "any"; a consumer
+        # filters on it rather than assuming.
+        m = Module(:ApiTestTarget)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                twice(x::Float64) = 2x
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api "Doubles." twice(x::Float64)::Float64))
+        mktempdir() do dir
+            p = joinpath(dir, "t.jlw.json")
+            JLWInterop.write_metadata(p, m)
+            txt = read(p, String)
+            @test occursin("\"target\": \"any\"", txt)
+        end
+    end
 end

@@ -770,7 +770,7 @@ Write the JSON metadata sidecar for every [`@api`](@ref) declaration in
 
 Files without enums use version 1:
 
-    {"jlw_metadata_version": 1, "exports": {symbol: {"name", "args", "kwargs", "doc"}}}
+    {"jlw_metadata_version": 1, "exports": {symbol: {"name", "args", "kwargs", "doc", "target"}}}
 
 Files with enums use version 2 and add an `enums` table:
 
@@ -790,6 +790,10 @@ order. Enum names must be unique across the exported API.
 
 `arg_enums` maps argument names to enum names. `return_enum` names an enum
 return type. Empty annotations are omitted.
+
+`target` names the targets that may consume the entry, and is `"any"` for
+every declaration; a consumer filters on it, so a sidecar written without the
+field reads as `"any"`.
 
 The JSON is written by hand so that JLWInterop needs no JSON dependency.
 """
@@ -842,7 +846,12 @@ function write_metadata(path::AbstractString, root::Module = Main)
             e.ret <: Base.Enum &&
                 write(io, "      \"return_enum\": ", _json_str(String(nameof(e.ret))), ",\n")
         end
-        write(io, "      \"doc\": ", _json_str(e.doc), "\n")
+        write(io, "      \"doc\": ", _json_str(e.doc), ",\n")
+        # Reserved: which targets may consume this entry. Every declaration is
+        # portable today, so every entry is "any"; a consumer filters on it so
+        # that a target-specific declaration can be added without changing the
+        # metadata version. A sidecar written before this field reads as "any".
+        write(io, "      \"target\": \"any\"\n")
         write(io, "    }", i < length(entries) ? "," : "", "\n")
     end
     write(io, "  }\n}\n")
