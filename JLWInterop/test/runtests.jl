@@ -747,10 +747,12 @@ using Test
     end
 
     @testset "COpt" begin
-        @test unwrap(COpt(3.5)) === 3.5
+        @test get(COpt(3.5), nothing) === 3.5
+        @test get(COpt(3.5), 0.0) === 3.5
         o = COpt{Float64}(nothing)
         @test o.has_value == Int32(0) && o.value === 0.0     # zero-filled absent branch
-        @test isnothing(unwrap(o))
+        @test isnothing(get(o, nothing))
+        @test get(o, 0.0) === 0.0
     end
 
     @testset "JLWResult" begin
@@ -1582,8 +1584,8 @@ using Test
         Libc.free(r.value.values)
 
         # Union{Float64,Nothing} travels as COpt in both directions.
-        @test unwrap(Core.eval(m, :(ApiCall_maybe($(COpt(9.0))))).value) == 18.0
-        @test isnothing(unwrap(Core.eval(m, :(ApiCall_maybe($(COpt{Float64}(nothing))))).value))
+        @test get(Core.eval(m, :(ApiCall_maybe($(COpt(9.0))))).value, nothing) == 18.0
+        @test isnothing(get(Core.eval(m, :(ApiCall_maybe($(COpt{Float64}(nothing))))).value, nothing))
 
         # Array argument, plus a keyword that reaches the wrapper as a
         # trailing positional C argument.

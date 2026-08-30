@@ -236,7 +236,7 @@ without a keepalive or release operation.
 
 ```@docs
 COpt
-unwrap
+Base.get(::COpt, ::Any)
 ```
 
 ## Owning carrier returns

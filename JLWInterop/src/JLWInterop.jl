@@ -11,7 +11,7 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
-export CDict, COpt, unwrap
+export CDict, COpt
 export JLWResult
 export @export_release_entrypoints
 export @api
@@ -580,15 +580,15 @@ C-ABI representation of `Union{T,Nothing}`. `has_value` is `1` when the inline
 `value` is present and `0` when it is absent. Absent values are zero-filled.
 
 Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled);
-read back with [`unwrap`](@ref).
+read back with [`get`](@ref Base.get(::COpt, ::Any)).
 
 # Example
 
 ```julia
 using JLWInterop
 
-unwrap(COpt(3.5)) === 3.5
-isnothing(unwrap(COpt{Float64}(nothing)))
+get(COpt(3.5), nothing) === 3.5
+isnothing(get(COpt{Float64}(nothing), nothing))
 ```
 """
 struct COpt{T}
@@ -599,11 +599,13 @@ COpt(x::T) where {T} = COpt{T}(Int32(1), x)
 COpt{T}(::Nothing) where {T} = COpt{T}(Int32(0), zero(T))   # zero-fill keeps the struct isbits
 
 """
-    unwrap(o::COpt{T}) -> Union{T,Nothing}
+    get(o::COpt{T}, default) -> Union{T,typeof(default)}
 
-Convert a [`COpt{T}`](@ref) to `Union{T,Nothing}`.
+Return the value carried by a [`COpt{T}`](@ref), or `default` when it is
+absent. `get(o, nothing)` recovers the `Union{T,Nothing}` the carrier
+represents.
 """
-unwrap(o::COpt{T}) where {T} = o.has_value == Int32(0) ? nothing : o.value
+Base.get(o::COpt, default) = o.has_value == Int32(0) ? default : o.value
 
 include("result.jl")
 include("api.jl")

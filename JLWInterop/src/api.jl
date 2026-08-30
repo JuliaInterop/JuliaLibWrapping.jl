@@ -211,7 +211,7 @@ from_carrier(::Type{Dict{String, V}}, c::CDict{owned, V}) where {owned, V} = Dic
 from_carrier(::Type{A}, c::CArray{owned, T, N}) where {owned, T, N, A <: Array{T, N}} =
     unsafe_wrap(Array, c.data, Int.(Tuple(c.dims)); own = false)
 from_carrier(::Type{StridedArray{T, N}}, c::CArray{:borrowed, T, N}) where {T, N} = c
-from_carrier(::Type{Union{T, Nothing}}, c::COpt{T}) where {T} = unwrap(c)
+from_carrier(::Type{Union{T, Nothing}}, c::COpt{T}) where {T} = get(c, nothing)
 
 # --- @api ----------------------------------------------------------------
 
