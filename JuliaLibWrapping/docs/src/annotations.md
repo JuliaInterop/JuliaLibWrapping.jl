@@ -4,15 +4,11 @@ CurrentModule = JLWInterop
 
 # Annotating a library with `@api`
 
-[`@api`](@ref) generates the `@ccallable` wrapper for you. An author declares
-one call signature of an existing function and gets a C-ABI wrapper under a
-generated symbol plus a build-host registry entry carrying the Python name,
-argument and keyword names, and docstring across to the binding target. The
-macro defines nothing: the function it names must already be callable with
-those types, whether it is defined alongside the declaration or comes from a
-package this layer wraps. Hand-written `@ccallable` wrappers keep working
-alongside `@api` declarations — see [Two ways to write a library](@ref) in
-Concepts.
+[`@api`](@ref) declares a C-ABI wrapper for an existing Julia function. It
+also records the public name, parameters, and docstring for binding targets.
+The named function must already accept the declared types. Hand-written
+`@ccallable` wrappers can coexist with `@api`; see
+[Two ways to write a library](@ref).
 
 What is left for a hand-written `Base.@ccallable` is a signature something
 outside the library dictates: `@api` always returns a [`JLWResult`](@ref) or a
@@ -36,21 +32,12 @@ The declaration expands to two things:
 2. An [`ApiEntry`](@ref) appended to the declaring module's registry, later
    written by [`write_metadata`](@ref) to the `<lib>.jlw.json` sidecar.
 
-The registry is a `Vector{ApiEntry}` the macro declares in the annotated
-module under the reserved name `_JLW_API_REGISTRY_`; do not bind that name to
-anything else. It belongs to that module rather than to JLWInterop so that a
-package carrying `@api` declarations keeps its entries in its own
-precompilation cache — a registry owned by JLWInterop would hold only what the
-current session happened to macro-expand, and a precompiled package's
-declarations would be missing from it. [`api_entries`](@ref) gathers them from
-a module and everything nested under it, which is how [`write_metadata`](@ref)
-finds every declaration in a library whatever module they live in.
+The macro stores entries in a `Vector{ApiEntry}` named
+`_JLW_API_REGISTRY_` in the declaring module. This name is reserved.
+[`api_entries`](@ref) gathers entries from a module and its submodules.
 
-Both outputs are built from the declared signature in one expansion, so they
-cannot disagree. The declared types are the boundary contract, not a method
-signature: `scale` may accept more than this, and foreign callers get exactly
-this. A signature `scale` cannot satisfy surfaces when the library is
-compiled, as a missing method.
+The declared types define the ABI contract; the Julia function may accept a
+broader signature.
 
 ## Writing the signature
 
@@ -60,11 +47,7 @@ compiled, as a missing method.
 @api [docstring] name(a::T1, …; k::K = default, …)::Ret
 ```
 
-A body fails at expansion, in both the `function … end` and the
-`f(x) = …` form, as does a `where` clause. Writing a body would define a
-function, and in a layer that imports the wrapped function by name it would
-add a method to it instead — which recurses when the declared signature is the
-more specific one.
+Bodies and `where` clauses are not supported. Define the function separately.
 
 The docstring is the macro's first argument, on the same line as `@api`. A
 declaration without one falls back to the function's own Julia docstring, so
@@ -72,15 +55,12 @@ documenting the function the ordinary way is usually enough; give the macro an
 argument when foreign callers need something different from what a Julia
 caller reads.
 
-The name a declaration refers to must already be callable with the declared
-types — defined above it, or brought in from the package this layer wraps.
-`@api` checks with `hasmethod` at expansion, so a typo or a signature the
-function cannot serve is an error at that point rather than a missing method
-when the library is compiled.
+The function must be defined or imported before the declaration. `@api`
+checks that it accepts the declared arguments during macro expansion.
 
-The Python name is the Julia function name, so it has to be a legal Python
-identifier. A trailing `!`, the Julia convention for a mutating function, is
-rejected at build time rather than emitted as `def bump!(…)`.
+The public name is the Julia function name. Targets may impose additional
+identifier rules; for example, the Python target rejects a trailing `!`
+rather than emitting `def bump!(…)`.
 
 ## Type table
 
@@ -114,21 +94,18 @@ with each.
 The `Array` argument's zero-copy view is valid only for the duration of the
 call: a function that stores it for later use reads memory the caller may
 have freed or repurposed by then. And because mutation is visible to the
-caller, a caller must not pass a read-only buffer — a NumPy array with
-`writeable=False`, for example — to a function that mutates its argument.
+caller, a caller must not pass read-only storage to a function that mutates
+its argument. For example, this excludes a NumPy array with `writeable=False`.
 
-A `Ptr{T}` is the one row that carries nothing but the address: no length, no
-element count, no ownership. The library reads and writes through it on the
-caller's terms, and the caller keeps the memory alive for the duration of the
-call. `Vector{T}` is the row to reach for when the length should travel with
-the buffer.
+A `Ptr{T}` carries only an address. The caller must keep its memory alive for
+the call. Use `Vector{T}` when the length must cross the boundary.
 
 Returning a `Ptr{T}` is allowed and puts the contract entirely in your hands.
 The address must still be one the caller can reach after the call returns —
 a pointer into a buffer it passed in, or into storage the library keeps. A
 pointer into a fresh Julia allocation dangles once the collector runs, and one
-into `Libc.malloc` memory leaks, because nothing on the Python side knows how
-to free it. Return an `Array` when the caller should own the buffer: it gets a
+into `Libc.malloc` memory leaks unless the target provides a matching release
+contract. Return an `Array` when the caller should own the buffer: it gets a
 length and a release path.
 
 The [`examples/boundary`](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JuliaLibWrapping/examples/boundary)
@@ -160,35 +137,27 @@ end
 @api "Widen an extent by `by` on both sides." widen(e::Extent, by::Int32)::Extent
 ```
 
-The three methods must be defined before the `@api` that uses the type:
-`@api` resolves the signature at expansion time. The struct must also be
-`isbits`, as `Extent` is: a `mutable struct`, or one with a `String` or
-`Vector` field, is rejected at expansion, because the error branch constructs
-a zero-filled carrier. `Extent` then behaves like
-any other row of the table — the wrapper is
-`Base.@ccallable Boundary_widen(e::Extent, by::Int32)::JLWResult{Extent}`,
-and the Python side gets a `ctypes.Structure` with the struct's fields:
+Define these methods before the `@api` declaration. The carrier must be
+`isbits` because the error branch constructs a zero-filled value. The wrapper
+is `Base.@ccallable Boundary_widen(e::Extent, by::Int32)::JLWResult{Extent}`,
+and targets can expose its fields directly. For example, the Python target
+generates a `ctypes.Structure`:
 
 ```python
 wide = widen(Extent(1, 5), 2)   # wide.lo == -1, wide.hi == 7
 ```
 
-A carrier must be an `isbits` type. On the error branch the wrapper returns a
-zero-filled carrier alongside the status, and zeroing a type with heap
-references would produce a value Julia cannot hold.
-
-Neither a `Ptr` nor a registered struct is converted on the Python side: the
-façade passes what `ctypes` gives it straight through. What the annotation
-still buys is the rest of `@api` — the Python name, the keyword arguments,
-the docstring, and the `JLWResult` error boundary.
+Targets may pass a `Ptr` or registered struct through without conversion. The
+current Python façade does so for `ctypes` values while still applying the
+declared name, keyword arguments, docstring, and `JLWResult` error handling.
 
 ## Keyword arguments
 
-A trailing `; k::K = default, …` block becomes Python keyword-only
-parameters, in declaration order, appended after the positional C arguments.
-A keyword with a default is optional in Python and keeps that default; one
-without a default is required keyword-only, and omitting it raises
-`TypeError`.
+A trailing `; k::K = default, …` block is appended to the positional C
+arguments in declaration order. The metadata retains the positional/keyword
+split and defaults so each target can express them in its own calling
+conventions. For example, the Python target emits keyword-only parameters; a
+keyword without a default is required.
 
 Defaults must be literals: `Int`, `Float`, `Bool`, `String`, or `nothing`
 (a negated numeric literal such as `-1` or `-1.5` is accepted too). Anything
@@ -223,21 +192,18 @@ becomes a [`JLWResult`](@ref) whose `status.code` names the exception type:
 | 4 | `InexactError` | `"InexactError"` |
 | 5 | `BoundsError` | `"BoundsError"` |
 
-A message is read only from a field already known to hold a `String` or a
-`SubString{String}`: the wrapper runs inside the trimmed library, where
-converting an `AbstractString` is a dynamic call the build rejects. Anything
-else — an unrecognized exception, or a recognized one whose `msg` holds some
-other `AbstractString` — reports its type name, which needs no conversion.
+A recognized `String` or `SubString{String}` message is preserved. Other
+message types and unrecognized exceptions report the exception type name.
 
 The declared return type is applied to the returned value *inside* the
 `try`, so a function whose actual return type differs from the declaration
 reports that as an ordinary error rather than failing in the wrapper's own
 return conversion, which the `catch` cannot reach.
 
-On the Python side, a non-zero `status.code` raises `JLWError` (a
-`RuntimeError` subclass carrying `.code` and `.message`); see
-[Error handling across the ABI](@ref) for the `JLWStatus` convention that
-`JLWResult` builds on.
+Targets decide how to report a non-zero `status.code`. The Python target
+raises `JLWError`, a `RuntimeError` subclass carrying `.code` and `.message`.
+See [Error handling across the ABI](@ref) for the underlying `JLWStatus`
+convention.
 
 ```julia
 boom(x::Int64) = error("boom $x")
@@ -257,8 +223,8 @@ except JLWError as e:
 The generated C symbol is `join(fullname(mod), "_") * "_" * name`, with a
 leading `Main` component stripped. `A.B.f` and `C.B.f` therefore produce
 distinct symbols (`A_B_f`, `C_B_f`) even though `nameof` alone would
-collide. The Python name is `name`, unqualified — it comes from the sidecar,
-not the C symbol.
+collide. The sidecar also stores the unqualified public `name`, allowing a
+target to expose it instead of the C symbol.
 
 ## Where the declarations live
 
@@ -330,18 +296,18 @@ Omitting it fails the build:
 cannot wrap `@api` entrypoint 'Boundary_upcase_strs': owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
 ```
 
-The Python emitter cannot call a release symbol the library does not export,
-and re-exporting the raw binding instead would quietly cost the function the
-Python name, keyword arguments and docstring `@api` was asked for.
+A target cannot automate ownership without the required release symbols. The
+current Python target treats their absence as a build error for `@api`
+entries rather than discarding the declared interface.
 
-A hand-written `@ccallable` never appears in the sidecar, so it has none of
-those to lose. It is re-exported with a `TODO` comment naming the macro:
+A hand-written `@ccallable` never appears in the sidecar, so the Python target
+instead re-exports it with a `TODO` comment naming the macro:
 
 ```python
 from ._lowlevel import Boundary_upcase_strs  # TODO: hand-wrap — owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library
 ```
 
-## Build flow
+## Python target example
 
 ```julia
 result = build_library(
@@ -357,10 +323,6 @@ Python target, which merges both by C symbol and writes `_facade.py`. A
 symbol present in the ABI JSON with no sidecar entry falls back to the
 mechanical, unnamed wrapping every entrypoint gets without `@api`.
 
-The sidecar subprocess and `juliac` run independently and never see each
-other's output; the Python target is the only place the two files come
-together.
-
 Both of them execute the entry file's top level, in two separate processes,
 so that top level must be safe to run twice: it may define modules,
 functions and constants, but not do work whose repetition would be wrong,
@@ -372,7 +334,7 @@ After changing an `@api` signature, delete `_facade.py` and rerun; otherwise
 the old wrapper keeps calling the regenerated `_lowlevel` with the old
 argument list.
 
-## Call path
+### Call path
 
 ```julia
 scale(a::Vector{Float64}; factor::Float64 = 2.0) = factor .* a

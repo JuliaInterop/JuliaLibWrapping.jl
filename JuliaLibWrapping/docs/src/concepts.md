@@ -35,8 +35,8 @@ always returns a `JLWResult` or a `JLWStatus`.
 [`JLWInterop.@api`](@ref) generates the same kind of wrapper from a declared
 call signature of an ordinary Julia function: the C symbol, the argument and
 return conversions, and `JLWResult` error reporting all come from the declared
-signature, and the wrapper's Python name, keyword arguments, and docstring
-reach the binding target through a metadata sidecar. The declaration defines
+signature, and the wrapper's public name, keyword arguments, and docstring
+reach binding targets through a metadata sidecar. The declaration defines
 nothing itself, so it can sit in a binding layer around a package it does not
 own. See [Annotating a library with `@api`](@ref) for the type table and
 rules. The two styles coexist in one library.
