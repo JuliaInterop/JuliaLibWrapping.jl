@@ -912,6 +912,7 @@ using Test
         @test esc("a\\b") == "\"a\\\\b\""
         @test esc("a\nb\rc\td") == "\"a\\nb\\rc\\td\""
         @test esc("a\x01b") == "\"a\\u0001b\""
+        @test esc("a\0b") == "\"a\\u0000b\""   # embedded NUL, never a raw byte
 
         # More than a docstring and a signature.
         m = Module(:ApiTestArity)
