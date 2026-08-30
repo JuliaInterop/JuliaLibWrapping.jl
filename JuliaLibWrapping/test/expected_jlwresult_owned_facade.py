@@ -1,4 +1,4 @@
-"""mylib_py idiomatic façade.
+"""jlwresult_owned_demo idiomatic façade.
 
 This file is generated **once** by JuliaLibWrapping as a starter
 façade. Functions whose arguments and return are all recognized
@@ -14,27 +14,30 @@ The mechanical bindings live in `_lowlevel.py` and are regenerated
 on every `write_wrapper` call.
 """
 from . import _lowlevel  # noqa: F401
-import numpy as np  # noqa: F401
 
 from ._lowlevel import (
-    CVector_borrowed_Float64,
-    CVector_owned_Float64,
-    CString_borrowed,
     CString_owned,
+    CDict_owned_Float64,
     JLWStatus,
-    JLWResult_CVector_owned_Float64,
+    JLWResult_CString_owned,
+    JLWResult_CDict_owned_Float64,
     JLWError,
 )
 
-def scale(x, *, factor=2.0, label):
-    """Scale every entry."""
-    _x = CVector_borrowed_Float64.from_numpy(x)
-    _label = CString_borrowed.from_str(label)
-    _r = _lowlevel.mylib_scale(_x, factor, _label)
+def greet():
+    _r = _lowlevel.greet()
     try:
-        _out = np.array(_r.value.as_numpy(), copy=True)
+        _out = _r.value.as_str()
     finally:
         _r.value.free()
     return _out
 
-__all__ = ["CVector_borrowed_Float64", "CVector_owned_Float64", "CString_borrowed", "CString_owned", "JLWStatus", "JLWResult_CVector_owned_Float64", "JLWError", "scale"]
+def tally():
+    _r = _lowlevel.tally()
+    try:
+        _out = _r.value.as_dict()
+    finally:
+        _r.value.free()
+    return _out
+
+__all__ = ["CString_owned", "CDict_owned_Float64", "JLWStatus", "JLWResult_CString_owned", "JLWResult_CDict_owned_Float64", "JLWError", "greet", "tally"]

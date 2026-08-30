@@ -54,6 +54,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 # Forward declarations for recursive types
 class CTree_Float64(ctypes.Structure):
     pass
@@ -87,28 +96,33 @@ class CVector_borrowed_Float32(ctypes.Structure):
     def as_numpy(self):
         """Return a 1-D numpy view of the underlying buffer (no copy)."""
         return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
+_check_layout(CVector_borrowed_Float32, 16, (0, 8))
 
 class CVectorPair_Float32(ctypes.Structure):
     _fields_ = [
         ("from_", CVector_borrowed_Float32),
         ("to", CVector_borrowed_Float32),
     ]
+_check_layout(CVectorPair_Float32, 32, (0, 16))
 
 class MyTwoVec(ctypes.Structure):
     _fields_ = [
         ("x", ctypes.c_int32),
         ("y", ctypes.c_int32),
     ]
+_check_layout(MyTwoVec, 8, (0, 4))
 
 class CVector_borrowed_CTree_Float64(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int64 * 1)),
         ("data", ctypes.POINTER(CTree_Float64)),
     ]
+_check_layout(CVector_borrowed_CTree_Float64, 16, (0, 8))
 
 CTree_Float64._fields_ = [
     ("children", CVector_borrowed_CTree_Float64),
 ]
+_check_layout(CTree_Float64, 16, (0,))
 
 _lib.tree_size.argtypes = [CTree_Float64]
 _lib.tree_size.restype = ctypes.c_int64

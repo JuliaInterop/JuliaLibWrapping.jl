@@ -1,0 +1,161 @@
+{
+  "_comment": "JLWResult wrapping the non-CArray owning payloads: one @ccallable returning JLWResult{CString{:owned}} and one returning JLWResult{CDict{:owned, Float64}}, plus the macro-emitted jlw_free/jlw_free_strings release entrypoints so both inner unwraps are :auto. Offsets probed from the real JLWInterop layout: sizeof(JLWStatus)=260, value at offset 264 in both results, sizeof 280 (CString payload) and 288 (CDict payload). The facade must raise via _lowlevel on a failed status and, on success, convert the payload (as_str / as_dict) then free it in a finally: the CString with jlw_free, the CDict's keys with jlw_free_strings and its values buffer with jlw_free.",
+  "types": [
+    {
+      "kind": "array",
+      "name": "NTuple{256, UInt8}",
+      "id": 1,
+      "element_type_id": 2,
+      "count": 256,
+      "size": 256,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 2,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 3,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "JLWStatus",
+      "id": 4,
+      "size": 260,
+      "fields": [
+        { "name": "code", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 3 },
+        { "name": "message", "isptr": false, "offset": 4, "isfieldatomic": false, "type_id": 1 }
+      ],
+      "alignment": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 5,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "primitive",
+      "name": "Float64",
+      "id": 6,
+      "size": 8,
+      "bits": 64,
+      "signed": false,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 7,
+      "pointee_type_id": 2
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 8,
+      "size": 16,
+      "fields": [
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 5 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 7 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 9,
+      "pointee_type_id": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Float64}",
+      "id": 10,
+      "pointee_type_id": 6
+    },
+    {
+      "kind": "struct",
+      "name": "CDict{:owned, Float64}",
+      "id": 11,
+      "size": 24,
+      "fields": [
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 5 },
+        { "name": "keys", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 9 },
+        { "name": "values", "isptr": false, "offset": 16, "isfieldatomic": false, "type_id": 10 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{CString{:owned}}",
+      "id": 12,
+      "size": 280,
+      "fields": [
+        { "name": "status", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 4 },
+        { "name": "value", "isptr": false, "offset": 264, "isfieldatomic": false, "type_id": 8 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{CDict{:owned, Float64}}",
+      "id": 13,
+      "size": 288,
+      "fields": [
+        { "name": "status", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 4 },
+        { "name": "value", "isptr": false, "offset": 264, "isfieldatomic": false, "type_id": 11 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 14,
+      "pointee_type_id": null
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 12 },
+      "name": "greet()",
+      "arguments": [],
+      "symbol": "greet"
+    },
+    {
+      "returns": { "type_id": 13 },
+      "name": "tally()",
+      "arguments": [],
+      "symbol": "tally"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 14 }
+      ],
+      "symbol": "jlw_free"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 9 },
+        { "name": "n", "type_id": 5 }
+      ],
+      "symbol": "jlw_free_strings"
+    }
+  ]
+}

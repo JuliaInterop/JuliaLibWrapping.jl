@@ -54,6 +54,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 class CArray_borrowed_Float64_3(ctypes.Structure):
     _fields_ = [
         ("dims", (ctypes.c_int64 * 3)),
@@ -92,6 +101,7 @@ class CArray_borrowed_Float64_3(ctypes.Structure):
         # `.T` reverses all axes, yielding a view with the natural Fortran-order
         # shape and strides.
         return np.ctypeslib.as_array(self.data, shape=tuple(self.dims)[::-1]).T
+_check_layout(CArray_borrowed_Float64_3, 32, (0, 24))
 
 _lib.sum3d.argtypes = [CArray_borrowed_Float64_3]
 _lib.sum3d.restype = ctypes.c_double

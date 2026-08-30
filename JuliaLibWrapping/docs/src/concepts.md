@@ -35,8 +35,8 @@ always returns a `JLWResult` or a `JLWStatus`.
 [`JLWInterop.@api`](@ref) generates the same kind of wrapper from a declared
 call signature of an ordinary Julia function: the C symbol, the argument and
 return conversions, and `JLWResult` error reporting all come from the declared
-signature, and the wrapper's Python name, keyword arguments, and docstring
-reach the binding target through a metadata sidecar. The declaration defines
+signature, and the wrapper's public name, keyword arguments, and docstring
+reach binding targets through a metadata sidecar. The declaration defines
 nothing itself, so it can sit in a binding layer around a package it does not
 own. See [Annotating a library with `@api`](@ref) for the type table and
 rules. The two styles coexist in one library.
@@ -126,7 +126,11 @@ package directory:
 
 - `_lowlevel.py` — the mechanical `ctypes` bindings: `Structure`
   subclasses and functions carrying the raw C signature. **Always
-  regenerated** on every `write_wrapper` call.
+  regenerated** on every `write_wrapper` call. Each `Structure` class is
+  followed by a layout check comparing the size and field offsets ctypes
+  computed against the ones the library was compiled with (from the ABI
+  JSON); a divergence raises at import instead of silently misreading
+  fields.
 - `_facade.py` — the package's public API. JuliaLibWrapping creates this
   file only if it does not exist. Its initial version wraps entrypoints whose
   arguments and return are recognized — primitive scalars,

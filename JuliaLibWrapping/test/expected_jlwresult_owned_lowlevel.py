@@ -3,11 +3,10 @@ import ctypes
 import os
 import sys
 import pathlib
-import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_LIBRARY_BASENAME = "libcarrayownednofree"
-_LIBRARY_ENV_VAR = "CARRAY_OWNED_NOFREE_DEMO_LIBRARY"
+_LIBRARY_BASENAME = "libjlwresultowned"
+_LIBRARY_ENV_VAR = "JLWRESULT_OWNED_DEMO_LIBRARY"
 
 def _resolve_library_path():
     override = os.environ.get(_LIBRARY_ENV_VAR)
@@ -54,6 +53,13 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+class JLWError(RuntimeError):
+    """Raised when a wrapped function returns a non-zero JLWStatus.code."""
+    def __init__(self, code, message):
+        super().__init__(f"[{code}] {message}")
+        self.code = code
+        self.message = message
+
 def _check_layout(cls, size, offsets):
     actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
     if actual != (size, *offsets):
@@ -88,43 +94,100 @@ class CString_owned(ctypes.Structure):
         `data` field rather than a Python attribute: reading a struct field
         nested in a result yields a fresh wrapper each time, so a flag set on the
         wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `data` and resets the other fields; an accessor
+        called afterwards sees the null and raises RuntimeError rather than
+        reading the released memory or returning an empty result.
 
         For callers who bypass the façade's convert-then-free wrapper and talk
         to `_lowlevel` directly."""
         if not self.data:
             return
-        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
+        _lib.jlw_free(ctypes.cast(self.data, ctypes.c_void_p))
+        self.data = type(self.data)()
+        self.length = 0
 _check_layout(CString_owned, 16, (0, 8))
 
-class CVector_owned_Float64(ctypes.Structure):
+class CDict_owned_Float64(ctypes.Structure):
     _fields_ = [
-        ("dims", (ctypes.c_int64 * 1)),
-        ("data", ctypes.POINTER(ctypes.c_double)),
+        ("length", ctypes.c_int64),
+        ("keys", ctypes.POINTER(CString_owned)),
+        ("values", ctypes.POINTER(ctypes.c_double)),
     ]
 
-    def as_numpy(self):
-        """Return a 1-D numpy view of the underlying buffer (no copy)."""
-        if not self.data:
-            raise RuntimeError("CVector_owned_Float64 has already been freed")
-        return np.ctypeslib.as_array(self.data, shape=(self.dims[0],))
+    def as_dict(self):
+        if not self.keys:
+            raise RuntimeError("CDict_owned_Float64 has already been freed")
+        out = {}
+        for i in range(self.length):
+            e = self.keys[i]
+            k = ctypes.string_at(e.data, e.length).decode("utf-8")
+            out[k] = self.values[i]
+        return out
 
     def free(self):
-        """Free the Julia-allocated buffer.
+        """Free the Julia-allocated buffers.
 
         Idempotent: a second call is a no-op. The guard is this struct's own
-        `data` field rather than a Python attribute: reading a struct field
+        `keys` field rather than a Python attribute: reading a struct field
         nested in a result yields a fresh wrapper each time, so a flag set on the
         wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `keys` and resets the other fields; an accessor
+        called afterwards sees the null and raises RuntimeError rather than
+        reading the released memory or returning an empty result.
 
         For callers who bypass the façade's convert-then-free wrapper and talk
         to `_lowlevel` directly."""
-        if not self.data:
+        if not self.keys:
             return
-        raise RuntimeError("this library does not export release entrypoints; add JLWInterop.@export_release_entrypoints to the library")
-_check_layout(CVector_owned_Float64, 16, (0, 8))
+        _lib.jlw_free_strings(self.keys, self.length)
+        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
+        self.keys = type(self.keys)()
+        self.values = type(self.values)()
+        self.length = 0
+_check_layout(CDict_owned_Float64, 24, (0, 8, 16))
 
-_lib.give_vec.argtypes = []
-_lib.give_vec.restype = CVector_owned_Float64
-def give_vec():
-    return _lib.give_vec()
+class JLWStatus(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_int32),
+        ("message", (ctypes.c_uint8 * 256)),
+    ]
+_check_layout(JLWStatus, 260, (0, 4))
+
+class JLWResult_CString_owned(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CString_owned),
+    ]
+_check_layout(JLWResult_CString_owned, 280, (0, 264))
+
+class JLWResult_CDict_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CDict_owned_Float64),
+    ]
+_check_layout(JLWResult_CDict_owned_Float64, 288, (0, 264))
+
+_lib.greet.argtypes = []
+_lib.greet.restype = JLWResult_CString_owned
+def greet():
+    _result = _lib.greet()
+    if _result.status.code != 0:
+        _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
+        raise JLWError(_result.status.code, _msg)
+    return _result
+
+_lib.tally.argtypes = []
+_lib.tally.restype = JLWResult_CDict_owned_Float64
+def tally():
+    _result = _lib.tally()
+    if _result.status.code != 0:
+        _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
+        raise JLWError(_result.status.code, _msg)
+    return _result
+
+_lib.jlw_free.argtypes = [ctypes.c_void_p]
+_lib.jlw_free.restype = None
+
+_lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString_owned), ctypes.c_int64]
+_lib.jlw_free_strings.restype = None
 

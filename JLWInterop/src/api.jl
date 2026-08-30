@@ -1,11 +1,8 @@
 """
     ApiEntry
 
-One `@api`-annotated function's metadata: the wrapped function's `name`, its
-generated C `symbol` (which encodes the defining module, see
-[`_api_symbol`](@ref)), positional `args`/keyword `kwargs`
-(`(name, type)` / `(name, type, has_default, default)` tuples), return type
-`ret`, and `doc`string.
+Metadata for an `@api` declaration: its Julia `name`, C `symbol`, positional
+`args`, keyword `kwargs`, return type `ret`, and `doc`string.
 
 A keyword's `default` is the literal value itself, already of type `type`;
 `has_default` is `false` for a required keyword, and its `default` is then
@@ -23,23 +20,14 @@ end
 """
     JLWInterop._JLW_API_REGISTRY_
 
-The name of the per-module registry vector [`@api`](@ref) declares and appends
-to: a `Vector{ApiEntry}` holding every entry declared in that module. It lives
-in the annotated module rather than here so that it is written to that
-module's precompilation cache; a registry owned by JLWInterop would be
-populated only by running macro expansion, and a precompiled package's entries
-would be missing from every later session.
-
-The name is reserved: a module may not bind it to anything else.
+Reserved name for each module's `Vector{ApiEntry}` registry.
 """
 const _REGISTRY_NAME = :_JLW_API_REGISTRY_
 
 """
     _register!(registry::Vector{ApiEntry}, e::ApiEntry)
 
-Append `e` to a module's registry, rejecting a symbol already registered
-there. [`_api_symbol`](@ref) encodes the declaring module, so two modules
-cannot collide and one registry is the whole scope of the check.
+Append `e`, rejecting duplicate symbols.
 """
 function _register!(registry::Vector{ApiEntry}, e::ApiEntry)
     for existing in registry
@@ -103,17 +91,9 @@ const _API_SCALARS = Union{
 """
     carrier_type(::Type{T}) -> Union{Type, Nothing}
 
-The C-ABI carrier type for `T` **as an argument**, or `nothing` if `T` has no
-carrier mapping. An argument borrows the caller's storage, so every carrier
-that states ownership in its type takes `:borrowed` here. See
-[`carrier_return_type`](@ref) for the return position, where a freshly
-allocated carrier is `:owned`.
-
-A dictionary value, an optional payload and an array element must be a
-scalar (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Bool`): the
-carrier holds them as raw bytes behind a pointer,
-which is only sound for bits types. `Vector{String}` is the exception, and
-has its own carrier that copies each element.
+The C-ABI argument carrier for `T`, or `nothing` when no mapping exists.
+Storage-backed argument carriers are borrowed. Dictionary values, optional
+payloads, and array elements must be concrete scalar bits types.
 
 A `Ptr{T}` is its own carrier and crosses unconverted: neither a length nor
 an owner travels with it. An argument addresses memory the caller owns. A
@@ -122,13 +102,6 @@ already reach — a buffer it passed in, or storage the library holds onto. A
 pointer into a fresh Julia allocation dangles as soon as the collector runs;
 one into `Libc.malloc` memory leaks, because nothing on the far side knows to
 free it.
-
-`_API_SCALARS` is itself a `Union`, so a union *of* scalars satisfies
-`T <: _API_SCALARS`. A carrier holds its payload as raw bytes at a known
-size, which a union cannot supply, and `CArray`/`CDict` are `isbits`
-whatever their parameter is — so the later `isbitstype` check on the carrier
-cannot catch it. Every method below therefore demands a concrete payload
-explicitly and returns `nothing` otherwise.
 
 The mapping is open. A type outside this table becomes an `@api` type once
 its own module adds methods for it to `carrier_type`, [`to_carrier`](@ref)
@@ -154,16 +127,8 @@ carrier_type(::Type) = nothing
 """
     carrier_return_type(::Type{T}) -> Union{Type, Nothing}
 
-The C-ABI carrier type for `T` **as a return value**. The same as
-[`carrier_type`](@ref) except for the carriers that state ownership in their
-type: an argument borrows the caller's buffer, while a return is a fresh
-Julia allocation the consumer must release, so it is `:owned`. A `String`
-return is one of these — its bytes are copied into a [`CString`](@ref) the
-consumer frees — whereas a `String` argument borrows the caller's.
-`Vector{String}` needs its own method: the `Array` method below is the more
-specific signature and would otherwise shadow its [`CStrArray`](@ref)
-carrier. The concrete-payload demand is the same as in
-[`carrier_type`](@ref).
+The C-ABI return carrier for `T`. Storage-backed return carriers are owned;
+other mappings match [`carrier_type`](@ref).
 """
 carrier_return_type(::Type{String}) = CString{:owned}
 carrier_return_type(::Type{Vector{String}}) = CStrArray{:owned}
@@ -176,11 +141,7 @@ carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 """
     _api_opt_inner(T::Type) -> Union{Type, Nothing}
 
-`T` for an optional `Union{T,Nothing}` type, or `nothing` if `T` is not such a
-union. Used at macro-expansion time to pick the return-conversion call
-([`to_carrier`](@ref) vs [`to_carrier_opt`](@ref)). It avoids the
-`Type{Union{T,Nothing}} where T` dispatch pattern, which also matches bare
-`Nothing` (see [`carrier_type`](@ref)).
+Return the payload type of `Union{T,Nothing}`, or `nothing` for other types.
 """
 function _api_opt_inner(T::Type)
     T isa Union || return nothing
@@ -217,19 +178,14 @@ to_carrier_opt(::Type{T}, ::Nothing) where {T} = COpt{T}(nothing)
 """
     _api_as(::Type{T}, x) -> T
 
-`convert(T, x)::T`, called inside an `@api` wrapper's `try` block on the
-declared return type. A function whose actual return type differs from the
-declared one fails here, where the wrapper reports it as a `jlw_error`,
-rather than in the wrapper's own return conversion, which is outside the
-`try` and would abort the library.
+Convert `x` to the declared return type inside the wrapper's error boundary.
 """
 _api_as(::Type{T}, x) where {T} = convert(T, x)::T
 
 """
     to_carrier_as(::Type{T}, x) -> carrier
 
-[`to_carrier`](@ref) of `x` converted to the declared return type `T` first.
-See [`_api_as`](@ref).
+Convert `x` to `T`, then to its carrier.
 """
 to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
 
@@ -280,6 +236,10 @@ end
 
 # One positional argument `a::T` -> (name::Symbol, type_expr).
 function _parse_api_arg(a)
+    a isa Expr && a.head === :... && error(
+        "@api: varargs `$a` are not supported; a C entry point has a fixed " *
+            "arity, so declare each argument by name"
+    )
     a isa Expr && a.head === :(::) && length(a.args) == 2 ||
         error("@api: positional arguments must be annotated, got `$a`")
     argname = a.args[1]
@@ -290,6 +250,10 @@ end
 # One keyword argument `k::K` or `k::K = default`.
 # -> (name, type_expr, has_default::Bool, default_expr)
 function _parse_api_kwarg(k)
+    k isa Expr && k.head === :... && error(
+        "@api: varargs `$k` are not supported; a C entry point has a fixed " *
+            "arity, so declare each keyword by name"
+    )
     if k isa Expr && k.head === :kw
         lhs, default, has_default = k.args[1], k.args[2], true
     else
@@ -326,17 +290,17 @@ _api_default_value(x) = x
 function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String, texpr)
     T = Core.eval(__module__, texpr)
     T isa Type || error("@api $__module__.$fname: `$label` is not a type")
+    return _api_carrier_or_error(__module__, fname, label, T)
+end
+
+function _api_carrier_or_error(__module__::Module, fname::Symbol, label::String, T::Type)
     C = label == "return" ? carrier_return_type(T) : carrier_type(T)
     isnothing(C) &&
         error(
         label == "return" ? "@api $__module__.$fname: return type $T has no carrier mapping" :
             "@api $__module__.$fname: argument '$label' of type $T has no carrier mapping",
     )
-    # A wrapper whose body throws returns a zero-filled carrier, which
-    # `_zero_carrier` can build only for an `isbits` type. Rejecting the
-    # carrier here turns what would otherwise be a throw from inside the
-    # wrapper's `catch` — fatal in a trimmed library, and reachable only on the
-    # error path — into a macro-expansion error.
+    # The error path constructs a zero-filled carrier.
     isbitstype(C) || error(
         (
             label == "return" ? "@api $__module__.$fname: return type $T" :
@@ -395,32 +359,8 @@ const _API_ERROR_TABLE = (
 
 An expression evaluating to `(code, message)` for the exception bound to `e`.
 
-This has to be inlined code rather than a function the wrapper calls: `catch`
-binds `e` as `Any`, so `_api_status(e)` would be a dynamic dispatch, and the
-wrapper runs inside the trimmed library where that is a build failure. The
-same rule shapes what each branch may do — a message is read only once `isa`
-has narrowed it to a concrete string type, because `String(x)` and `string(x)`
-are equally dynamic when `x` is an `AbstractString`. `nameof(typeof(e))` needs
-no narrowing, `typeof(e)` being concrete at the call.
-
-The generated code is one `isa` chain over [`_API_ERROR_TABLE`](@ref) ending
-in the unrecognized case:
-
-    let code::Int32 = 1, msg::String = "error"
-        if e isa Base.ErrorException
-            code = 1
-            field = e.msg
-            field isa String && (msg = field)          # plus SubString
-        elseif e isa Base.ArgumentError
-            ...
-        else
-            msg = String(string(nameof(typeof(e))))
-        end
-        (code, msg)
-    end
-
-`e` is the caller's own name for the caught exception; every other name is a
-`gensym`, so the result can be spliced into any scope that binds `e`.
+The generated `isa` chain avoids dynamic dispatch in trimmed libraries. `e`
+names the caught exception; all temporary bindings are generated symbols.
 """
 function _api_status_expr(e::Symbol)
     code, msg = gensym(:code), gensym(:msg)
@@ -433,6 +373,11 @@ function _api_status_expr(e::Symbol)
                 $msg = $field
             elseif $field isa SubString{String}
                 $msg = String($field)
+            else
+                # Some other AbstractString: converting it would be a dynamic
+                # call, so fall back to the type name like the unrecognized
+                # case.
+                $name_the_type
             end
         end
     end
@@ -463,9 +408,7 @@ it under any signature, or `""` when it has none. A docstring written on the
 function rather than on a method is filed under no signature, which is why the
 lookup falls back.
 
-Reads `Base.Docs.meta` directly, rather than calling `Base.Docs.doc`, whose
-entry points differ across the Julia versions JLWInterop supports. Neither
-call here throws for an undocumented binding: both return an empty table.
+Uses `Base.Docs.meta` for compatibility across supported Julia versions.
 """
 function _julia_docstring(mod::Module, name::Symbol, sig::Type)
     b = Base.Docs.Binding(mod, name)
@@ -575,7 +518,7 @@ macro api(args...)
     ret_type isa Type || error("@api $__module__.$name: `return` is not a type")
     is_void = ret_type === Nothing
     ret_opt_inner = is_void ? nothing : _api_opt_inner(ret_type)
-    ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_expr))
+    ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_type))
     symbol = _api_symbol(__module__, name)
 
     # Two declarations of one name would claim one C symbol, and the second

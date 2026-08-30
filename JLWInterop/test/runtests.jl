@@ -667,7 +667,8 @@ using Test
         @test e.ret === Float64
         @test e.doc == "Double it."
 
-        # String maps to CString as an argument; as a return it is rejected.
+        # String maps to CString as an argument (the return direction is
+        # covered by "@api String argument borrows, String return owns").
         m2 = Module(:ApiTestB)
         Core.eval(m2, :(using JLWInterop))
         Core.eval(
@@ -683,14 +684,9 @@ using Test
             )
         )
         @test only(JLWInterop.api_entries(m2)).args == [(:s, String)]
-        @test_throws LoadError Core.eval(
-            m2, :(
-                JLWInterop.@api bad(s::String)::String
-            )
-        )
 
         # An unsupported type is rejected with the argument name in the message.
-        @test_throws LoadError Core.eval(
+        @test_throws "argument 'd' of type Dict{Int64, Int64} has no carrier mapping" Core.eval(
             m2, :(
                 JLWInterop.@api nope(d::Dict{Int, Int})::Int64
             )
@@ -713,7 +709,7 @@ using Test
 
         m = Module(:ApiTestJ)
         Core.eval(m, :(using JLWInterop))
-        @test_throws LoadError Core.eval(
+        @test_throws "argument 'a' of type Matrix{String} has no carrier mapping" Core.eval(
             m, :(
                 JLWInterop.@api nonbits(a::Matrix{String})::Int64
             )
@@ -742,12 +738,12 @@ using Test
         m = Module(:ApiTestUnion)
         Core.eval(m, :(using JLWInterop))
         Core.eval(m, :(const U = Union{Int64, Float64}))
-        @test_throws LoadError Core.eval(
+        @test_throws "argument 'a' of type Vector{Union{Float64, Int64}} has no carrier mapping" Core.eval(
             m, :(
                 JLWInterop.@api unionarg(a::Vector{U})::Int64
             )
         )
-        @test_throws LoadError Core.eval(
+        @test_throws "return type Vector{Union{Float64, Int64}} has no carrier mapping" Core.eval(
             m, :(
                 JLWInterop.@api unionret(n::Int64)::Vector{U}
             )
@@ -843,6 +839,15 @@ using Test
             @test err isa LoadError
             @test occursin("does not define a function", err.error.msg)
         end
+
+        # Varargs in either position: a C entry point has a fixed arity, so
+        # the message names varargs rather than a missing annotation.
+        @test_throws "varargs `xs::Int64...` are not supported" Core.eval(
+            m, :(JLWInterop.@api vararg(xs::Int64...)::Int64)
+        )
+        @test_throws "varargs `kwargs...` are not supported" Core.eval(
+            m, :(JLWInterop.@api kwsplat(x::Int64; kwargs...)::Int64)
+        )
     end
 
     @testset "@api rejects a name it cannot call" begin
@@ -907,6 +912,7 @@ using Test
         @test esc("a\\b") == "\"a\\\\b\""
         @test esc("a\nb\rc\td") == "\"a\\nb\\rc\\td\""
         @test esc("a\x01b") == "\"a\\u0001b\""
+        @test esc("a\0b") == "\"a\\u0000b\""   # embedded NUL, never a raw byte
 
         # More than a docstring and a signature.
         m = Module(:ApiTestArity)
@@ -924,6 +930,11 @@ using Test
         end
         @test err isa LoadError
         @test occursin("[docstring] f(args...)::Ret", err.error.msg)
+
+        # A docstring argument with interpolation reaches the macro as an
+        # Expr, not a String, and is rejected by name.
+        interp = Meta.parse("JLWInterop.@api \"doc \$x\" twice(x::Float64)::Float64")
+        @test_throws "the docstring argument must be a string literal" Core.eval(m, interp)
     end
 
     @testset "@api helper predicates" begin
@@ -1012,6 +1023,15 @@ using Test
         r = Core.eval(m, :(ApiTestSubStr_sliced(1)))
         @test r.status.code == JLWInterop._API_ERROR_CODES.generic
         @test status_message(r.status) == "tail end"
+
+        # Any other AbstractString in `msg` cannot be converted trim-safely,
+        # so the wrapper reports the exception's type name instead.
+        gs = Test.GenericString("odd")
+        Core.eval(m, :(exotic(x::Int64) = throw(ErrorException($gs))))
+        Core.eval(m, :(JLWInterop.@api exotic(x::Int64)::Int64))
+        r = Core.eval(m, :(ApiTestSubStr_exotic(1)))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.generic
+        @test status_message(r.status) == "ErrorException"
     end
 
     @testset "@api applies the declared return type" begin
@@ -1027,10 +1047,12 @@ using Test
             m, quote
                 narrower(n::Int64) = Float32[1.5f0, 2.5f0][1:n]
                 fractional(x::Float64) = x / 2
+                flat(x::Float64) = [x]
             end
         )
         Core.eval(m, :(JLWInterop.@api narrower(n::Int64)::Vector{Float64}))
         Core.eval(m, :(JLWInterop.@api fractional(x::Float64)::Int64))
+        Core.eval(m, :(JLWInterop.@api flat(x::Float64)::Matrix{Float64}))
 
         # A `Vector{Float32}` return converts to the declared `Vector{Float64}`.
         r = Core.eval(m, :(ApiTestRetAs_narrower(2)))
@@ -1051,6 +1073,13 @@ using Test
         r = Core.eval(m, :(ApiTestRetAs_fractional(4.0)))
         @test iszero(r.status.code)
         @test r.value === Int64(2)
+
+        # A shape the declared type has no conversion for is also caught
+        # inside the `try`, reported by the exception's type name.
+        r = Core.eval(m, :(ApiTestRetAs_flat(1.0)))
+        @test r.status.code == JLWInterop._API_ERROR_CODES.generic
+        @test iszero(r.value.dims[1]) && iszero(r.value.dims[2])
+        @test status_message(r.status) == "MethodError"
     end
 
     @testset "@api String argument borrows, String return owns" begin
@@ -1210,8 +1239,9 @@ using Test
         @test JLWInterop.carrier_type(Vector{Float64}) === CArray{:borrowed, Float64, 1}
         @test JLWInterop.carrier_return_type(Vector{Float64}) === CArray{:owned, Float64, 1}
         @test JLWInterop.carrier_return_type(Dict{String, Float64}) === CDict{:owned, Float64}
-        # Vector{String} is an Array, so without its own method the CArray
-        # method would shadow its carrier.
+        # The CArray return method excludes a String payload, so without its
+        # own method Vector{String} would fall through to the carrier_type
+        # fallback and come back :borrowed — the wrong ownership for a return.
         @test JLWInterop.carrier_return_type(Vector{String}) === CStrArray{:owned}
         @test last(JLWInterop.api_entries(m)).ret === Nothing
 
@@ -1582,24 +1612,24 @@ using Test
         @test e.args == [(:x, Vector{Float64})]
         @test e.kwargs == [(:factor, Float64, true, 2.0), (:label, String, false, nothing)]
         # non-literal defaults are rejected at expansion
-        @test_throws LoadError Core.eval(
+        @test_throws "keyword 'k' default must be a literal" Core.eval(
             m, :(
                 JLWInterop.@api bad(x::Float64; k::Float64 = sqrt(2))::Float64
             )
         )
         # so is a literal of the wrong type, in either direction
-        @test_throws LoadError Core.eval(
+        @test_throws "keyword 'k' is declared ::Float64 but its default \"oops\" is a String" Core.eval(
             m, :(
                 JLWInterop.@api wrongtype(x::Float64; k::Float64 = "oops")::Float64
             )
         )
-        @test_throws LoadError Core.eval(
+        @test_throws "keyword 'k' is declared ::Float64 but its default 2 is a Int64" Core.eval(
             m, :(
                 JLWInterop.@api narrowing(x::Float64; k::Float64 = 2)::Float64
             )
         )
         # A second @api method of the same function would claim the same C symbol.
-        @test_throws LoadError Core.eval(
+        @test_throws "'ApiTestD_scale' is already an API entry point" Core.eval(
             m, :(
                 JLWInterop.@api scale(x::Float64)::Float64
             )

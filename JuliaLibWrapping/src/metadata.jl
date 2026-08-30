@@ -32,9 +32,9 @@ on:
 - an argument-count mismatch: `length(args) + length(kwargs)` vs. the ABI
   entrypoint's argument count;
 - an argument-name mismatch: `[args…; kwarg names…]` against the ABI
-  entrypoint's argument names, elementwise. The Python emitter zips the two
-  lists positionally, so a difference in either name or order would silently
-  mislabel arguments.
+  entrypoint's argument names, elementwise. Targets associate the lists
+  positionally, so a difference in either name or order would mislabel
+  arguments.
 """
 function check_metadata_consistency(abi_info::ABIInfo, meta::AbstractDict)
     (; entrypoints) = abi_info

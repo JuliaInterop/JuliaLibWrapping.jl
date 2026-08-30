@@ -1051,6 +1051,21 @@ function _write_bindings(
         println(f)
     end
 
+    if any(t isa StructDesc for t in values(typeinfo))
+        # Each emitted class is followed by a `_check_layout` call comparing
+        # what ctypes computed against the layout the library was compiled
+        # with; a divergence would otherwise misread every field silently.
+        println(f, "def _check_layout(cls, size, offsets):")
+        println(f, "    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))")
+        println(f, "    if actual != (size, *offsets):")
+        println(f, "        raise RuntimeError(")
+        println(f, "            f\"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the \"")
+        println(f, "            f\"library was compiled with {(size, *offsets)}; the generated \"")
+        println(f, "            \"bindings do not match this platform's ABI\"")
+        println(f, "        )")
+        println(f)
+    end
+
     # Forward declarations: emit empty Structure subclasses for any recursive
     # type that the dependency sort could not place.
     if !isempty(forward_declared)
@@ -1117,6 +1132,11 @@ function _write_bindings(
                 _write_copt_helpers(f, coinfo)
             end
         end
+        offs = join((string(fld.offset) for fld in type.fields), ", ")
+        println(
+            f, "_check_layout(", name, ", ", type.size, ", (", offs,
+            length(type.fields) == 1 ? ",))" : "))"
+        )
         println(f)
     end
 
@@ -1448,32 +1468,10 @@ _ret_adds_value(ret) = ret.kind === :jlwresult_unwrap || ret.kind in (
     _facade_plan(method, typeinfo, typedict, release_present, api_entry) -> NamedTuple
 
 Decide whether an entrypoint should be auto-wrapped on the façade.
-`release_present` is [`_release_symbols_present`](@ref)'s verdict for the
-surrounding library, threaded through to [`_facade_classify_return`](@ref).
-`api_entry` is the sidecar entry for this symbol,
-`get(api_metadata, method.symbol, nothing)`, or `nothing` when there is no
-sidecar. Returns `(category, reason, args, ret, uses_numpy, api_entry)`.
-
-A function whose symbol has a sidecar entry is auto-wrapped (category
-`:api_auto`) whenever every argument and return classifies as a recognized
-form: the sidecar's name and kwargs split are what the wrapping adds, even
-for an otherwise primitive-only signature. The entry also sets `pass_opaque`
-on the classifiers, so a raw pointer or a struct outside the emitter's
-vocabulary crosses as it stands rather than degrading the whole function. If
-an argument or the return still classifies as `:opaque` — an owning carrier
-in a library that exports no release entrypoints, or a carrier whose payload
-type this emitter cannot wrap — this throws rather than dropping the
-annotation's name, kwargs and docstring; the message carries the
-classification's own reason, naming the macro to add or the carrier to
-hand-wrap.
-
-Without a sidecar entry, a function is auto-wrapped (category `:auto`) only
-when every argument and return classifies as a recognized form *and* the
-wrapping adds something — it converts a vocabulary type, strips a
-discardable `JLWStatus`, or unwraps a `JLWResult`; an `:opaque` argument or
-return degrades it to a mechanical re-export carrying a `TODO` comment.
-Primitive-in/primitive-out functions with no sidecar entry are left as
-straight re-exports (`:passthrough`).
+Returns `(category, reason, args, ret, uses_numpy, api_entry)`. An `@api`
+entry is wrapped under its declared interface or rejected if a carrier cannot
+be handled. Other entrypoints use automatic conversion when useful and fall
+back to a re-export for opaque signatures.
 """
 function _facade_plan(
         method::MethodDesc,
@@ -1482,10 +1480,7 @@ function _facade_plan(
         release_present::Bool,
         api_entry = nothing
     )
-    # A sidecar entry means the author wrote this signature for these
-    # bindings, so a raw pointer or a library-registered struct in it crosses
-    # the façade unconverted. A hand-written entrypoint's signature can be
-    # dictated from outside, so it keeps degrading to a mechanical re-export.
+    # Pass pointers and registered structs through for declared APIs.
     pass_opaque = !isnothing(api_entry)
     arg_classes = [
         _facade_classify_arg(a, typeinfo, typedict; pass_opaque) for a in method.args
@@ -1493,9 +1488,7 @@ function _facade_plan(
     for (i, c) in enumerate(arg_classes)
         if c.kind === :opaque
             reason = "`" * method.args[i].name * "`: " * c.reason
-            # Same rule as the return below: degrading an `@api` entrypoint
-            # would silently drop the Python name, keyword arguments and
-            # docstring the annotation asked for, so it is a build error.
+            # A fallback would discard the declared Python interface.
             isnothing(api_entry) || error(
                 "cannot wrap `@api` entrypoint '", method.symbol, "': ", reason
             )
@@ -1508,13 +1501,7 @@ function _facade_plan(
     end
     ret = _facade_classify_return(method, typeinfo, typedict, release_present; pass_opaque)
     if ret.kind === :opaque
-        # An `@api` return the façade cannot unwrap is a build error, not a
-        # degradation: falling back would silently drop the Python name,
-        # keyword arguments and docstring the annotation asked for. The only
-        # way an `@api` return reaches here is an owning carrier in a library
-        # with no release entrypoints, so `reason` names the macro to add. A
-        # hand-written `Base.@ccallable` has no sidecar entry and still
-        # degrades to a mechanical re-export.
+        # A fallback would discard an `@api` entry's declared Python interface.
         isnothing(api_entry) || error(
             "cannot wrap `@api` entrypoint '", method.symbol, "': ", ret.reason
         )
@@ -1550,11 +1537,8 @@ end
 """
     _facade_arg_conversions(f, argnames, arg_classes) -> Vector{String}
 
-Emit one `_<name> = <classname>.from_*(name)` line per non-primitive
-argument, converting each vocabulary-typed argument to its lowlevel struct
-counterpart. Returns the expressions to pass positionally into the
-`_lowlevel` call, in argument order: the converted local for a vocabulary
-type, the bare name for a primitive.
+Emit conversions for non-primitive arguments and return the low-level call
+arguments.
 """
 function _facade_arg_conversions(f::IO, argnames::Vector{String}, arg_classes)
     call_args = String[]
@@ -1589,14 +1573,8 @@ end
 """
     _emit_value_unwrap(f, root, kind)
 
-Emit the body that converts `root` — a CArray/CString/CStrArray/CDict/COpt
-low-level struct value — to its idiomatic Python representation, freeing an
-owning buffer in a `finally`. `root` is the Python expression holding the
-value: `"_result"` for a bare vocabulary-typed return, `"_r.value"` for a
-[`JLWInterop.JLWResult`](@ref)'s payload (see
-[`_emit_facade_return_body`](@ref)). `kind` is one of the value kinds
-[`_classify_return_type`](@ref) returns; any other kind throws, so a
-classification with no emitter cannot produce a body that returns nothing.
+Emit conversion of the low-level value `root` to Python, releasing owned
+storage in a `finally` block.
 """
 function _emit_value_unwrap(f::IO, root::AbstractString, kind::Symbol)
     if kind === :passthrough
@@ -1618,8 +1596,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, kind::Symbol)
         # nothing to release.
         println(f, "    return ", root, ".as_str()")
     elseif kind === :cstring_unwrap
-        # Decode to a Python `str` first (a real copy, independent of the
-        # buffer), THEN free `data` via `jlw_free` in `finally`.
+        # Copy before releasing the buffer.
         println(f, "    try:")
         println(f, "        _out = ", root, ".as_str()")
         println(f, "    finally:")
@@ -1630,9 +1607,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, kind::Symbol)
         # nothing to release.
         println(f, "    return ", root, ".as_list()")
     elseif kind === :cstrarray_unwrap
-        # Convert to the idiomatic `list[str]` first (a real copy,
-        # independent of the buffer), THEN free `data` via `jlw_free_strings`
-        # in `finally`.
+        # Copy before releasing the buffer.
         println(f, "    try:")
         println(f, "        _out = ", root, ".as_list()")
         println(f, "    finally:")
@@ -1641,16 +1616,14 @@ function _emit_value_unwrap(f::IO, root::AbstractString, kind::Symbol)
     elseif kind === :cdict_convert
         println(f, "    return ", root, ".as_dict()")
     elseif kind === :cdict_unwrap
-        # `keys` and `values` are two SEPARATE buffers: convert to `dict`
-        # first, then free both (`.free()` releases `keys` via
-        # `jlw_free_strings` AND `values` via `jlw_free`) in `finally`.
+        # Copy before releasing the key and value buffers.
         println(f, "    try:")
         println(f, "        _out = ", root, ".as_dict()")
         println(f, "    finally:")
         println(f, "        ", root, ".free()")
         println(f, "    return _out")
     elseif kind === :copt_unwrap
-        # COpt is by-value (no heap allocation) — unwrap only, no free.
+        # COpt is stored by value.
         println(f, "    return ", root, ".as_optional()")
     else
         error("unhandled return kind $kind")
@@ -1661,14 +1634,8 @@ end
 """
     _emit_facade_return_body(f, call, ret)
 
-Emit the façade wrapper's return handling for `call`, the
-`_lowlevel.<symbol>(...)` expression built from the converted arguments,
-classified as `ret` (a [`_classify_return_type`](@ref) result).
-`:passthrough` and `:jlwstatus_discard` return or discard `call` directly.
-`:jlwresult_unwrap` binds `_r = call`, raises `JLWError` on a non-zero
-`_r.status.code`, then delegates to [`_emit_value_unwrap`](@ref) for
-`ret.inner`, rooted at `_r.value`. Every other kind binds `_result = call`
-and delegates to `_emit_value_unwrap`.
+Emit return handling for the low-level expression `call` and classification
+`ret`.
 """
 function _emit_facade_return_body(f::IO, call::AbstractString, ret)
     if ret.kind === :passthrough
@@ -1678,12 +1645,9 @@ function _emit_facade_return_body(f::IO, call::AbstractString, ret)
         # façade discards the status struct and returns `None`.
         println(f, "    ", call)
     elseif ret.kind === :jlwresult_unwrap
+        # `_lowlevel` already raises JLWError on a non-zero status, so only
+        # the value needs unwrapping here.
         println(f, "    _r = ", call)
-        println(f, "    if _r.status.code != 0:")
-        println(
-            f, "        raise JLWError(_r.status.code, bytes(_r.status.message)",
-            ".rstrip(b\"\\x00\").decode(\"utf-8\", errors=\"replace\"))"
-        )
         _emit_value_unwrap(f, "_r.value", ret.inner.kind)
     else
         println(f, "    _result = ", call)
@@ -1695,12 +1659,7 @@ end
 """
     _emit_facade_autowrapper(f, method, plan)
 
-Emit a mechanically-classified façade wrapper (`plan.category === :auto`):
-`def <symbol>(<argnames>):`, the argument conversions from
-[`_facade_arg_conversions`](@ref), and the return body from
-[`_emit_facade_return_body`](@ref) called on `plan.ret`. The counterpart for
-an entrypoint with an `@api` metadata sidecar entry is
-[`_emit_facade_api_autowrapper`](@ref).
+Emit an automatically classified façade wrapper.
 """
 function _emit_facade_autowrapper(f::IO, method::MethodDesc, plan)
     arg_names_seen = Set{String}()
@@ -1747,6 +1706,16 @@ function _emit_facade_api_autowrapper(f::IO, method::MethodDesc, plan)
     pos_names = String[String(n) for n in entry["args"]]
     kw_specs = entry["kwargs"]
     declared = vcat(pos_names, String[String(kw["name"]) for kw in kw_specs])
+    # Positional and keyword arguments share one Python signature, so a name
+    # declared twice in the sidecar is an authoring error, not something to
+    # rename silently (the keyword's name is what callers must type).
+    if !allunique(declared)
+        dup = first(n for n in declared if count(==(n), declared) > 1)
+        error(
+            "`$(entry["name"])` ('$(method.symbol)') declares the argument " *
+                "name '$dup' more than once; rename one of them"
+        )
+    end
     seen = Set{String}()
     argnames = String[sanitize_python_argname(n, seen) for n in declared]
     npos = length(pos_names)

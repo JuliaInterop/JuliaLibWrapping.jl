@@ -53,6 +53,15 @@ if _jlw_loaded and _jlw_this_pkg not in _jlw_loaded:
     )
 _jlw_loaded.add(_jlw_this_pkg)
 
+def _check_layout(cls, size, offsets):
+    actual = (ctypes.sizeof(cls), *(getattr(cls, name).offset for name, _ in cls._fields_))
+    if actual != (size, *offsets):
+        raise RuntimeError(
+            f"{cls.__name__}: ctypes computed (size, *offsets) {actual}, but the "
+            f"library was compiled with {(size, *offsets)}; the generated "
+            "bindings do not match this platform's ABI"
+        )
+
 class COpt_Float64(ctypes.Structure):
     _fields_ = [
         ("has_value", ctypes.c_int32),
@@ -67,6 +76,7 @@ class COpt_Float64(ctypes.Structure):
 
     def as_optional(self):
         return None if self.has_value == 0 else self.value
+_check_layout(COpt_Float64, 16, (0, 8))
 
 _lib.take_opt.argtypes = [COpt_Float64]
 _lib.take_opt.restype = ctypes.c_double

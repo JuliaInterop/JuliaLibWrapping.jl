@@ -35,12 +35,11 @@ runs a subprocess, before the `juliac` step, that includes `entry` and calls
 positional and keyword arguments, and docstring to `<libname>.jlw.json` in
 `libdir`. Once `juliac` has run, [`check_metadata_consistency`](@ref)
 validates the sidecar against the ABI JSON: an unknown symbol or an
-argument mismatch is a build error. The
-validated sidecar is then passed as `write_wrapper`'s `api_metadata` keyword
-to every [`PythonTarget`](@ref) in `targets`, whose façade uses `@api`'s
-Python names, keyword arguments, and docstrings. An entry file that defines
-no `@api` functions produces no sidecar, and every target emits as it would
-without one.
+argument mismatch is a build error. Targets can use the validated metadata's
+public names, keyword arguments, and docstrings. The current
+[`PythonTarget`](@ref) receives it as `write_wrapper`'s `api_metadata` keyword.
+An entry file that defines no `@api` functions produces no sidecar, and every
+target emits as it would without one.
 
 # Example
 
