@@ -607,6 +607,49 @@ represents.
 """
 Base.get(o::COpt, default) = o.has_value == Int32(0) ? default : o.value
 
+"""
+    JLWInterop._CTUPLE_MAX_ARITY
+
+The largest tuple arity with a carrier. Raising it costs one struct per
+arity; a declaration returning a wider tuple is rejected with the macro's
+usual "no carrier mapping" error.
+"""
+const _CTUPLE_MAX_ARITY = 8
+
+# `CTuple2{A,B}` … `CTuple8{…}`: the carrier for a tuple return, one struct per
+# arity with fields `v1`…`vN`.
+#
+# The fields are named rather than a wrapped `Tuple` because the ABI exporter
+# renders a struct's fields with `String(fieldname(T, i))`, and `fieldname` on a
+# tuple returns an integer. A wrapped tuple would also render two ways: a
+# homogeneous one is emitted as an array, a mixed one as a struct.
+for n in 2:_CTUPLE_MAX_ARITY
+    name = Symbol("CTuple", n)
+    params = [Symbol("T", i) for i in 1:n]
+    fields = [:($(Symbol("v", i))::$(params[i])) for i in 1:n]
+    @eval begin
+        struct $name{$(params...)}
+            $(fields...)
+        end
+        @doc """
+            $($name){$($(join(string.(params), ", ")))}
+
+        Carrier for a $($n)-element tuple return: one field per element,
+        named `v1`…`v$($n)`, each holding that element's own carrier.
+        """ $name
+        export $name
+    end
+end
+
+"""
+    JLWInterop._ctuple_type(n::Int) -> UnionAll
+
+The carrier struct for a tuple of arity `n`, or `nothing` when `n` is outside
+`2:_CTUPLE_MAX_ARITY`.
+"""
+_ctuple_type(n::Int) =
+    2 <= n <= _CTUPLE_MAX_ARITY ? getfield(@__MODULE__, Symbol("CTuple", n)) : nothing
+
 include("result.jl")
 include("api.jl")
 

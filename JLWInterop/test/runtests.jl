@@ -2125,4 +2125,26 @@ using Test
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
     end
+
+    @testset "CTupleN carriers" begin
+        # Named fields, not a wrapped Julia Tuple: `fieldname` on a tuple
+        # returns an integer, which the ABI exporter cannot render.
+        @test fieldnames(CTuple2{Int64, Float64}) === (:v1, :v2)
+        @test fieldnames(CTuple3{Int64, Float64, Bool}) === (:v1, :v2, :v3)
+        @test String(fieldname(CTuple2{Int64, Float64}, 1)) == "v1"
+
+        t = CTuple2{Int64, Float64}(3, 2.5)
+        @test t.v1 === Int64(3)
+        @test t.v2 === 2.5
+
+        # A tuple of carriers is isbits, so the generic `_zero_carrier`
+        # fallback works and `jlw_error` can build a failure value.
+        C = CTuple2{CVector{:owned, Float64}, Int64}
+        @test isbitstype(C)
+        z = JLWInterop._zero_carrier(C)
+        @test z.v1.data === Ptr{Float64}(C_NULL)
+        @test z.v2 === Int64(0)
+        @test JLWInterop._ctuple_type(2) === CTuple2
+        @test JLWInterop._ctuple_type(8) === CTuple8
+    end
 end
