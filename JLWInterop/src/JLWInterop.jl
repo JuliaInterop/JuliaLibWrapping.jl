@@ -580,7 +580,7 @@ C-ABI representation of `Union{T,Nothing}`. `has_value` is `1` when the inline
 `value` is present and `0` when it is absent. Absent values are zero-filled.
 
 Construct with `COpt(x)` (present) or `COpt{T}(nothing)` (absent, zero-filled);
-read back with [`get`](@ref Base.get(::COpt, ::Any)).
+read back with `Base.get(opt, default)`.
 
 # Example
 

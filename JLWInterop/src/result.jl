@@ -21,7 +21,7 @@ jlw_ok(value::C) where {C} = JLWResult{C}(jlw_ok(), value)
     jlw_error(code::Integer, msg::AbstractString, ::Type{C}) -> JLWResult{C}
 
 Wrap a failure: `status` is `jlw_error(code, msg)` and `value` is a
-zero-filled `C` (see [`JLWInterop._zero_carrier`](@ref)) with a null pointer.
+zero-filled `C` (via the private `JLWInterop._zero_carrier` helper) with a null pointer.
 """
 jlw_error(code::Integer, msg::AbstractString, ::Type{C}) where {C} =
     JLWResult{C}(jlw_error(code, msg), _zero_carrier(C))

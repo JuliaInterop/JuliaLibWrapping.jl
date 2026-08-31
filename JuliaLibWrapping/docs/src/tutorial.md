@@ -2,10 +2,25 @@
 CurrentModule = JuliaLibWrapping
 ```
 
-# Tutorial: wrap an OLS regression library
+# Tutorial: design a custom OLS ABI
 
-This tutorial builds `examples/ols/`, installs its generated Python package,
-and calls it with NumPy arrays.
+This advanced tutorial designs a hand-written C ABI for `examples/ols/`,
+installs its generated Python package, and customizes the façade. Start with
+[Your first wrapper](@ref) if you want JuliaLibWrapping to derive the boundary
+from ordinary Julia signatures with `@api`.
+
+Hand-written entrypoints are appropriate here because the example deliberately
+uses caller-allocated output buffers, an application-specific result struct,
+and a custom scikit-learn-style Python interface. These are policy choices an
+ABI generator should not guess.
+
+## Hand-written ABI entrypoints
+
+A hand-written entrypoint exposes its declared carrier types directly. The
+author is responsible for conversions, ownership, error statuses, and the
+foreign-language interface, while JuliaLibWrapping supplies the mechanical C
+and Python bindings. Read [JLWInterop carriers](@ref) and [Manual error status
+handling](@ref) before designing such a boundary.
 
 The subject is ordinary least squares (OLS) regression, which exercises several
 [JLWInterop](https://github.com/JuliaInterop/JuliaLibWrapping.jl/tree/main/JLWInterop)
@@ -67,8 +82,7 @@ Errors travel back as a `JLWStatus`,
 either returned directly (`predict`, `summary_report`) or embedded in
 a return struct (`fit`'s `FitResult`). The Python emitter recognizes
 both forms and translates a non-zero `code` into a
-`JLWError` exception — see [Error handling](@ref "Error handling
-across the ABI").
+`JLWError` exception — see [Manual error status handling](@ref).
 
 ## 2. The entry `Project.toml`
 
@@ -84,7 +98,7 @@ JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
 [compat]
-JLWInterop = "0.1"
+JLWInterop = "0.2"
 julia = "1.13"
 ```
 
@@ -120,7 +134,7 @@ JuliaLibWrapping = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
 
 [compat]
 JuliaC = "0.3"
-JuliaLibWrapping = "0.1"
+JuliaLibWrapping = "0.2"
 julia = "1.13"
 ```
 
@@ -176,7 +190,7 @@ After a successful build, `out/` contains:
 
 `bundle = true` is essential for a `pip install` user who has no
 Julia on their machine. See the bundling section of the
-[overview](@ref "Bundling for distribution") for what is in the bundle
+[distribution guide](@ref "Bundling for distribution") for what is in the bundle
 tree and how the loader finds `libjulia` from inside the wheel.
 
 ## 4. Install the Python package
@@ -229,7 +243,7 @@ except JLWError as e:
 The expected `out` is `array([2.04, 4.02, 6., 7.98, 9.96])`, followed by the
 error message.
 
-`np.asfortranarray` is required for any `CMatrix{owned,T}` argument: JLWInterop's
+`np.asfortranarray` is required for any `CMatrix{:borrowed,T}` argument: JLWInterop's
 `CArray` is column-major, and the automatically created façade rejects a
 row-major view rather than silently transposing. You can edit the wrapper to
 accept a different interface.
