@@ -1795,7 +1795,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
             println(f, "    return _out")
         end
     else
-        error("unhandled return kind $(ret.kind)")
+        error("unhandled return kind $kind")
     end
     return nothing
 end
