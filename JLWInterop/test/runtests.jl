@@ -2074,9 +2074,11 @@ using Test
         # byte-identical to what it produced before enum support existed.
         m2 = Module(:ApiEnumNone)
         Core.eval(m2, :(using JLWInterop))
-        Core.eval(m2, quote
-            twice(x::Float64) = 2x
-        end)
+        Core.eval(
+            m2, quote
+                twice(x::Float64) = 2x
+            end
+        )
         Core.eval(m2, :(JLWInterop.@api twice(x::Float64)::Float64))
         mktempdir() do dir
             p = joinpath(dir, "none.jlw.json")
@@ -2092,16 +2094,26 @@ using Test
         # `enums` table, keyed by name — an error, not a silent merge.
         m3 = Module(:ApiEnumCollide)
         Core.eval(m3, :(using JLWInterop))
-        Core.eval(m3, :(module A
-            @enum PenaltyKind::Int32 a = 0
-        end))
-        Core.eval(m3, :(module B
-            @enum PenaltyKind::Int32 b = 0
-        end))
-        Core.eval(m3, quote
-            f(x::A.PenaltyKind) = x
-            g(x::B.PenaltyKind) = x
-        end)
+        Core.eval(
+            m3, :(
+                module A
+                @enum PenaltyKind::Int32 a = 0
+                end
+            )
+        )
+        Core.eval(
+            m3, :(
+                module B
+                @enum PenaltyKind::Int32 b = 0
+                end
+            )
+        )
+        Core.eval(
+            m3, quote
+                f(x::A.PenaltyKind) = x
+                g(x::B.PenaltyKind) = x
+            end
+        )
         Core.eval(m3, :(JLWInterop.@api f(x::A.PenaltyKind)::A.PenaltyKind))
         Core.eval(m3, :(JLWInterop.@api g(x::B.PenaltyKind)::B.PenaltyKind))
         mktempdir() do dir
@@ -2126,35 +2138,31 @@ using Test
         Core.eval(m, :(jlw_free($p)))
     end
 
-    @testset "CTupleN carriers" begin
-        # Named fields, not a wrapped Julia Tuple: `fieldname` on a tuple
-        # returns an integer, which the ABI exporter cannot render.
-        @test fieldnames(CTuple2{Int64, Float64}) === (:v1, :v2)
-        @test fieldnames(CTuple3{Int64, Float64, Bool}) === (:v1, :v2, :v3)
-        @test String(fieldname(CTuple2{Int64, Float64}, 1)) == "v1"
-
-        t = CTuple2{Int64, Float64}(3, 2.5)
-        @test t.v1 === Int64(3)
-        @test t.v2 === 2.5
+    @testset "CNTuple carrier" begin
+        t = CNTuple((Int64(3), 2.5))
+        @test t isa CNTuple{2, Tuple{Int64, Float64}}
+        @test t.values === (Int64(3), 2.5)
 
         # A tuple of carriers is isbits, so the generic `_zero_carrier`
         # fallback works and `jlw_error` can build a failure value.
-        C = CTuple2{CVector{:owned, Float64}, Int64}
+        C = CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
         @test isbitstype(C)
         z = JLWInterop._zero_carrier(C)
-        @test z.v1.data === Ptr{Float64}(C_NULL)
-        @test z.v2 === Int64(0)
-        @test JLWInterop._ctuple_type(2) === CTuple2
-        @test JLWInterop._ctuple_type(8) === CTuple8
+        @test z.values[1].data === Ptr{Float64}(C_NULL)
+        @test z.values[2] === Int64(0)
+
+        # Arity is a parameter, so any width works without a new type.
+        wide = CNTuple(ntuple(i -> Int64(i), 12))
+        @test wide isa CNTuple{12, NTuple{12, Int64}}
     end
 
-    @testset "tuple returns map onto CTupleN" begin
+    @testset "tuple returns map onto CNTuple" begin
         @test JLWInterop.carrier_return_type(Tuple{Float64, Int64}) ===
-            CTuple2{Float64, Int64}
+            CNTuple{2, Tuple{Float64, Int64}}
         @test JLWInterop.carrier_return_type(Tuple{Vector{Float64}, Int64}) ===
-            CTuple2{CVector{:owned, Float64}, Int64}
+            CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
         @test JLWInterop.carrier_return_type(Tuple{String, Vector{String}}) ===
-            CTuple2{CString{:owned}, CStrArray{:owned}}
+            CNTuple{2, Tuple{CString{:owned}, CStrArray{:owned}}}
 
         # Tuples are return-only: the argument direction still has no mapping.
         @test isnothing(JLWInterop.carrier_type(Tuple{Float64, Int64}))
@@ -2163,23 +2171,18 @@ using Test
         # macro reports its usual error instead of building a broken carrier.
         @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64, Function}))
 
-        # Outside the supported arity range.
+        # A one-element tuple is not a multiple return.
         @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64}))
-        @test isnothing(
-            JLWInterop.carrier_return_type(
-                Tuple{Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64}
-            )
-        )
 
         # `to_carrier` builds the carrier element-wise.
         c = JLWInterop.to_carrier((2.5, Int64(7)))
-        @test c === CTuple2{Float64, Int64}(2.5, Int64(7))
+        @test c === CNTuple{2, Tuple{Float64, Int64}}((2.5, Int64(7)))
 
         c2 = JLWInterop.to_carrier(([1.0, 2.0], Int64(2)))
-        @test c2 isa CTuple2{CVector{:owned, Float64}, Int64}
-        @test collect(c2.v1) == [1.0, 2.0]
-        @test c2.v2 === Int64(2)
-        Libc.free(c2.v1.data)
+        @test c2 isa CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
+        @test collect(c2.values[1]) == [1.0, 2.0]
+        @test c2.values[2] === Int64(2)
+        Libc.free(c2.values[1].data)
     end
 
     @testset "@api tuple return end to end" begin
@@ -2207,17 +2210,17 @@ using Test
             arg = CVector{:borrowed, Float64}((Int32(3),), pointer(buf))
             r = Core.eval(m, :(ApiTestTuple_stats($arg)))
             @test iszero(r.status.code)
-            @test collect(r.value.v1) == [2.0, 4.0, 6.0]
-            @test r.value.v2 === Int64(3)
-            Libc.free(r.value.v1.data)
+            @test collect(r.value.values[1]) == [2.0, 4.0, 6.0]
+            @test r.value.values[2] === Int64(3)
+            Libc.free(r.value.values[1].data)
 
             # On the error path every element is zeroed, so releasing is a
             # no-op and nothing dangles.
             rb = Core.eval(m, :(ApiTestTuple_bad($arg)))
             @test rb.status.code == JLWInterop._API_ERROR_CODES.generic
             @test status_message(rb.status) == "no stats"
-            @test rb.value.v1.data === Ptr{Float64}(C_NULL)
-            @test rb.value.v2 === Int64(0)
+            @test rb.value.values[1].data === Ptr{Float64}(C_NULL)
+            @test rb.value.values[2] === Int64(0)
         end
     end
 

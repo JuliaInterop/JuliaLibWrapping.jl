@@ -1405,13 +1405,13 @@ return is one of:
   separate allocations).
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
-- `(kind=:ctuple_unwrap, elements=…, classname=…)` — a `CTupleN` return,
-  recognized via [`ctuple_struct_info`](@ref): a Python tuple built by
+- `(kind=:ctuple_unwrap, elements=…, accessors=…, classname=…)` — a `CNTuple`
+  return, recognized via [`ctuple_struct_info`](@ref): a Python tuple built by
   converting each element by its own kind, then releasing the owning ones in
   a `finally`. `elements` is this same classification applied to each element
-  type, in field order. An element that is `:opaque`, or whose kind has no
-  tuple-element conversion (a nested tuple, say), makes the whole return
-  `:opaque`.
+  type, in tuple order, and `accessors` the attribute path reaching each one.
+  An element that is `:opaque`, or whose kind has no tuple-element conversion
+  (a nested tuple, say), makes the whole return `:opaque`.
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out. Also returned in place of
   `:carray_unwrap`/`:cstring_unwrap`/`:cstrarray_unwrap`/`:cdict_unwrap` when
@@ -1499,6 +1499,7 @@ function _classify_return_type(
             end
             return (
                 kind = :ctuple_unwrap, elements = elements,
+                accessors = _ctuple_accessors(ctinfo),
                 classname = typedict[type_id],
             )
         elseif !isnothing(method) && !isnothing(_python_status_path(method, typeinfo))
@@ -1777,8 +1778,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
         println(f, "    _v = ", root)
         parts = String[]
         for (i, el) in pairs(ret.elements)
-            field = "_v.v" * string(i)
-            push!(parts, _ctuple_element_expr(field, el))
+            push!(parts, _ctuple_element_expr("_v." * ret.accessors[i], el))
         end
         tuple_expr = "(" * join(parts, ", ") * ",)"
         owning = [i for (i, el) in pairs(ret.elements) if el.kind in _CTUPLE_OWNING_KINDS]
@@ -1790,7 +1790,7 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
             println(f, "        _out = ", tuple_expr)
             println(f, "    finally:")
             for i in owning
-                println(f, "        _v.v", i, ".free()")
+                println(f, "        _v.", ret.accessors[i], ".free()")
             end
             println(f, "    return _out")
         end
@@ -1798,6 +1798,15 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
         error("unhandled return kind $kind")
     end
     return nothing
+end
+
+# The attribute path from a `CNTuple` object to each of its elements. Named
+# fields are reached by name, an inline array by position.
+function _ctuple_accessors(ctinfo)
+    isnothing(ctinfo.element_fields) &&
+        return ["values[" * string(i - 1) * "]" for i in 1:ctinfo.arity]
+    seen = Set{String}()
+    return ["values." * sanitize_python_argname(n, seen) for n in ctinfo.element_fields]
 end
 
 # The element kinds `_ctuple_element_expr` can convert. A tuple with an element
