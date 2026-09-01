@@ -147,24 +147,52 @@ class CVector_owned_Float64(ctypes.Structure):
         self.dims = type(self.dims)()
 _check_layout(CVector_owned_Float64, 16, (0, 8))
 
-class CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):
+class Tuple_CVector_owned_Float64_Int64(ctypes.Structure):
     _fields_ = [
-        ("v1", CVector_owned_Float64),
-        ("v2", ctypes.c_int64),
+        ("_1", CVector_owned_Float64),
+        ("_2", ctypes.c_int64),
     ]
-_check_layout(CTuple2_CVector_owned_Float64_Int64, 24, (0, 16))
+_check_layout(Tuple_CVector_owned_Float64_Int64, 24, (0, 16))
 
-class JLWResult_CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):
+class CNTuple_2_Tuple_CVector_owned_Float64_Int64(ctypes.Structure):
+    _fields_ = [
+        ("values", Tuple_CVector_owned_Float64_Int64),
+    ]
+_check_layout(CNTuple_2_Tuple_CVector_owned_Float64_Int64, 24, (0,))
+
+class JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64(ctypes.Structure):
     _fields_ = [
         ("status", JLWStatus),
-        ("value", CTuple2_CVector_owned_Float64_Int64),
+        ("value", CNTuple_2_Tuple_CVector_owned_Float64_Int64),
     ]
-_check_layout(JLWResult_CTuple2_CVector_owned_Float64_Int64, 288, (0, 264))
+_check_layout(JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64, 288, (0, 264))
+
+class CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("values", (CVector_owned_Float64 * 2)),
+    ]
+_check_layout(CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64, 32, (0,))
+
+class JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64),
+    ]
+_check_layout(JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64, 296, (0, 264))
 
 _lib.stats.argtypes = []
-_lib.stats.restype = JLWResult_CTuple2_CVector_owned_Float64_Int64
+_lib.stats.restype = JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64
 def stats():
     _result = _lib.stats()
+    if _result.status.code != 0:
+        _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
+        raise JLWError(_result.status.code, _msg)
+    return _result
+
+_lib.pair.argtypes = []
+_lib.pair.restype = JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64
+def pair():
+    _result = _lib.pair()
     if _result.status.code != 0:
         _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
         raise JLWError(_result.status.code, _msg)

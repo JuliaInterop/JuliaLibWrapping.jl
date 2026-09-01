@@ -21,7 +21,7 @@ reinterpreted.
 | `Dict{String,V}` for scalar `V` | `CDict{:borrowed,V}` | `CDict{:owned,V}` | `dict[str, V]` |
 | `Union{T,Nothing}` for scalar `T` | `COpt{T}` | `COpt{T}` | `T \| None` |
 | `Array{T,N}` for scalar `T` | `CArray{:borrowed,T,N}` | `CArray{:owned,T,N}` | `numpy.ndarray` |
-| `Tuple{…}` of 2–8 mapped types (return only) | — | `CTupleN{…}` | `tuple` |
+| `Tuple{…}` of two or more mapped types (return only) | — | `CNTuple{N,T}` | `tuple` |
 | `Nothing` (return only) | — | `JLWStatus` | `None` |
 | `Ptr{T}` | same type, by value | same type, by value | a `ctypes` pointer |
 | concrete `Base.Enum{B}` with scalar base `B` | `B`, validated | `B` | generated `enum.IntEnum` |

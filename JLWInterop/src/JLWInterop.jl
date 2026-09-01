@@ -11,7 +11,7 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
-export CDict, COpt
+export CDict, CNTuple, COpt
 export JLWResult
 export @export_release_entrypoints
 export @api
@@ -608,43 +608,20 @@ represents.
 Base.get(o::COpt, default) = o.has_value == Int32(0) ? default : o.value
 
 """
-    JLWInterop._CTUPLE_MAX_ARITY
+    CNTuple{N,T}
 
-The largest tuple arity with a carrier. A wider tuple return has no carrier
-mapping.
+C-ABI representation of an `N`-element tuple return. `T` is the tuple of the
+elements' own carriers, so each element keeps its own ownership: a
+`CNTuple{2, Tuple{CVector{:owned,Float64}, Int64}}` has one buffer to release
+and one scalar to read.
+
+A tuple has no argument carrier, so there is no borrowed form.
 """
-const _CTUPLE_MAX_ARITY = 8
-
-# The carrier for a tuple return, one struct per arity with fields `v1`…`vN`.
-# The fields must stay named: the ABI exporter renders them with
-# `String(fieldname(T, i))`, which throws on a wrapped `Tuple`, and a
-# homogeneous tuple renders as an array rather than a struct.
-for n in 2:_CTUPLE_MAX_ARITY
-    name = Symbol("CTuple", n)
-    params = [Symbol("T", i) for i in 1:n]
-    fields = [:($(Symbol("v", i))::$(params[i])) for i in 1:n]
-    @eval begin
-        struct $name{$(params...)}
-            $(fields...)
-        end
-        @doc """
-            $($name){$($(join(string.(params), ", ")))}
-
-        Carrier for an $($n)-element tuple return. Each field holds that
-        element's own carrier.
-        """ $name
-        export $name
-    end
+struct CNTuple{N, T <: Tuple}
+    values::T
 end
 
-"""
-    JLWInterop._ctuple_type(n::Int) -> Union{UnionAll, Nothing}
-
-The carrier struct for a tuple of arity `n`, or `nothing` when `n` is outside
-`2:_CTUPLE_MAX_ARITY`.
-"""
-_ctuple_type(n::Int) =
-    2 <= n <= _CTUPLE_MAX_ARITY ? getfield(@__MODULE__, Symbol("CTuple", n)) : nothing
+CNTuple(t::T) where {T <: Tuple} = CNTuple{fieldcount(T), T}(t)
 
 include("result.jl")
 include("api.jl")

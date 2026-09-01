@@ -151,16 +151,15 @@ carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
 carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
 
-# A tuple return composes each element's own return carrier into the carrier
-# for its arity. An unsupported arity, or an element with no mapping, leaves
-# the tuple unmapped.
+# A tuple return composes each element's own return carrier. An element with
+# no mapping, or a tuple of fewer than two elements, leaves it unmapped.
 function carrier_return_type(::Type{T}) where {T <: Tuple}
     isconcretetype(T) || return nothing
-    S = _ctuple_type(fieldcount(T))
-    isnothing(S) && return nothing
+    n = fieldcount(T)
+    n >= 2 || return nothing
     elements = map(carrier_return_type, fieldtypes(T))
     any(isnothing, elements) && return nothing
-    return S{elements...}
+    return CNTuple{n, Tuple{elements...}}
 end
 carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 
@@ -191,12 +190,11 @@ to_carrier(v::Vector{String}) = CStrArray{:owned}(v)
 to_carrier(d::Dict{String, V}) where {V} = CDict{:owned}(d)
 to_carrier(A::AbstractArray) = CArray{:owned}(A)
 
-# One method per arity, so the element calls resolve statically and the
-# conversion stays trim-safe.
-for n in 2:_CTUPLE_MAX_ARITY
-    name = Symbol("CTuple", n)
-    values = [:(to_carrier(t[$i])) for i in 1:n]
-    @eval to_carrier(t::Tuple{Vararg{Any, $n}}) = $name($(values...))
+# `@generated` so the element calls are written out for the concrete tuple
+# type and resolve statically, which is what keeps the conversion trim-safe.
+@generated function to_carrier(t::Tuple)
+    values = [:(to_carrier(t[$i])) for i in 1:fieldcount(t)]
+    return :(CNTuple(($(values...),)))
 end
 
 """

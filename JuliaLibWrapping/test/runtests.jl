@@ -1448,35 +1448,56 @@ end
         end
 
         # 64-bit fields need no guard.
-        for golden in ("expected_cstring_lowlevel.py", "expected_cstrarray_lowlevel.py",
-                "expected_cmatrix_lowlevel.py")
+        for golden in (
+                "expected_cstring_lowlevel.py", "expected_cstrarray_lowlevel.py",
+                "expected_cmatrix_lowlevel.py",
+            )
             @test !occursin("OverflowError", read(joinpath(@__DIR__, golden), String))
         end
     end
 
     @testset "ctuple recognizer" begin
-        # Matches on the name prefix plus `v1`…`vN` fields, the shape
-        # every arity renders as.
+        # Matches on the name prefix plus the one `values` field holding the
+        # tuple. Elements of differing types make that a struct with the
+        # positions for field names; elements of one type make it an array.
         typeinfo = OrderedDict{Int, TypeDesc}(
             1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
             2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => StructDesc(
+                "Tuple{Float64, Int64}", 16, 8, FieldDesc[
+                    FieldDesc("1", 1, 0),
+                    FieldDesc("2", 2, 8),
+                ]
+            ),
+            4 => ArrayDesc("Tuple{Float64, Float64}", 1, 2, 16, 8),
         )
         desc = StructDesc(
-            "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
-                FieldDesc("v1", 1, 0),
-                FieldDesc("v2", 2, 8),
+            "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                FieldDesc("values", 3, 0),
             ]
         )
         info = JuliaLibWrapping.ctuple_struct_info(desc, typeinfo)
         @test !isnothing(info)
         @test info.arity == 2
         @test info.element_type_ids == [1, 2]
+        @test info.element_fields == ["1", "2"]
 
-        # A struct with the right name but the wrong fields is not one.
+        # One element type: an inline array, with no field names to report.
+        same = StructDesc(
+            "CNTuple{2, Tuple{Float64, Float64}}", 16, 8, FieldDesc[
+                FieldDesc("values", 4, 0),
+            ]
+        )
+        info_same = JuliaLibWrapping.ctuple_struct_info(same, typeinfo)
+        @test !isnothing(info_same)
+        @test info_same.arity == 2
+        @test info_same.element_type_ids == [1, 1]
+        @test isnothing(info_same.element_fields)
+
+        # A struct with the right name but the wrong field is not one.
         wrong = StructDesc(
-            "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
-                FieldDesc("a", 1, 0),
-                FieldDesc("b", 2, 8),
+            "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                FieldDesc("v", 3, 0),
             ]
         )
         @test isnothing(JuliaLibWrapping.ctuple_struct_info(wrong, typeinfo))
@@ -2997,7 +3018,10 @@ end
 
             bindings_path = joinpath(path, "ctuple_demo", "_lowlevel.py")
             bindings = read(bindings_path, String)
-            @test occursin("class CTuple2_CVector_owned_Float64_Int64(ctypes.Structure):", bindings)
+            @test occursin(
+                "class CNTuple_2_Tuple_CVector_owned_Float64_Int64(ctypes.Structure):",
+                bindings
+            )
 
             golden = read(joinpath(@__DIR__, "expected_ctuple_lowlevel.py"), String)
             @test bindings == golden
@@ -3007,11 +3031,22 @@ end
             facade = read(joinpath(path, "ctuple_demo", "_facade.py"), String)
             @test occursin(
                 "    _v = _r.value\n    try:\n" *
-                    "        _out = (np.array(_v.v1.as_numpy(), copy=True), _v.v2,)\n" *
-                    "    finally:\n        _v.v1.free()\n    return _out",
+                    "        _out = (np.array(_v.values._1.as_numpy(), copy=True), _v.values._2,)\n" *
+                    "    finally:\n        _v.values._1.free()\n    return _out",
                 facade
             )
-            @test !occursin("_v.v2.free()", facade)
+            @test !occursin("_v.values._2.free()", facade)
+
+            # An inline array is reached by position, and both elements own
+            # their storage, so both are released.
+            @test occursin(
+                "    _v = _r.value\n    try:\n" *
+                    "        _out = (np.array(_v.values[0].as_numpy(), copy=True), " *
+                    "np.array(_v.values[1].as_numpy(), copy=True),)\n" *
+                    "    finally:\n        _v.values[0].free()\n        _v.values[1].free()\n" *
+                    "    return _out",
+                facade
+            )
 
             golden_facade = read(joinpath(@__DIR__, "expected_ctuple_facade.py"), String)
             @test facade == golden_facade
@@ -3035,10 +3070,12 @@ end
             io, "_r.value", (
                 kind = :ctuple_unwrap,
                 elements = [(kind = :passthrough,), (kind = :passthrough,)],
-                classname = "CTuple2_Float64_Int64",
+                accessors = ["values._1", "values._2"],
+                classname = "CNTuple_2_Tuple_Float64_Int64",
             )
         )
-        @test String(take!(io)) == "    _v = _r.value\n    return (_v.v1, _v.v2,)\n"
+        @test String(take!(io)) ==
+            "    _v = _r.value\n    return (_v.values._1, _v.values._2,)\n"
 
         # A nested tuple has no element conversion, so the return classifies
         # `:opaque` and degrades to a re-export instead of reaching an emitter
@@ -3047,24 +3084,33 @@ end
             1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
             2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
             3 => StructDesc(
-                "CTuple2{Float64, Int64}", 16, 8, FieldDesc[
-                    FieldDesc("v1", 1, 0),
-                    FieldDesc("v2", 2, 8),
+                "Tuple{Float64, Int64}", 16, 8, FieldDesc[
+                    FieldDesc("1", 1, 0),
+                    FieldDesc("2", 2, 8),
                 ]
             ),
             4 => StructDesc(
-                "CTuple2{CTuple2{Float64, Int64}, Int64}", 24, 8, FieldDesc[
-                    FieldDesc("v1", 3, 0),
-                    FieldDesc("v2", 2, 16),
+                "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                    FieldDesc("values", 3, 0),
                 ]
+            ),
+            5 => StructDesc(
+                "Tuple{CNTuple{2, Tuple{Float64, Int64}}, Int64}", 24, 8, FieldDesc[
+                    FieldDesc("1", 4, 0),
+                    FieldDesc("2", 2, 16),
+                ]
+            ),
+            6 => StructDesc(
+                "CNTuple{2, Tuple{CNTuple{2, Tuple{Float64, Int64}}, Int64}}", 24, 8,
+                FieldDesc[FieldDesc("values", 5, 0)]
             ),
         )
         nested_typedict = Dict{Int, String}()
-        for id in (3, 4)
+        for id in (3, 4, 5, 6)
             JuliaLibWrapping.mangle_python!(nested_typedict, id, nested_typeinfo)
         end
         nested = JuliaLibWrapping._classify_return_type(
-            4, nested_typeinfo, nested_typedict, true
+            6, nested_typeinfo, nested_typedict, true
         )
         @test nested.kind === :opaque
         @test occursin("nested tuple", nested.reason)
