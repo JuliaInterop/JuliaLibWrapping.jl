@@ -12,4 +12,4 @@ path = ".."
 [compat]
 Documenter = "1"
 JLWInterop = "0.2"
-JuliaLibWrapping = "0.2"
+JuliaLibWrapping = "0.2, 0.1"
