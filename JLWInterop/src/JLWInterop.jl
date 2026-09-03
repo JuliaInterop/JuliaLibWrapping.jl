@@ -11,7 +11,7 @@ module JLWInterop
 export JLWStatus, jlw_ok, jlw_error
 export CArray, CVector, CMatrix, CString
 export CStrArray
-export CDict, COpt
+export CDict, CNTuple, COpt
 export JLWResult
 export @export_release_entrypoints
 export @api
@@ -606,6 +606,22 @@ absent. `get(o, nothing)` recovers the `Union{T,Nothing}` the carrier
 represents.
 """
 Base.get(o::COpt, default) = o.has_value == Int32(0) ? default : o.value
+
+"""
+    CNTuple{N,T}
+
+C-ABI representation of an `N`-element tuple return. `T` is the tuple of the
+elements' own carriers, so each element keeps its own ownership: a
+`CNTuple{2, Tuple{CVector{:owned,Float64}, Int64}}` has one buffer to release
+and one scalar to read.
+
+A tuple has no argument carrier, so there is no borrowed form.
+"""
+struct CNTuple{N, T <: Tuple}
+    values::T
+end
+
+CNTuple(t::T) where {T <: Tuple} = CNTuple{fieldcount(T), T}(t)
 
 include("result.jl")
 include("api.jl")

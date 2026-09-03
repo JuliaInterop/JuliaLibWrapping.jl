@@ -179,6 +179,40 @@ function copt_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc}
 end
 
 """
+    ctuple_struct_info(desc, typeinfo) -> Union{Nothing, NamedTuple}
+
+Recognize `CNTuple`, the carrier for a tuple return: a struct whose one field
+`values` holds the Julia tuple itself. Return `(; arity, element_type_ids,
+element_fields)` with the element type ids in tuple order, or `nothing`.
+
+A tuple with elements of differing types is a struct whose field names are
+the positions `"1"`, `"2"`, …, and `element_fields` lists them. A tuple whose
+elements share one type is an inline array instead, with no field names to
+list, and `element_fields` is `nothing`.
+"""
+function ctuple_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "CNTuple") || return nothing
+    m = _match_fields(desc, ("values",))
+    isnothing(m) && return nothing
+    values = typeinfo[m.values.type]
+    if values isa ArrayDesc
+        values.count >= 2 || return nothing
+        ids = fill(values.element_type, values.count)
+        return (; arity = values.count, element_type_ids = ids, element_fields = nothing)
+    end
+    values isa StructDesc || return nothing
+    n = length(values.fields)
+    n >= 2 || return nothing
+    names = ntuple(string, n)
+    slots = _match_fields(values, names)
+    isnothing(slots) && return nothing
+    return (;
+        arity = n, element_type_ids = [slots[i].type for i in 1:n],
+        element_fields = collect(names),
+    )
+end
+
+"""
     jlwresult_struct_info(desc::StructDesc, typeinfo) -> Union{Nothing, NamedTuple}
 
 Recognize the generated `JLWResult{C}` return carrier: a struct named

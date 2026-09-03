@@ -14,7 +14,7 @@ module boundary
 using JLWInterop
 using Boundary: Boundary, Extent, RoundMode, round_down, round_nearest, round_up,
     boom, check_positive, count_strs, make_dict, maybe_sqrt, round_value, scale_vec,
-    shout, sign_mode, str_len, sum_at, sum_dict, upcase_strs, widen
+    shout, sign_mode, stats, str_len, sum_at, sum_dict, upcase_strs, widen
 
 @export_release_entrypoints
 
@@ -35,6 +35,7 @@ using Boundary: Boundary, Extent, RoundMode, round_down, round_nearest, round_up
 @api check_positive(x::Float64)::Nothing
 @api round_value(x::Float64; mode::RoundMode = round_nearest)::Float64
 @api sign_mode(x::Float64)::RoundMode
+@api stats(a::Vector{Float64})::Tuple{Vector{Float64}, Int64}
 
 # A raw pointer and a struct the *binding* registers as its own carrier. The
 # struct belongs to the package; the three protocol methods that carry it

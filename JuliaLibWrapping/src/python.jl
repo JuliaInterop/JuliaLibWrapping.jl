@@ -1405,6 +1405,13 @@ return is one of:
   separate allocations).
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
+- `(kind=:ctuple_unwrap, elements=…, accessors=…, classname=…)` — a `CNTuple`
+  return, recognized via [`ctuple_struct_info`](@ref): a Python tuple built by
+  converting each element by its own kind, then releasing the owning ones in
+  a `finally`. `elements` is this same classification applied to each element
+  type, in tuple order, and `accessors` the attribute path reaching each one.
+  An element that is `:opaque`, or whose kind has no tuple-element conversion
+  (a nested tuple, say), makes the whole return `:opaque`.
 - `(kind=:jlwstatus_discard,)` — direct `JLWStatus` return; discard, return `None`
 - `(kind=:opaque, reason=…)` — bail out. Also returned in place of
   `:carray_unwrap`/`:cstring_unwrap`/`:cstrarray_unwrap`/`:cdict_unwrap` when
@@ -1429,6 +1436,7 @@ function _classify_return_type(
         csinfo = cstring_struct_info(rt, typeinfo)
         csainfo = cstrarray_struct_info(rt, typeinfo)
         cdinfo = _python_cdict_info(rt, typeinfo)
+        ctinfo = ctuple_struct_info(rt, typeinfo)
         if !isnothing(jr)
             inner = _classify_return_type(
                 jr.value_type_id, typeinfo, typedict, release_present; pass_opaque
@@ -1473,6 +1481,27 @@ function _classify_return_type(
             return (kind = :cdict_unwrap, classname = typedict[type_id])
         elseif !isnothing(_python_copt_info(rt, typeinfo))
             return (kind = :copt_unwrap, classname = typedict[type_id])
+        elseif !isnothing(ctinfo)
+            elements = [
+                _classify_return_type(
+                        id, typeinfo, typedict, release_present; pass_opaque
+                    ) for id in ctinfo.element_type_ids
+            ]
+            # One element without a conversion makes the whole tuple opaque;
+            # there is no partial unwrap to emit.
+            for el in elements
+                el.kind === :opaque && return (kind = :opaque, reason = el.reason)
+                el.kind in _CTUPLE_ELEMENT_KINDS || return (
+                    kind = :opaque,
+                    reason = "returns a tuple with an element the façade " *
+                        "cannot convert, such as a nested tuple; hand-wrap",
+                )
+            end
+            return (
+                kind = :ctuple_unwrap, elements = elements,
+                accessors = _ctuple_accessors(ctinfo),
+                classname = typedict[type_id],
+            )
         elseif !isnothing(method) && !isnothing(_python_status_path(method, typeinfo))
             return (
                 kind = :opaque,
@@ -1523,11 +1552,12 @@ end
 # Answer `uses_numpy`/`adds_value` for a classification, recursing into a
 # `:jlwresult_unwrap`'s `inner` kind.
 _ret_uses_numpy(ret) = ret.kind in (:carray_view, :carray_unwrap) ||
-    (ret.kind === :jlwresult_unwrap && _ret_uses_numpy(ret.inner))
+    (ret.kind === :jlwresult_unwrap && _ret_uses_numpy(ret.inner)) ||
+    (ret.kind === :ctuple_unwrap && any(_ret_uses_numpy, ret.elements))
 _ret_adds_value(ret) = ret.kind === :jlwresult_unwrap || ret.kind in (
     :carray_view, :carray_unwrap, :cstring_convert, :cstring_unwrap,
     :cstrarray_convert, :cstrarray_unwrap, :cdict_convert, :cdict_unwrap,
-    :copt_unwrap, :jlwstatus_discard, :enum_wrap,
+    :copt_unwrap, :ctuple_unwrap, :jlwstatus_discard, :enum_wrap,
 )
 
 """
@@ -1742,10 +1772,67 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
     elseif kind === :copt_unwrap
         # COpt is stored by value.
         println(f, "    return ", root, ".as_optional()")
+    elseif kind === :ctuple_unwrap
+        # Every element is converted before any is released, so a later
+        # element's conversion cannot read freed memory.
+        println(f, "    _v = ", root)
+        parts = String[]
+        for (i, el) in pairs(ret.elements)
+            push!(parts, _ctuple_element_expr("_v." * ret.accessors[i], el))
+        end
+        tuple_expr = "(" * join(parts, ", ") * ",)"
+        owning = [i for (i, el) in pairs(ret.elements) if el.kind in _CTUPLE_OWNING_KINDS]
+        if isempty(owning)
+            # No `finally`: an empty one is a syntax error in Python.
+            println(f, "    return ", tuple_expr)
+        else
+            println(f, "    try:")
+            println(f, "        _out = ", tuple_expr)
+            println(f, "    finally:")
+            for i in owning
+                println(f, "        _v.", ret.accessors[i], ".free()")
+            end
+            println(f, "    return _out")
+        end
     else
         error("unhandled return kind $kind")
     end
     return nothing
+end
+
+# The attribute path from a `CNTuple` object to each of its elements. Named
+# fields are reached by name, an inline array by position.
+function _ctuple_accessors(ctinfo)
+    isnothing(ctinfo.element_fields) &&
+        return ["values[" * string(i - 1) * "]" for i in 1:ctinfo.arity]
+    seen = Set{String}()
+    return ["values." * sanitize_python_argname(n, seen) for n in ctinfo.element_fields]
+end
+
+# The element kinds `_ctuple_element_expr` can convert. A tuple with an element
+# outside this set classifies `:opaque`.
+const _CTUPLE_ELEMENT_KINDS = (
+    :passthrough, :carray_view, :carray_unwrap, :cstring_convert,
+    :cstring_unwrap, :cstrarray_convert, :cstrarray_unwrap, :cdict_convert,
+    :cdict_unwrap, :copt_unwrap,
+)
+
+# The subset of `_CTUPLE_ELEMENT_KINDS` that owns storage the façade releases.
+const _CTUPLE_OWNING_KINDS = (
+    :carray_unwrap, :cstring_unwrap, :cstrarray_unwrap, :cdict_unwrap,
+)
+
+# Convert one tuple element without releasing it; the release happens in the
+# tuple's own `finally`.
+function _ctuple_element_expr(field::AbstractString, el)
+    el.kind === :passthrough && return field
+    el.kind in (:carray_view, :carray_unwrap) &&
+        return "np.array(" * field * ".as_numpy(), copy=True)"
+    el.kind in (:cstring_convert, :cstring_unwrap) && return field * ".as_str()"
+    el.kind in (:cstrarray_convert, :cstrarray_unwrap) && return field * ".as_list()"
+    el.kind in (:cdict_convert, :cdict_unwrap) && return field * ".as_dict()"
+    el.kind === :copt_unwrap && return field * ".as_optional()"
+    return error("no tuple-element conversion for kind $(el.kind)")
 end
 
 """

@@ -1448,10 +1448,76 @@ end
         end
 
         # 64-bit fields need no guard.
-        for golden in ("expected_cstring_lowlevel.py", "expected_cstrarray_lowlevel.py",
-                "expected_cmatrix_lowlevel.py")
+        for golden in (
+                "expected_cstring_lowlevel.py", "expected_cstrarray_lowlevel.py",
+                "expected_cmatrix_lowlevel.py",
+            )
             @test !occursin("OverflowError", read(joinpath(@__DIR__, golden), String))
         end
+    end
+
+    @testset "sanitize_for_c" begin
+        @test JuliaLibWrapping.sanitize_for_c("CVector{:owned, Float64}") ==
+            "CVector_owned_Float64"
+        # juliac names a tuple field by its position; C has no such identifier.
+        @test JuliaLibWrapping.sanitize_for_c("1") == "_1"
+        @test JuliaLibWrapping.sanitize_for_c("") == ""
+    end
+
+    @testset "ctuple recognizer" begin
+        # Matches on the name prefix plus the one `values` field holding the
+        # tuple. Elements of differing types make that a struct with the
+        # positions for field names; elements of one type make it an array.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => StructDesc(
+                "Tuple{Float64, Int64}", 16, 8, FieldDesc[
+                    FieldDesc("1", 1, 0),
+                    FieldDesc("2", 2, 8),
+                ]
+            ),
+            4 => ArrayDesc("Tuple{Float64, Float64}", 1, 2, 16, 8),
+        )
+        desc = StructDesc(
+            "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                FieldDesc("values", 3, 0),
+            ]
+        )
+        info = JuliaLibWrapping.ctuple_struct_info(desc, typeinfo)
+        @test !isnothing(info)
+        @test info.arity == 2
+        @test info.element_type_ids == [1, 2]
+        @test info.element_fields == ["1", "2"]
+
+        # One element type: an inline array, with no field names to report.
+        same = StructDesc(
+            "CNTuple{2, Tuple{Float64, Float64}}", 16, 8, FieldDesc[
+                FieldDesc("values", 4, 0),
+            ]
+        )
+        info_same = JuliaLibWrapping.ctuple_struct_info(same, typeinfo)
+        @test !isnothing(info_same)
+        @test info_same.arity == 2
+        @test info_same.element_type_ids == [1, 1]
+        @test isnothing(info_same.element_fields)
+
+        # A struct with the right name but the wrong field is not one.
+        wrong = StructDesc(
+            "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                FieldDesc("v", 3, 0),
+            ]
+        )
+        @test isnothing(JuliaLibWrapping.ctuple_struct_info(wrong, typeinfo))
+
+        # A different carrier is not one either.
+        other = StructDesc(
+            "COpt{Float64}", 16, 8, FieldDesc[
+                FieldDesc("has_value", 2, 0),
+                FieldDesc("value", 1, 8),
+            ]
+        )
+        @test isnothing(JuliaLibWrapping.ctuple_struct_info(other, typeinfo))
     end
 
     @testset "jlwstatus_location" begin
@@ -2947,6 +3013,115 @@ end
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
         end
+    end
+
+    @testset "tuple-return vocabulary" begin
+        # A tuple return unwraps into a Python tuple, element by element: the
+        # first element owns its storage and is copied then released, the
+        # second is a scalar that crosses as it stands.
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            dest = PythonTarget(path, "ctuple_demo", "libctuple")
+            write_wrapper(dest, abi)
+
+            bindings_path = joinpath(path, "ctuple_demo", "_lowlevel.py")
+            bindings = read(bindings_path, String)
+            @test occursin(
+                "class CNTuple_2_Tuple_CVector_owned_Float64_Int64(ctypes.Structure):",
+                bindings
+            )
+
+            golden = read(joinpath(@__DIR__, "expected_ctuple_lowlevel.py"), String)
+            @test bindings == golden
+
+            # Both elements are converted before either is released, so a
+            # later element's conversion cannot read freed memory.
+            facade = read(joinpath(path, "ctuple_demo", "_facade.py"), String)
+            @test occursin(
+                "    _v = _r.value\n    try:\n" *
+                    "        _out = (np.array(_v.values._1.as_numpy(), copy=True), _v.values._2,)\n" *
+                    "    finally:\n        _v.values._1.free()\n    return _out",
+                facade
+            )
+            @test !occursin("_v.values._2.free()", facade)
+
+            # An inline array is reached by position, and both elements own
+            # their storage, so both are released.
+            @test occursin(
+                "    _v = _r.value\n    try:\n" *
+                    "        _out = (np.array(_v.values[0].as_numpy(), copy=True), " *
+                    "np.array(_v.values[1].as_numpy(), copy=True),)\n" *
+                    "    finally:\n        _v.values[0].free()\n        _v.values[1].free()\n" *
+                    "    return _out",
+                facade
+            )
+
+            golden_facade = read(joinpath(@__DIR__, "expected_ctuple_facade.py"), String)
+            @test facade == golden_facade
+
+            python3 = Sys.which("python3")
+            if !isnothing(python3)
+                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                facade_path = joinpath(path, "ctuple_demo", "_facade.py")
+                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
+                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+            elseif haskey(ENV, "CI")
+                error("python3 not found on PATH; required on CI to validate the emitted wrapper")
+            end
+        end
+
+        # A tuple with nothing to release gets no `finally`: an empty one is a
+        # Python syntax error.
+        io = IOBuffer()
+        JuliaLibWrapping._emit_value_unwrap(
+            io, "_r.value", (
+                kind = :ctuple_unwrap,
+                elements = [(kind = :passthrough,), (kind = :passthrough,)],
+                accessors = ["values._1", "values._2"],
+                classname = "CNTuple_2_Tuple_Float64_Int64",
+            )
+        )
+        @test String(take!(io)) ==
+            "    _v = _r.value\n    return (_v.values._1, _v.values._2,)\n"
+
+        # A nested tuple has no element conversion, so the return classifies
+        # `:opaque` and degrades to a re-export instead of reaching an emitter
+        # that cannot honor it.
+        nested_typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => StructDesc(
+                "Tuple{Float64, Int64}", 16, 8, FieldDesc[
+                    FieldDesc("1", 1, 0),
+                    FieldDesc("2", 2, 8),
+                ]
+            ),
+            4 => StructDesc(
+                "CNTuple{2, Tuple{Float64, Int64}}", 16, 8, FieldDesc[
+                    FieldDesc("values", 3, 0),
+                ]
+            ),
+            5 => StructDesc(
+                "Tuple{CNTuple{2, Tuple{Float64, Int64}}, Int64}", 24, 8, FieldDesc[
+                    FieldDesc("1", 4, 0),
+                    FieldDesc("2", 2, 16),
+                ]
+            ),
+            6 => StructDesc(
+                "CNTuple{2, Tuple{CNTuple{2, Tuple{Float64, Int64}}, Int64}}", 24, 8,
+                FieldDesc[FieldDesc("values", 5, 0)]
+            ),
+        )
+        nested_typedict = Dict{Int, String}()
+        for id in (3, 4, 5, 6)
+            JuliaLibWrapping.mangle_python!(nested_typedict, id, nested_typeinfo)
+        end
+        nested = JuliaLibWrapping._classify_return_type(
+            6, nested_typeinfo, nested_typedict, true
+        )
+        @test nested.kind === :opaque
+        @test occursin("nested tuple", nested.reason)
     end
 
     @testset "CArray owning return without release symbols" begin

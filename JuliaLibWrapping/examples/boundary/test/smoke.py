@@ -26,6 +26,10 @@ assert b.str_len("wörld") == 6  # 'ö' is 2 UTF-8 code units
 assert b.str_len("a\x00b") == 3  # an embedded NUL is content, not a terminator
 assert b.shout("héllo") == "HÉLLO"  # an owning String return, freed by the facade
 
+x, n = b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
+assert list(x) == [2.0, 4.0, 6.0]
+assert n == 3
+
 assert b.check_positive(1.0) is None
 try:
     b.check_positive(-1.0)
@@ -162,4 +166,5 @@ for _ in range(10_000):
     b.echo_strs(["x", "y"])
     b.echo_dict({"k": 1.0})
     b.make_vec(4)
+    b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
 print("boundary smoke: OK")

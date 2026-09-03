@@ -42,6 +42,9 @@ function check_positive(x::Float64)
     return nothing
 end
 
+"Double the vector and report how many elements it had."
+stats(a::Vector{Float64}) = (2 .* a, Int64(length(a)))
+
 """
     Extent(lo, hi)
 
