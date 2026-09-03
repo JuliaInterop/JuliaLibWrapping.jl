@@ -1456,6 +1456,14 @@ end
         end
     end
 
+    @testset "sanitize_for_c" begin
+        @test JuliaLibWrapping.sanitize_for_c("CVector{:owned, Float64}") ==
+            "CVector_owned_Float64"
+        # juliac names a tuple field by its position; C has no such identifier.
+        @test JuliaLibWrapping.sanitize_for_c("1") == "_1"
+        @test JuliaLibWrapping.sanitize_for_c("") == ""
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the
