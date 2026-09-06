@@ -37,8 +37,8 @@ docstring to `<libname>.jlw.json` in `libdir`. Once `juliac` has run,
 [`check_metadata_consistency`](@ref) validates the sidecar against the ABI
 JSON: an unknown symbol, an argument mismatch, or an enum reference that does
 not resolve is a build error. Targets can use the validated metadata's public
-names, keyword arguments, enum types, and docstrings. The current
-[`PythonTarget`](@ref) receives them as `write_wrapper`'s `api_metadata` and
+names, keyword arguments, enum types, and docstrings. [`PythonTarget`](@ref)
+and [`MatlabTarget`](@ref) receive them as `write_wrapper`'s `api_metadata` and
 `api_enums` keywords.
 An entry file that defines no `@api` functions produces no sidecar, and every
 target emits as it would without one.
@@ -198,8 +198,8 @@ function build_library(
     target_outputs = Vector{NamedTuple}(undef, length(targets))
     for (i, t) in pairs(targets)
         target = _apply_privatization(t, privatize)
-        # Only `write_wrapper(::PythonTarget, …)` declares `api_metadata`/`api_enums`.
-        target isa PythonTarget ? write_wrapper(target, abi_info; api_metadata, api_enums) :
+        accepts_api_metadata(target) ?
+            write_wrapper(target, abi_info; api_metadata, api_enums) :
             write_wrapper(target, abi_info)
         target_outputs[i] = (target = typeof(t), dir = t.dir)
     end
@@ -214,6 +214,21 @@ end
 # Record whether the bundle was privatized so the generated Python can warn
 # when another non-privatized package is already loaded.
 _apply_privatization(t::AbstractTarget, ::Bool) = t
+"""
+    accepts_api_metadata(target::AbstractTarget) -> Bool
+
+Whether `write_wrapper` for this target takes the `api_metadata`/`api_enums`
+keywords, which [`build_library`](@ref) uses to decide what to pass it.
+
+`false` by default, so a target that does not read the sidecar needs no method
+here. A target that *does* read it must define one: without it the target is
+handed the ABI alone and silently loses the public names, keyword defaults and
+docstrings the sidecar carries.
+"""
+accepts_api_metadata(::AbstractTarget) = false
+accepts_api_metadata(::PythonTarget) = true
+accepts_api_metadata(::MatlabTarget) = true
+
 function _apply_privatization(t::PythonTarget, privatize::Bool)
     t.privatized == privatize && return t
     t.privatized && throw(
@@ -340,9 +355,12 @@ function _absolutize_path!(spec, name, base::AbstractString, file::AbstractStrin
     p = get(spec, "path", nothing)
     (p isa AbstractString && !isabspath(p)) || return false
     abs = abspath(joinpath(base, p))
-    ispath(abs) || throw(ArgumentError(
-        "dependency \"$name\" in $file declares path \"$p\", " *
-        "which resolves to $abs — nothing exists there."))
+    ispath(abs) || throw(
+        ArgumentError(
+            "dependency \"$name\" in $file declares path \"$p\", " *
+                "which resolves to $abs — nothing exists there."
+        )
+    )
     spec["path"] = abs
     return true
 end

@@ -1727,6 +1727,20 @@ end
         end
     end
 
+    @testset "targets that read the sidecar" begin
+        # `build_library` asks this before deciding what to hand a target. A
+        # target that reads the sidecar but answers `false` is given the ABI
+        # alone, and silently loses its public names, keyword defaults and
+        # docstrings.
+        @test JuliaLibWrapping.accepts_api_metadata(
+            PythonTarget("out", "demo_py", "demo")
+        )
+        @test JuliaLibWrapping.accepts_api_metadata(MatlabTarget("out", "demo", "demo"))
+
+        # A C header carries no names beyond the ABI's, so it needs nothing.
+        @test !JuliaLibWrapping.accepts_api_metadata(CTarget("out", "demo"))
+    end
+
     @testset "matlab gateway compiles" begin
         # The generated C is checked against a stand-in for `mex.h`, so a
         # syntax or type error is caught without MATLAB installed.
