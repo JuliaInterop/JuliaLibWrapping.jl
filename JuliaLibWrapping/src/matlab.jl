@@ -88,6 +88,15 @@ directory, so it is callable from the façades and invisible everywhere else.
 _matlab_gateway_name(dest::MatlabTarget) = dest.library_basename * "_mex"
 
 """
+    _matlab_types_header(dest::MatlabTarget) -> String
+
+The basename of the header carrying the carrier typedefs the gateway needs.
+Distinct from the C target's own header so that emitting it here is visibly
+this target's file rather than an overwrite of somebody else's.
+"""
+_matlab_types_header(dest::MatlabTarget) = _matlab_gateway_name(dest) * "_types"
+
+"""
     _matlab_entry_name(method, api_entry) -> String
 
 The name a façade is written under: the declared public name when the sidecar
@@ -355,8 +364,7 @@ later integrality check would always pass. The façade validates as a double
 and converts in its body.
 """
 function _matlab_arg_validation(kind, name::AbstractString)
-    # Declared `double` even for an integer, so validation happens before the
-    # conversion; the cost is that a magnitude above 2^53 cannot be expressed.
+    # The cost of the `double` declaration: magnitudes above 2^53 are not exact.
     kind.kind === :scalar &&
         return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
@@ -620,15 +628,15 @@ function write_wrapper(
         push!(wrapped, (method, plan))
     end
 
-    # The gateway needs the carrier typedefs. Emitting them here rather than
-    # relying on a `CTarget` in the same build keeps this target usable on its
-    # own; the C emitter is a pure function of the ABI, so a `CTarget` writing
-    # the same file writes the same bytes.
-    write_wrapper(CTarget(dest.dir, dest.library_basename), abi_info)
+    # The gateway needs the carrier typedefs. Emitting them here, instead of
+    # requiring a `CTarget` in the same build, keeps this target usable on its
+    # own. The C emitter is a pure function of the ABI, so a `CTarget` writing
+    # the same file produces the same bytes.
+    write_wrapper(CTarget(dest.dir, _matlab_types_header(dest)), abi_info)
 
     gateway = _matlab_gateway_name(dest)
     open(joinpath(dest.dir, gateway * ".c"), "w") do io
-        _write_matlab_gateway(io, dest, abi_info, wrapped, dest.library_basename * ".h")
+        _write_matlab_gateway(io, dest, abi_info, wrapped, _matlab_types_header(dest) * ".h")
     end
     open(joinpath(dest.dir, "build_mex.m"), "w") do io
         _write_matlab_build_script(io, dest, gateway)
@@ -665,8 +673,8 @@ function _write_matlab_build_script(io::IO, dest::MatlabTarget, gateway::Abstrac
     println(io, "        mkdir(target);")
     println(io, "    end")
     println(io, "    % The library stays where it was built, next to the runtime its")
-    println(io, "    % RUNPATH points at, so the path is compiled in rather than the")
-    println(io, "    % library being copied beside the MEX file.")
+    println(io, "    % RUNPATH points at, so the path is compiled in instead of")
+    println(io, "    % copying the library beside the MEX file.")
     println(io, "    stem = fullfile(library_dir, '", dest.library_basename, "');")
     println(io, "    % -R2018a selects the typed accessors the gateway uses.")
     println(io, "    mex('-R2018a', ...")
@@ -772,9 +780,9 @@ function _write_matlab_gateway_prologue(
     println(io)
     environment = uppercase(sanitize_for_c(dest.library_basename)) * "_MEX_LIBRARY"
     println(io, "/* Where the shared library is. `build_mex.m` bakes in the path it")
-    println(io, "   was built against; the environment variable moves a built MEX")
-    println(io, "   file to a library somewhere else. A bare name would be searched")
-    println(io, "   for relative to MATLAB's process, not to this file. */")
+    println(io, "   was built against; the environment variable overrides it. A bare")
+    println(io, "   name resolves against MATLAB's working directory, not the MEX")
+    println(io, "   file's location. */")
     println(io, "#ifndef JLW_LIBRARY_PATH")
     println(io, "#define JLW_LIBRARY_PATH \"", dest.library_basename, "\"")
     println(io, "#endif")

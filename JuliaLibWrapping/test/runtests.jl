@@ -1860,12 +1860,15 @@ end
 
             # The gateway emits the carrier typedefs it needs, so a build
             # with no `CTarget` still produces something that compiles.
-            @test isfile(joinpath(path, "libdemo.h"))
+            @test isfile(joinpath(path, "libdemo_mex_types.h"))
+            # Its own name, so it is visibly this target's file rather than
+            # an overwrite of the C target's header.
+            @test !isfile(joinpath(path, "libdemo.h"))
 
             gateway = read(joinpath(path, "libdemo_mex.c"), String)
-            # A bare name would be searched for relative to MATLAB's process
-            # rather than to the library, and `$ORIGIN` resolves to the MEX
-            # file's own directory, where the library is not.
+            # A bare name resolves against MATLAB's working directory, not the
+            # library, and `$ORIGIN` is the MEX file's own directory, where the
+            # library is not.
             @test !occursin("\$ORIGIN", gateway)
             @test occursin("#define JLW_LIBRARY_PATH", gateway)
             @test occursin("getenv(JLW_LIBRARY_ENV)", gateway)
