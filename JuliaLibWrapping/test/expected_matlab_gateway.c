@@ -7,6 +7,7 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <fcntl.h>
 #endif
 #include "mex.h"
 #include "libctuple_mex_types.h"
@@ -22,29 +23,73 @@
 
 static void *jlw_library = NULL;
 
+/* Julia's runtime marks inherited pipes non-blocking when it starts
+   and leaves them that way, which MATLAB's own reads then see as
+   errors. Live whenever MATLAB runs under -batch in a pipeline. */
+typedef struct { int ok; int flags[3]; } jlw_stdio_flags;
+
+static jlw_stdio_flags jlw_save_stdio(void)
+{
+    jlw_stdio_flags saved;
+    saved.ok = 0;
+#ifndef _WIN32
+    for (int fd = 0; fd < 3; fd++) {
+        saved.flags[fd] = fcntl(fd, F_GETFL);
+    }
+    saved.ok = 1;
+#endif
+    return saved;
+}
+
+static void jlw_restore_stdio(jlw_stdio_flags saved)
+{
+#ifndef _WIN32
+    if (saved.ok) {
+        for (int fd = 0; fd < 3; fd++) {
+            if (saved.flags[fd] != -1) {
+                fcntl(fd, F_SETFL, saved.flags[fd]);
+            }
+        }
+    }
+#else
+    (void)saved;
+#endif
+}
+
 /* Opened once and never closed: `clear mex` unloads this file, and
    reloading the library would run `jl_init` twice in one process. */
 static void *jlw_symbol(const char *name)
 {
     if (jlw_library == NULL) {
         const char *override = getenv(JLW_LIBRARY_ENV);
+        jlw_stdio_flags saved = jlw_save_stdio();
         char path[4096];
         const char *base = override ? override : JLW_LIBRARY_PATH;
+        char reason[256];
 #ifdef _WIN32
         snprintf(path, sizeof path, "%s.dll", base);
-        jlw_library = (void *)LoadLibraryA(path);
-#elif defined(__APPLE__)
+        /* ALTERED_SEARCH_PATH so the library's own directory is
+           searched for its dependencies, libjulia among them. */
+        jlw_library = (void *)LoadLibraryExA(path, NULL,
+                                            LOAD_WITH_ALTERED_SEARCH_PATH);
+        snprintf(reason, sizeof reason, "error %lu",
+                 (unsigned long)GetLastError());
+#else
+#ifdef __APPLE__
         snprintf(path, sizeof path, "%s.dylib", base);
-        jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
 #else
         snprintf(path, sizeof path, "%s.so", base);
+#endif
         jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+        const char *message = dlerror();
+        snprintf(reason, sizeof reason, "%s", message ? message : "");
 #endif
         if (jlw_library == NULL) {
             mexErrMsgIdAndTxt("jlw:library",
-                "could not load %s; set " JLW_LIBRARY_ENV
-                " to its path without the extension", path);
+                "could not load %s (%s); set " JLW_LIBRARY_ENV
+                " to its path without the extension", path, reason);
         }
+        jlw_restore_stdio(saved);
     }
 #ifdef _WIN32
     void *address = (void *)GetProcAddress((HMODULE)jlw_library, name);

@@ -1828,22 +1828,116 @@ end
     end
 
     @testset "matlab carrier widths and guards" begin
-        # The real carriers use 64-bit lengths and several fixtures use
-        # 32-bit ones, so the width comes from the ABI rather than a guess.
-        # A count too large for a 32-bit field is refused rather than wrapped.
-        wide = read_abi_info("bindinginfo_cstrarray.json")
-        narrow = read_abi_info("bindinginfo_ctuple.json")
+        # The width comes from the ABI. `mwSize` is unsigned and 64-bit, so a
+        # count that will not fit a 32-bit field is refused, not wrapped.
         mktempdir() do path
-            write_wrapper(MatlabTarget(path, "demo", "libdemo"), wide)
+            # `carray_bool` declares 32-bit dims, so it needs a guard.
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"),
+                read_abi_info("bindinginfo_carray_bool.json")
+            )
             gateway = read(joinpath(path, "libdemo_mex.c"), String)
-            @test occursin("(int64_t)size;", gateway) || occursin("(int32_t)size;", gateway)
-            # Where a field is 32 bits, the guard has to be there.
-            if occursin("(int32_t)size;", gateway)
-                @test occursin("> INT32_MAX", gateway)
-            end
+            @test occursin("mxGetNumberOfElements(value) > INT32_MAX", gateway)
+            @test occursin("carrier.dims[0] = (int32_t)", gateway)
         end
-        @test !isnothing(narrow)
+        mktempdir() do path
+            # `cstrarray` declares 64-bit lengths, so it needs none.
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"),
+                read_abi_info("bindinginfo_cstrarray.json")
+            )
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            @test occursin("carrier.length = (int64_t)count;", gateway)
+            @test occursin("items[i].length = (int64_t)size;", gateway)
+            @test !occursin("INT32_MAX", gateway)
+        end
     end
+
+    @testset "matlab loader and names" begin
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+
+            # Julia's runtime leaves inherited pipes non-blocking, which
+            # MATLAB's own reads then see as errors.
+            @test occursin("jlw_save_stdio()", gateway)
+            @test occursin("jlw_restore_stdio(saved);", gateway)
+
+            # A failure says why, so a missing dependency reads differently
+            # from a wrong path.
+            @test occursin("dlerror()", gateway)
+
+            # On Windows the library's own directory has to be searched for
+            # its dependencies.
+            @test occursin("LOAD_WITH_ALTERED_SEARCH_PATH", gateway)
+
+        end
+
+        # A sparse struct field passes a class check and has no dense buffer
+        # to read; the fixture needs a dictionary *argument* to show it.
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"),
+                read_abi_info("bindinginfo_cdict.json")
+            )
+            @test occursin(
+                "mxIsSparse(field)", read(joinpath(path, "libdemo_mex.c"), String)
+            )
+        end
+
+        # A library basename that is not an identifier still has to produce a
+        # gateway the façades can call.
+        @test JuliaLibWrapping._matlab_gateway_name(
+            MatlabTarget("out", "demo", "lib-foo.2")
+        ) == "lib_foo_2_mex"
+    end
+
+    @testset "matlab facade name collisions" begin
+        # Two symbols can sanitize to one façade name. Writing both would
+        # leave one file and one callable function, silently.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8)
+        )
+        methods = [
+            JuliaLibWrapping.MethodDesc("a.b", "a.b()", 1, JuliaLibWrapping.ArgDesc[]),
+            JuliaLibWrapping.MethodDesc("a-b", "a-b()", 1, JuliaLibWrapping.ArgDesc[]),
+        ]
+        abi = ABIInfo(typeinfo, BitSet(), methods)
+        mktempdir() do path
+            @test_throws "claimed by both" write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"), abi
+            )
+        end
+    end
+
+    @testset "matlab enum return rejects an unknown value" begin
+        abi = read_abi_info("bindinginfo_enum.json")
+        meta = Dict{String, Any}(
+            "EnumFixture_pick" => Dict{String, Any}(
+                "name" => "pick", "args" => ["x"], "kwargs" => [],
+                "return_enum" => "PenaltyKind", "doc" => "",
+            ),
+        )
+        enums = Dict{String, Any}(
+            "PenaltyKind" => Dict{String, Any}(
+                "basetype" => "Int32",
+                "members" => [Dict{String, Any}("name" => "abslog1", "value" => 0)],
+            ),
+        )
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"), abi;
+                api_metadata = meta, api_enums = enums
+            )
+            src = read(joinpath(path, "+demo", "pick.m"), String)
+            # A value outside the enum means the library and these bindings
+            # disagree, which is worth saying rather than passing through.
+            @test occursin("otherwise", src)
+            @test occursin("is not a known enum value", src)
+        end
+    end
+
 
     @testset "matlab tuple validates dict keys first" begin
         # A dictionary's keys are runtime data from Julia. Converting an

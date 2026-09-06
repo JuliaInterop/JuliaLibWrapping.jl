@@ -75,7 +75,8 @@ end
 The gateway's MEX function name. It lives in the package's `private/`, where
 the façades can call it and other code cannot.
 """
-_matlab_gateway_name(dest::MatlabTarget) = dest.library_basename * "_mex"
+_matlab_gateway_name(dest::MatlabTarget) =
+    sanitize_matlab_name(dest.library_basename) * "_mex"
 
 """
     _matlab_types_header(dest::MatlabTarget) -> String
@@ -364,7 +365,9 @@ function _matlab_arg_validation(kind, name::AbstractString)
         return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
     kind.kind === :string && return "(1,1) string"
-    kind.kind === :strarray && return "(1,:) cell"
+    # No class: `cellstr` in the body takes a cell of char, a string array
+    # and a char matrix alike, which are all natural ways to write this.
+    kind.kind === :strarray && return ""
     kind.kind === :dict && return "(1,1) struct"
     # A vector argument takes either orientation; the body normalizes it.
     # An integer array is declared `double` for the reason a scalar one is:
@@ -396,6 +399,7 @@ The expression a façade passes to the gateway for one argument.
 function _matlab_arg_forward(name::AbstractString, kind)
     # The gateway reads `char`; the C API reads char arrays only.
     kind.kind === :string && return "convertStringsToChars(" * name * ")"
+    kind.kind === :strarray && return "cellstr(" * name * ")"
     # A MATLAB vector arrives 1×N or N×1; `(:)` yields the column the carrier
     # expects, without a copy.
     if kind.kind === :array
@@ -637,6 +641,7 @@ function write_wrapper(
 
     written = String[]
     wrapped = Tuple{MethodDesc, Any}[]
+    taken = Dict{String, String}()
     for method in sort(entrypoints; by = m -> m.symbol)
         # The release entry points serve the gateway, and the façades omit
         # them.
@@ -646,6 +651,15 @@ function write_wrapper(
             get(api_metadata, method.symbol, nothing), api_enums
         )
         plan.kind === :auto || continue
+        # Two symbols can sanitize to one name; the second would overwrite
+        # the first's file, and only one of them would be callable.
+        if haskey(taken, plan.name)
+            error(
+                "MATLAB façade name \"" * plan.name * "\" is claimed by both " *
+                    taken[plan.name] * " and " * method.symbol
+            )
+        end
+        taken[plan.name] = method.symbol
         open(joinpath(package_dir, plan.name * ".m"), "w") do io
             _write_matlab_facade(io, dest, method, plan)
         end
@@ -759,6 +773,12 @@ function _write_matlab_enum_out(io::IO, output::AbstractString, edesc)
             member["name"], "\";"
         )
     end
+    # A value outside the enum means the library and these bindings disagree.
+    println(io, "        otherwise")
+    println(
+        io, "            error(\"jlw:error\", \"", output,
+        " is not a known enum value: %d\", ", output, ");"
+    )
     println(io, "    end")
     return nothing
 end
@@ -798,6 +818,7 @@ function _write_matlab_gateway_prologue(
     println(io, "#include <windows.h>")
     println(io, "#else")
     println(io, "#include <dlfcn.h>")
+    println(io, "#include <fcntl.h>")
     println(io, "#endif")
     println(io, "#include \"mex.h\"")
     println(io, "#include \"", header, "\"")
@@ -814,29 +835,73 @@ function _write_matlab_gateway_prologue(
     println(io)
     println(io, "static void *jlw_library = NULL;")
     println(io)
+    println(io, "/* Julia's runtime marks inherited pipes non-blocking when it starts")
+    println(io, "   and leaves them that way, which MATLAB's own reads then see as")
+    println(io, "   errors. Live whenever MATLAB runs under -batch in a pipeline. */")
+    println(io, "typedef struct { int ok; int flags[3]; } jlw_stdio_flags;")
+    println(io)
+    println(io, "static jlw_stdio_flags jlw_save_stdio(void)")
+    println(io, "{")
+    println(io, "    jlw_stdio_flags saved;")
+    println(io, "    saved.ok = 0;")
+    println(io, "#ifndef _WIN32")
+    println(io, "    for (int fd = 0; fd < 3; fd++) {")
+    println(io, "        saved.flags[fd] = fcntl(fd, F_GETFL);")
+    println(io, "    }")
+    println(io, "    saved.ok = 1;")
+    println(io, "#endif")
+    println(io, "    return saved;")
+    println(io, "}")
+    println(io)
+    println(io, "static void jlw_restore_stdio(jlw_stdio_flags saved)")
+    println(io, "{")
+    println(io, "#ifndef _WIN32")
+    println(io, "    if (saved.ok) {")
+    println(io, "        for (int fd = 0; fd < 3; fd++) {")
+    println(io, "            if (saved.flags[fd] != -1) {")
+    println(io, "                fcntl(fd, F_SETFL, saved.flags[fd]);")
+    println(io, "            }")
+    println(io, "        }")
+    println(io, "    }")
+    println(io, "#else")
+    println(io, "    (void)saved;")
+    println(io, "#endif")
+    println(io, "}")
+    println(io)
     println(io, "/* Opened once and never closed: `clear mex` unloads this file, and")
     println(io, "   reloading the library would run `jl_init` twice in one process. */")
     println(io, "static void *jlw_symbol(const char *name)")
     println(io, "{")
     println(io, "    if (jlw_library == NULL) {")
     println(io, "        const char *override = getenv(JLW_LIBRARY_ENV);")
+    println(io, "        jlw_stdio_flags saved = jlw_save_stdio();")
     println(io, "        char path[4096];")
     println(io, "        const char *base = override ? override : JLW_LIBRARY_PATH;")
+    println(io, "        char reason[256];")
     println(io, "#ifdef _WIN32")
     println(io, "        snprintf(path, sizeof path, \"%s.dll\", base);")
-    println(io, "        jlw_library = (void *)LoadLibraryA(path);")
-    println(io, "#elif defined(__APPLE__)")
+    println(io, "        /* ALTERED_SEARCH_PATH so the library's own directory is")
+    println(io, "           searched for its dependencies, libjulia among them. */")
+    println(io, "        jlw_library = (void *)LoadLibraryExA(path, NULL,")
+    println(io, "                                            LOAD_WITH_ALTERED_SEARCH_PATH);")
+    println(io, "        snprintf(reason, sizeof reason, \"error %lu\",")
+    println(io, "                 (unsigned long)GetLastError());")
+    println(io, "#else")
+    println(io, "#ifdef __APPLE__")
     println(io, "        snprintf(path, sizeof path, \"%s.dylib\", base);")
-    println(io, "        jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);")
     println(io, "#else")
     println(io, "        snprintf(path, sizeof path, \"%s.so\", base);")
+    println(io, "#endif")
     println(io, "        jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);")
+    println(io, "        const char *message = dlerror();")
+    println(io, "        snprintf(reason, sizeof reason, \"%s\", message ? message : \"\");")
     println(io, "#endif")
     println(io, "        if (jlw_library == NULL) {")
     println(io, "            mexErrMsgIdAndTxt(\"jlw:library\",")
-    println(io, "                \"could not load %s; set \" JLW_LIBRARY_ENV")
-    println(io, "                \" to its path without the extension\", path);")
+    println(io, "                \"could not load %s (%s); set \" JLW_LIBRARY_ENV")
+    println(io, "                \" to its path without the extension\", path, reason);")
     println(io, "        }")
+    println(io, "        jlw_restore_stdio(saved);")
     println(io, "    }")
     println(io, "#ifdef _WIN32")
     println(io, "    void *address = (void *)GetProcAddress((HMODULE)jlw_library, name);")
@@ -1180,7 +1245,10 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "        /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */")
             println(io, "        keys[i].data = (uint8_t *)key;")
             println(io, "        const mxArray *field = mxGetFieldByNumber(value, 0, i);")
-            println(io, "        if (field == NULL || !mxIs", uppercasefirst(kind.class), "(field) ||")
+            println(io, "        /* A sparse field passes a class check but has no")
+            println(io, "           dense buffer to read. */")
+            println(io, "        if (field == NULL || mxIsSparse(field) ||")
+            println(io, "            !mxIs", uppercasefirst(kind.class), "(field) ||")
             println(io, "            mxGetNumberOfElements(field) != 1) {")
             println(io, "            mexErrMsgIdAndTxt(\"jlw:argument\",")
             println(io, "                \"field %s must be a ", kind.class, " scalar\", key);")
