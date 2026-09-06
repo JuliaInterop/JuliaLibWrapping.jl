@@ -1543,6 +1543,80 @@ end
         @test JuliaLibWrapping._matlab_classify_arg(11, typeinfo).kind === :opaque
     end
 
+    @testset "matlab return classification" begin
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => PrimitiveTypeDesc("UInt8", false, 8, 1, 1),
+            4 => PointerDesc("Ptr{UInt8}", 3),
+            5 => PrimitiveTypeDesc("Int32", true, 32, 4, 4),
+            6 => StructDesc(
+                "CString{:owned}", 16, 8,
+                FieldDesc[FieldDesc("length", 5, 0), FieldDesc("data", 4, 8)]
+            ),
+            7 => StructDesc(
+                "CString{:borrowed}", 16, 8,
+                FieldDesc[FieldDesc("length", 5, 0), FieldDesc("data", 4, 8)]
+            ),
+            8 => ArrayDesc("NTuple{256, UInt8}", 3, 256, 256, 1),
+            9 => StructDesc(
+                "JLWStatus", 260, 4,
+                FieldDesc[FieldDesc("code", 5, 0), FieldDesc("message", 8, 4)]
+            ),
+            10 => StructDesc(
+                "JLWResult{CString{:owned}}", 280, 8,
+                FieldDesc[FieldDesc("status", 9, 0), FieldDesc("value", 6, 264)]
+            ),
+            11 => StructDesc(
+                "Tuple{CString{:owned}, Int64}", 24, 8,
+                FieldDesc[FieldDesc("1", 6, 0), FieldDesc("2", 2, 16)]
+            ),
+            12 => StructDesc(
+                "CNTuple{2, Tuple{CString{:owned}, Int64}}", 24, 8,
+                FieldDesc[FieldDesc("values", 11, 0)]
+            ),
+        )
+
+        @test JuliaLibWrapping._matlab_classify_return(9, typeinfo, true).kind === :void
+        @test JuliaLibWrapping._matlab_classify_return(nothing, typeinfo, true).kind === :void
+
+        owned = JuliaLibWrapping._matlab_classify_return(6, typeinfo, true)
+        @test owned.kind === :string
+        @test owned.owns === true
+
+        # A borrowed return is the caller's storage passed straight back, so
+        # releasing it would free memory the gateway does not own.
+        borrowed = JuliaLibWrapping._matlab_classify_return(7, typeinfo, true)
+        @test borrowed.kind === :string
+        @test borrowed.owns === false
+
+        # `JLWResult` carries the status; the payload classifies underneath it
+        # and the ownership travels up.
+        wrapped = JuliaLibWrapping._matlab_classify_return(10, typeinfo, true)
+        @test wrapped.kind === :result
+        @test wrapped.inner.kind === :string
+        @test wrapped.owns === true
+
+        # A tuple owns storage when any element does, which is what the
+        # gateway's release loop reads.
+        tuple_ret = JuliaLibWrapping._matlab_classify_return(12, typeinfo, true)
+        @test tuple_ret.kind === :tuple
+        @test [e.kind for e in tuple_ret.elements] == [:string, :scalar]
+        @test [e.owns for e in tuple_ret.elements] == [true, false]
+        @test tuple_ret.owns === true
+        @test tuple_ret.fields == ["1", "2"]
+
+        # Without the release entrypoints there is nothing for the gateway to
+        # call, so an owning return is left unwrapped rather than leaked.
+        nofree = JuliaLibWrapping._matlab_classify_return(6, typeinfo, false)
+        @test nofree.kind === :opaque
+        @test occursin("release entrypoints", nofree.reason)
+        @test JuliaLibWrapping._matlab_classify_return(12, typeinfo, false).kind === :opaque
+
+        # A borrowed return needs no release, so it is unaffected.
+        @test JuliaLibWrapping._matlab_classify_return(7, typeinfo, false).kind === :string
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the

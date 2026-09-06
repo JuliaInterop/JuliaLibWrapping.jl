@@ -203,3 +203,111 @@ _matlab_owning_argument(family::AbstractString) = (
     kind = :opaque,
     reason = "an owning $family cannot be an argument; arguments are borrowed",
 )
+
+"""
+    _matlab_classify_return(type_id, typeinfo, release_present) -> NamedTuple
+
+Classify an entry point's return for the façade and the gateway. `kind` is one
+of:
+
+- `:void` — a bare `JLWStatus`, which the gateway checks and discards
+- `:result` — a `JLWResult{C}`; `inner` is this classification applied to `C`
+- `:scalar` — a numeric or logical value
+- `:string`, `:strarray`, `:dict`, `:array` — a carrier the gateway copies into
+  a new `mxArray`
+- `:opt` — a `COpt`, copied by value, becoming the value or `[]`
+- `:tuple` — a `CNTuple`; `elements` is this classification applied to each
+  element and `fields` names them, or is `nothing` when juliac emitted the
+  inner tuple as an inline array
+- `:opaque` — anything else, which leaves the entry point unwrapped
+
+Every classification carries `owns`: whether the gateway must release Julia's
+storage for it. That is what a tuple's release loop reads, and it must be
+honored for every element, including elements a caller did not ask for — a
+MATLAB caller may request fewer outputs than a declaration produces, and the
+unrequested ones are allocated all the same.
+
+An owning return classifies `:opaque` when `release_present` is `false`: the
+library exports no deallocation entry points, so the gateway would have nothing
+to call.
+"""
+function _matlab_classify_return(
+        type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc},
+        release_present::Bool
+    )
+    type_id === nothing && return (kind = :void, owns = false)
+    desc = typeinfo[type_id]
+    if desc isa PrimitiveTypeDesc
+        class = get(MATLAB_CLASSES, desc.name, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported scalar type `$(desc.name)`", owns = false)
+        return (kind = :scalar, class = class, owns = false)
+    end
+    desc isa StructDesc || return (kind = :opaque, reason = "return is not a struct", owns = false)
+
+    result = jlwresult_struct_info(desc, typeinfo)
+    if !isnothing(result)
+        inner = _matlab_classify_return(result.value_type_id, typeinfo, release_present)
+        inner.kind === :opaque && return (kind = :opaque, reason = inner.reason, owns = false)
+        return (kind = :result, inner = inner, owns = inner.owns)
+    end
+    is_jlwstatus_struct(desc, typeinfo) && return (kind = :void, owns = false)
+
+    info = cstring_struct_info(desc, typeinfo)
+    !isnothing(info) && return _matlab_owned_return(:string, info.ownership, release_present)
+    info = cstrarray_struct_info(desc, typeinfo)
+    !isnothing(info) && return _matlab_owned_return(:strarray, info.ownership, release_present)
+    info = cdict_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        class = get(MATLAB_CLASSES, info.value_type, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported dictionary value type `$(info.value_type)`", owns = false)
+        return _matlab_owned_return(:dict, info.ownership, release_present; class)
+    end
+    info = carray_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        class = get(MATLAB_CLASSES, info.eltype, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported array element type `$(info.eltype)`", owns = false)
+        return _matlab_owned_return(:array, info.ownership, release_present; class, ndim = info.ndim)
+    end
+    info = copt_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        class = get(MATLAB_CLASSES, info.value_type, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported optional payload type `$(info.value_type)`", owns = false)
+        # `COpt` is stored by value, so there is nothing to release.
+        return (kind = :opt, class = class, owns = false)
+    end
+    info = ctuple_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        elements = [
+            _matlab_classify_return(id, typeinfo, release_present)
+                for id in info.element_type_ids
+        ]
+        for el in elements
+            el.kind === :opaque && return (kind = :opaque, reason = el.reason, owns = false)
+            el.kind in (:tuple, :result, :void) && return (
+                kind = :opaque,
+                reason = "a tuple element the gateway cannot build an mxArray from",
+                owns = false,
+            )
+        end
+        return (
+            kind = :tuple, elements = elements, fields = info.element_fields,
+            owns = any(el -> el.owns, elements),
+        )
+    end
+    return (kind = :opaque, reason = "unrecognized return carrier `$(desc.name)`", owns = false)
+end
+
+# A storage-backed return is owned by the caller, and releasing it needs the
+# library's deallocation entry points. Without them there is nothing to call,
+# so the entry point is left unwrapped rather than leaked.
+function _matlab_owned_return(
+        kind::Symbol, ownership::Symbol, release_present::Bool; extra...
+    )
+    ownership === :borrowed && return (; kind, owns = false, extra...)
+    release_present || return (
+        kind = :opaque,
+        reason = "owning return needs release entrypoints; add JLWInterop.@export_release_entrypoints to the library",
+        owns = false,
+    )
+    return (; kind, owns = true, extra...)
+end
