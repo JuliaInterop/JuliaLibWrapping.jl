@@ -1694,6 +1694,58 @@ end
         end
     end
 
+    @testset "matlab gateway emission" begin
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "ctuple_demo", "libctuple"), abi)
+            gateway = read(joinpath(path, "libctuple_mex.c"), String)
+
+            # Opened, never closed: `clear mex` unloads this file, and
+            # reloading the library would run `jl_init` twice in one process.
+            @test occursin("RTLD_NODELETE", gateway)
+            @test !occursin("dlclose", gateway)
+
+            # Dispatch is by name, from `char`.
+            @test occursin("strcmp(name, \"stats\") == 0", gateway)
+
+            # Every element of a tuple is converted, which is also what
+            # releases Julia's storage for it, before any assignment: a caller
+            # asking for one output of two must not leak the other.
+            @test occursin("mxArray *out1 = jlw_out_CVector_owned_Float64", gateway)
+            @test occursin("mxDestroyArray(out2);", gateway)
+
+            # The inline-array form of a tuple is reached by index, the
+            # named form by field.
+            @test occursin("result.value.values[0]", gateway)
+            @test occursin("result.value.values._1", gateway)
+
+            # A build script that compiles it, and nothing that needs MATLAB
+            # to have been present while emitting.
+            build = read(joinpath(path, "build_mex.m"), String)
+            @test occursin("mex('-R2018a'", build)
+            @test occursin("'private'", build)
+        end
+    end
+
+    @testset "matlab gateway compiles" begin
+        # The generated C is checked against a stand-in for `mex.h`, so a
+        # syntax or type error is caught without MATLAB installed.
+        compiler = Sys.which("cc")
+        if isnothing(compiler)
+            @info "Skipping MATLAB gateway compile check (no cc)"
+        else
+            abi = read_abi_info("bindinginfo_ctuple.json")
+            mktempdir() do path
+                write_wrapper(MatlabTarget(path, "ctuple_demo", "libctuple"), abi)
+                write_wrapper(CTarget(path, "libctuple"), abi)
+                cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
+                command = `$compiler -fsyntax-only -Wall -Wextra -I$path
+                           $(joinpath(path, "libctuple_mex.c"))`
+                @test success(run(pipeline(command; stdout = stdout, stderr = stderr); wait = true))
+            end
+        end
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the
