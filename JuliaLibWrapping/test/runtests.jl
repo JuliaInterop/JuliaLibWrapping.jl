@@ -1792,6 +1792,67 @@ end
         end
     end
 
+    @testset "matlab carrier widths and guards" begin
+        # The real carriers use 64-bit lengths and several fixtures use
+        # 32-bit ones, so the width comes from the ABI rather than a guess.
+        # A count too large for a 32-bit field is refused rather than wrapped.
+        wide = read_abi_info("bindinginfo_cstrarray.json")
+        narrow = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), wide)
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            @test occursin("(int64_t)size;", gateway) || occursin("(int32_t)size;", gateway)
+            # Where a field is 32 bits, the guard has to be there.
+            if occursin("(int32_t)size;", gateway)
+                @test occursin("> INT32_MAX", gateway)
+            end
+        end
+        @test !isnothing(narrow)
+    end
+
+    @testset "matlab tuple validates dict keys first" begin
+        # A dictionary's keys are runtime data from Julia. Converting an
+        # element is also what releases it, so a bad key found part-way
+        # through a tuple would strand every element not yet reached.
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            handler = gateway[findfirst("jlw_call_bundle", gateway)[1]:end]
+            handler = handler[1:findfirst("\nstatic", handler)[1]]
+
+            keys_at = findfirst("not a legal MATLAB field name", handler)
+            convert_at = findfirst("mxArray *out1 =", handler)
+            @test !isnothing(keys_at) && !isnothing(convert_at)
+            @test first(keys_at) < first(convert_at)
+
+            # And the raise releases the whole tuple, not just the dict.
+            @test occursin("jlw_release_strings", handler)
+        end
+    end
+
+    @testset "matlab argument validation details" begin
+        abi = read_abi_info("bindinginfo_enum.json")
+        meta = Dict{String, Any}(
+            "EnumFixture_scale_by" => Dict{String, Any}(
+                "name" => "scale_by", "args" => ["opts"],
+                "kwargs" => [Dict{String, Any}("name" => "penalty", "default" => 0)],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"), abi;
+                api_metadata = meta, api_enums = Dict{String, Any}()
+            )
+            src = read(joinpath(path, "+demo", "scale_by.m"), String)
+            # Keywords arrive as a struct named `opts`, so a positional
+            # argument of that name must not shadow it.
+            @test !occursin("function out = scale_by(opts, opts)", src)
+            @test occursin("opts2", src)
+        end
+    end
+
     @testset "matlab gateway compiles" begin
         # Every fixture, not one: the gateway's shape depends on which
         # carriers an ABI happens to contain, so checking a single one
@@ -1814,7 +1875,7 @@ end
                     write_wrapper(CTarget(path, "libdemo"), abi)
                     cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
                     source = joinpath(path, "libdemo_mex.c")
-                    command = `$compiler -fsyntax-only -Werror -I$path $source`
+                    command = `$compiler -fsyntax-only -Wall -Wextra -Werror -I$path $source`
                     process = run(pipeline(command; stdout = stdout, stderr = stderr); wait = true)
                     success(process) || @error "gateway failed to compile" fixture
                     @test success(process)

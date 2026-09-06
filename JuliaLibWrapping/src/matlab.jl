@@ -106,7 +106,10 @@ the ABI otherwise. Keywords become a name-value block, so they are kept apart
 from the positional arguments.
 """
 function _matlab_arg_names(method::MethodDesc, api_entry)
-    seen = Set{String}()
+    # Keywords arrive as a struct named `opts`, so a positional argument of
+    # that name would shadow it and produce `function f(opts, opts)`.
+    seen = Set{String}(["opts"])
+
     if isnothing(api_entry)
         names = String[sanitize_matlab_name(a.name) for a in method.args]
         return (_uniquify!(names, seen), String[])
@@ -185,26 +188,26 @@ function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc}
     info = cstring_struct_info(desc, typeinfo)
     if !isnothing(info)
         info.ownership === :borrowed || return _matlab_owning_argument("CString")
-        return (kind = :string,)
+        return (kind = :string, length_bits = info.length_bits)
     end
     info = cstrarray_struct_info(desc, typeinfo)
     if !isnothing(info)
         info.ownership === :borrowed || return _matlab_owning_argument("CStrArray")
-        return (kind = :strarray,)
+        return (kind = :strarray, length_bits = info.length_bits)
     end
     info = cdict_struct_info(desc, typeinfo)
     if !isnothing(info)
         info.ownership === :borrowed || return _matlab_owning_argument("CDict")
         class = get(MATLAB_CLASSES, info.value_type, nothing)
         isnothing(class) && return (kind = :opaque, reason = "unsupported dictionary value type `$(info.value_type)`")
-        return (kind = :dict, class = class)
+        return (kind = :dict, class = class, length_bits = info.length_bits)
     end
     info = carray_struct_info(desc, typeinfo)
     if !isnothing(info)
         info.ownership === :borrowed || return _matlab_owning_argument("CArray")
         class = get(MATLAB_CLASSES, info.eltype, nothing)
         isnothing(class) && return (kind = :opaque, reason = "unsupported array element type `$(info.eltype)`")
-        return (kind = :array, class = class, ndim = info.ndim)
+        return (kind = :array, class = class, ndim = info.ndim, dims_bits = info.dims_bits)
     end
     info = copt_struct_info(desc, typeinfo)
     if !isnothing(info)
@@ -342,7 +345,7 @@ function _matlab_literal(value)
 end
 
 """
-    _matlab_arg_validation(kind) -> String
+    _matlab_arg_validation(kind, name) -> String
 
 The `arguments`-block declaration for one argument, without its name.
 
@@ -351,7 +354,7 @@ before its validators run, and `int64(2.5)` rounds rather than failing, so a
 later integrality check would always pass. The façade validates as a double
 and converts in its body.
 """
-function _matlab_arg_validation(kind)
+function _matlab_arg_validation(kind, name::AbstractString)
     kind.kind === :scalar &&
         return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
@@ -359,10 +362,16 @@ function _matlab_arg_validation(kind)
     kind.kind === :strarray && return "(1,:) cell"
     kind.kind === :dict && return "(1,1) struct"
     # A vector argument takes either orientation; the body normalizes it.
+    # `mustBeVector` alone rejects `[]`, which is 0x0 and a legal empty vector.
     kind.kind === :array &&
-        return kind.ndim == 1 ? kind.class * " {mustBeVector}" : kind.class
-    # Absent is `[]`, present is a scalar; the body tells them apart.
-    kind.kind === :opt && return "(:,:) " * kind.class
+        return kind.ndim == 1 ?
+        kind.class * " {mustBeVector(" * name * ", \"allow-all-empties\")}" :
+        kind.class
+    # Absent is `[]`, present is a scalar; the body tells them apart. An
+    # integer payload is declared `double` for the reason a scalar one is:
+    # the block would coerce before validating, and `int64(2.5)` rounds.
+    kind.kind === :opt && return kind.integer ?
+        "(:,:) double {mustBeInteger}" : "(:,:) " * kind.class
     return error("no MATLAB validation for argument kind $(kind.kind)")
 end
 
@@ -498,14 +507,14 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
             # An enum takes a member name or the underlying integer, which no
             # single class declaration covers; the body sorts it out.
             validation = isnothing(plan.enums[i]) ?
-                " " * _matlab_arg_validation(plan.args[i]) : ""
+                " " * _matlab_arg_validation(plan.args[i], name) : ""
             println(io, "        ", name, validation)
         end
         for (j, name) in pairs(plan.keywords)
             i = length(plan.positional) + j
             default = plan.defaults[j]
             validation = isnothing(plan.enums[i]) ?
-                " " * _matlab_arg_validation(plan.args[i]) : ""
+                " " * _matlab_arg_validation(plan.args[i], name) : ""
             suffix = isnothing(default) ? "" : " = " * _matlab_literal(default)
             println(io, "        opts.", name, validation, suffix)
         end
@@ -955,6 +964,36 @@ function _matlab_ctype(class::AbstractString)
 end
 
 """
+    _matlab_length_type(bits) -> String
+
+The C type of a carrier's length or dimension field. The recognizers report
+its width, and the real carriers are 64-bit while several hand-written
+fixtures are 32-bit, so it cannot be assumed.
+"""
+_matlab_length_type(bits::Integer) = "int" * string(bits) * "_t"
+
+"""
+    _write_matlab_length_guard(io, indent, expression, bits, what)
+
+Guard a count that has to fit a 32-bit field. `mwSize` is unsigned and 64-bit,
+so a larger value would wrap and reach Julia negative. Nothing is held where
+these are emitted, so raising is safe.
+"""
+function _write_matlab_length_guard(
+        io::IO, indent::AbstractString, expression::AbstractString,
+        bits::Integer, what::AbstractString
+    )
+    bits >= 64 && return nothing
+    println(io, indent, "if (", expression, " > INT32_MAX) {")
+    println(
+        io, indent, "    mexErrMsgIdAndTxt(\"jlw:dimension\", \"", what,
+        " exceeds this library's 32-bit length field\");"
+    )
+    println(io, indent, "}")
+    return nothing
+end
+
+"""
     _write_matlab_in_helpers(io, carriers)
 
 Write one conversion helper per distinct borrowed carrier an argument uses.
@@ -980,14 +1019,28 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             end
             println(io, "    ", name, " carrier;")
             if kind.ndim == 1
-                println(io, "    carrier.dims[0] = (int32_t)mxGetNumberOfElements(value);")
+                _write_matlab_length_guard(
+                    io, "    ", "mxGetNumberOfElements(value)", kind.dims_bits,
+                    "the vector's length"
+                )
+                println(
+                    io, "    carrier.dims[0] = (", _matlab_length_type(kind.dims_bits),
+                    ")mxGetNumberOfElements(value);"
+                )
             else
                 println(io, "    const mwSize *shape = mxGetDimensions(value);")
                 println(io, "    mwSize rank = mxGetNumberOfDimensions(value);")
                 println(io, "    for (int i = 0; i < ", kind.ndim, "; i++) {")
                 println(io, "        /* MATLAB drops trailing singletons, so a missing")
                 println(io, "           dimension is 1 rather than an error. */")
-                println(io, "        carrier.dims[i] = (int32_t)(i < (int)rank ? shape[i] : 1);")
+                _write_matlab_length_guard(
+                    io, "        ", "(i < (int)rank ? shape[i] : 1)", kind.dims_bits,
+                    "a dimension"
+                )
+                println(
+                    io, "        carrier.dims[i] = (", _matlab_length_type(kind.dims_bits),
+                    ")(i < (int)rank ? shape[i] : 1);"
+                )
                 println(io, "    }")
             end
             println(io, "    carrier.data = (", ctype, " *)", _matlab_accessor(kind.class), "(value);")
@@ -1002,8 +1055,12 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "    if (text == NULL) {")
             println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"could not read char data\");")
             println(io, "    }")
+            println(io, "    size_t size = strlen(text);")
+            _write_matlab_length_guard(io, "    ", "size", kind.length_bits, "the string")
             println(io, "    ", name, " carrier;")
-            println(io, "    carrier.length = (int32_t)strlen(text);")
+            println(
+                io, "    carrier.length = (", _matlab_length_type(kind.length_bits), ")size;"
+            )
             println(io, "    carrier.data = (uint8_t *)text;")
             println(io, "    return carrier;")
             println(io, "}")
@@ -1020,11 +1077,16 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "            mexErrMsgIdAndTxt(\"jlw:argument\", \"every cell must be char\");")
             println(io, "        }")
             println(io, "        char *text = mxArrayToUTF8String(cell);")
-            println(io, "        items[i].length = (int32_t)strlen(text);")
+            println(io, "        size_t size = strlen(text);")
+            _write_matlab_length_guard(io, "        ", "size", 32, "a string")
+            println(io, "        items[i].length = (int32_t)size;")
             println(io, "        items[i].data = (uint8_t *)text;")
             println(io, "    }")
+            _write_matlab_length_guard(io, "    ", "count", kind.length_bits, "the cell array")
             println(io, "    ", name, " carrier;")
-            println(io, "    carrier.length = (int64_t)count;")
+            println(
+                io, "    carrier.length = (", _matlab_length_type(kind.length_bits), ")count;"
+            )
             println(io, "    carrier.data = items;")
             println(io, "    return carrier;")
             println(io, "}")
@@ -1041,6 +1103,7 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "    for (int i = 0; i < count; i++) {")
             println(io, "        const char *key = mxGetFieldNameByNumber(value, i);")
             println(io, "        keys[i].length = (int32_t)strlen(key);")
+            println(io, "        /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */")
             println(io, "        keys[i].data = (uint8_t *)key;")
             println(io, "        const mxArray *field = mxGetFieldByNumber(value, 0, i);")
             println(io, "        if (field == NULL || !mxIs", uppercasefirst(kind.class), "(field) ||")
@@ -1051,7 +1114,9 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "        values[i] = *", _matlab_accessor(kind.class), "(field);")
             println(io, "    }")
             println(io, "    ", name, " carrier;")
-            println(io, "    carrier.length = (int64_t)count;")
+            println(
+                io, "    carrier.length = (", _matlab_length_type(kind.length_bits), ")count;"
+            )
             println(io, "    carrier.keys = keys;")
             println(io, "    carrier.values = values;")
             println(io, "    return carrier;")
@@ -1289,6 +1354,7 @@ function _write_matlab_results(io::IO, ret, expression::AbstractString, names)
         return nothing
     end
     count = length(ret.elements)
+    _write_matlab_tuple_precheck(io, ret, expression, names)
     for i in 1:count
         access = expression * ".values" * _matlab_element_access(ret.fields, i)
         println(io, "    mxArray *out", i, " = jlw_out_", names.elements[i], "(", access, ");")
@@ -1384,13 +1450,17 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
     println(io, "    if (nrhs < 1 || !mxIsChar(prhs[0])) {")
     println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"the first argument names the function\");")
     println(io, "    }")
-    println(io, "    char *name = mxArrayToUTF8String(prhs[0]);")
+    # With nothing wrapped there is no name to compare against, and reading
+    # one would be an unused variable.
+    isempty(named) || println(io, "    char *name = mxArrayToUTF8String(prhs[0]);")
     for (i, (method, _, _)) in pairs(named)
         keyword = i == 1 ? "    if" : "    } else if"
         println(io, keyword, " (strcmp(name, \"", method.symbol, "\") == 0) {")
         println(io, "        jlw_call_", method.symbol, "(nlhs, plhs, nrhs, prhs);")
     end
     if isempty(named)
+        println(io, "    (void)nlhs;")
+        println(io, "    (void)plhs;")
         println(io, "    mexErrMsgIdAndTxt(\"jlw:argument\", \"no wrapped functions\");")
     else
         println(io, "    } else {")
@@ -1398,5 +1468,63 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
         println(io, "    }")
     end
     println(io, "}")
+    return nothing
+end
+
+"""
+    _matlab_release_expression(kind, access) -> Vector{String}
+
+The statements that release a carrier's storage without converting it. Used to
+unwind a tuple whose elements have been produced but not yet converted.
+"""
+function _matlab_release_expression(kind, access::AbstractString)
+    kind.owns || return String[]
+    kind.kind === :strarray &&
+        return ["jlw_release_strings(" * access * ".data, " * access * ".length);"]
+    kind.kind === :dict && return [
+        "jlw_release_strings(" * access * ".keys, " * access * ".length);",
+        "jlw_release(" * access * ".values);",
+    ]
+    return ["jlw_release(" * access * ".data);"]
+end
+
+"""
+    _write_matlab_tuple_precheck(io, ret, expression, names)
+
+Validate every dictionary element's field names before any element of a tuple
+is converted.
+
+Conversion is also what releases an element, so a raise part-way through the
+sequence would strand every element not yet reached. Dictionary keys are
+runtime data from Julia, so this is an ordinary path rather than an edge case.
+Checking them all first means the only raise happens while the whole tuple is
+still intact, and can release it.
+"""
+function _write_matlab_tuple_precheck(io::IO, ret, expression::AbstractString, names)
+    dicts = [i for (i, element) in pairs(ret.elements) if element.kind === :dict]
+    isempty(dicts) && return nothing
+    for i in dicts
+        access = expression * ".values" * _matlab_element_access(ret.fields, i)
+        println(io, "    for (int64_t k = 0; k < ", access, ".length; k++) {")
+        println(io, "        int32_t n = ", access, ".keys[k].length;")
+        println(io, "        int ok = n > 0 && n < mxMAXNAM;")
+        println(io, "        for (int32_t j = 0; ok && j < n; j++) {")
+        println(io, "            uint8_t c = ", access, ".keys[k].data[j];")
+        println(io, "            int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');")
+        println(io, "            int digit = c >= '0' && c <= '9';")
+        println(io, "            ok = alpha || c == '_' || (j > 0 && digit);")
+        println(io, "        }")
+        println(io, "        if (!ok) {")
+        for (j, element) in pairs(ret.elements)
+            other = expression * ".values" * _matlab_element_access(ret.fields, j)
+            for statement in _matlab_release_expression(element, other)
+                println(io, "            ", statement)
+            end
+        end
+        println(io, "            mexErrMsgIdAndTxt(\"jlw:argument\",")
+        println(io, "                \"a dictionary key is not a legal MATLAB field name\");")
+        println(io, "        }")
+        println(io, "    }")
+    end
     return nothing
 end
