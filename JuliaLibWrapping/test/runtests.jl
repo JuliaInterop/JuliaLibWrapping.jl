@@ -1853,6 +1853,32 @@ end
         end
     end
 
+    @testset "matlab library resolution" begin
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+
+            # The gateway emits the carrier typedefs it needs, so a build
+            # with no `CTarget` still produces something that compiles.
+            @test isfile(joinpath(path, "libdemo.h"))
+
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            # A bare name would be searched for relative to MATLAB's process
+            # rather than to the library, and `$ORIGIN` resolves to the MEX
+            # file's own directory, where the library is not.
+            @test !occursin("\$ORIGIN", gateway)
+            @test occursin("#define JLW_LIBRARY_PATH", gateway)
+            @test occursin("getenv(JLW_LIBRARY_ENV)", gateway)
+            @test occursin("#define JLW_LIBRARY_ENV \"LIBDEMO_MEX_LIBRARY\"", gateway)
+
+            # The build script compiles the path in, and takes a directory so
+            # the library can stay next to the runtime its RUNPATH names.
+            build = read(joinpath(path, "build_mex.m"), String)
+            @test occursin("function build_mex(library_dir)", build)
+            @test occursin("-DJLW_LIBRARY_PATH=", build)
+        end
+    end
+
     @testset "matlab gateway compiles" begin
         # Every fixture, not one: the gateway's shape depends on which
         # carriers an ABI happens to contain, so checking a single one
@@ -1870,9 +1896,9 @@ end
             for fixture in fixtures
                 abi = read_abi_info(fixture)
                 mktempdir() do path
+                    # No `CTarget` here on purpose: the MATLAB target emits
+                    # the header its gateway needs, so it stands alone.
                     write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
-                    # The gateway includes the C target's header.
-                    write_wrapper(CTarget(path, "libdemo"), abi)
                     cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
                     source = joinpath(path, "libdemo_mex.c")
                     command = `$compiler -fsyntax-only -Wall -Wextra -Werror -I$path $source`
