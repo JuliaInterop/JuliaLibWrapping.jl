@@ -1677,6 +1677,17 @@ end
             @test read(joinpath(path, "build_mex.m"), String) ==
                 read(joinpath(@__DIR__, "expected_matlab_build.m"), String)
         end
+
+        # `ctuple`'s entry points take no arguments, so that golden pins none
+        # of the conversions that read an `mxArray`. This one does.
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"),
+                read_abi_info("bindinginfo_cdict.json")
+            )
+            @test read(joinpath(path, "libdemo_mex.c"), String) ==
+                read(joinpath(@__DIR__, "expected_matlab_gateway_args.c"), String)
+        end
     end
 
     @testset "matlab facade from sidecar metadata" begin
@@ -2067,7 +2078,11 @@ end
         mktempdir() do path
             write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
             gateway = read(joinpath(path, "libdemo_mex.c"), String)
-            @test occursin("ok = j == 0 ? alpha : (alpha || rest);", gateway)
+            # Emitted once and called from both the dictionary helper and a
+            # tuple holding one, so a fix lands in a single place.
+            @test occursin("static int jlw_valid_field_name(", gateway)
+            @test occursin("if (!(j == 0 ? alpha : (alpha || rest))) {", gateway)
+            @test occursin("jlw_valid_field_name(carrier.keys[i].data", gateway)
         end
     end
 

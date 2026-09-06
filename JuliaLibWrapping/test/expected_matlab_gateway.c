@@ -124,6 +124,23 @@ static void jlw_check(JLWStatus status)
     mexErrMsgIdAndTxt(identifier, "%s", message);
 }
 
+static int jlw_valid_field_name(const uint8_t *data, int32_t n)
+{
+    if (n <= 0 || n >= mxMAXNAM) {
+        return 0;
+    }
+    for (int32_t j = 0; j < n; j++) {
+        uint8_t c = data[j];
+        int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        int rest = (c >= '0' && c <= '9') || c == '_';
+        /* A field name starts with a letter. */
+        if (!(j == 0 ? alpha : (alpha || rest))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void jlw_release(void *pointer)
 {
     static void (*entry)(void *) = NULL;
@@ -171,19 +188,10 @@ static mxArray *jlw_out_CStrArray_owned(CStrArray_owned carrier)
 
 static mxArray *jlw_out_CDict_owned_Float64(CDict_owned_Float64 carrier)
 {
-    /* Field names are checked before anything is created, so a
-       bad key is reported while nothing is held. */
+    /* Keys are checked before anything is created, so a bad
+       one is reported while nothing is held. */
     for (int64_t i = 0; i < carrier.length; i++) {
-        int32_t n = carrier.keys[i].length;
-        int ok = n > 0 && n < mxMAXNAM;
-        for (int32_t j = 0; ok && j < n; j++) {
-            uint8_t c = carrier.keys[i].data[j];
-            int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-            int rest = (c >= '0' && c <= '9') || c == '_';
-            /* A field name starts with a letter. */
-            ok = j == 0 ? alpha : (alpha || rest);
-        }
-        if (!ok) {
+        if (!jlw_valid_field_name(carrier.keys[i].data, carrier.keys[i].length)) {
             jlw_release_strings(carrier.keys, carrier.length);
             jlw_release(carrier.values);
             mexErrMsgIdAndTxt("jlw:argument",
@@ -252,16 +260,7 @@ static void jlw_call_bundle
         ((JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64 (*)(void))jlw_symbol("bundle"))();
     jlw_check(result.status);
     for (int64_t k = 0; k < result.value.values._3.length; k++) {
-        int32_t n = result.value.values._3.keys[k].length;
-        int ok = n > 0 && n < mxMAXNAM;
-        for (int32_t j = 0; ok && j < n; j++) {
-            uint8_t c = result.value.values._3.keys[k].data[j];
-            int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-            int rest = (c >= '0' && c <= '9') || c == '_';
-            /* A field name starts with a letter. */
-            ok = j == 0 ? alpha : (alpha || rest);
-        }
-        if (!ok) {
+        if (!jlw_valid_field_name(result.value.values._3.keys[k].data, result.value.values._3.keys[k].length)) {
             jlw_release(result.value.values._1.data);
             jlw_release_strings(result.value.values._2.data, result.value.values._2.length);
             jlw_release_strings(result.value.values._3.keys, result.value.values._3.length);
