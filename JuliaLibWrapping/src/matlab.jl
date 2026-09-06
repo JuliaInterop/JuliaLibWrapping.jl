@@ -9,6 +9,10 @@ name without its extension.
 
 MATLAB compiles the emitted sources; emitting them is pure Julia.
 
+`library_subdir` says where the shared library sits relative to `dir`, which
+`build_mex.m` takes as its default. A bundled build puts it under
+`<libname>-bundle/lib`.
+
 `duplicate_arguments` copies each array argument for the call. Use it when the
 wrapped library writes to its arguments. By default the gateway hands Julia a
 pointer into MATLAB's own buffer, and a write there changes every variable
@@ -20,13 +24,16 @@ struct MatlabTarget <: AbstractTarget
     package_name::String
     library_basename::String
     duplicate_arguments::Bool
+    library_subdir::String
 end
 
 MatlabTarget(
     dir::AbstractString, package_name::AbstractString,
-    library_basename::AbstractString; duplicate_arguments::Bool = false
+    library_basename::AbstractString; duplicate_arguments::Bool = false,
+    library_subdir::AbstractString = ""
 ) = MatlabTarget(
-    String(dir), String(package_name), String(library_basename), duplicate_arguments
+    String(dir), String(package_name), String(library_basename),
+    duplicate_arguments, String(library_subdir)
 )
 
 function Base.show(io::IO, t::MatlabTarget)
@@ -703,7 +710,14 @@ function _write_matlab_build_script(io::IO, dest::MatlabTarget, gateway::Abstrac
     )
     println(io, "    here = fileparts(mfilename('fullpath'));")
     println(io, "    if nargin < 1")
-    println(io, "        library_dir = here;")
+    if isempty(dest.library_subdir)
+        println(io, "        library_dir = here;")
+    else
+        parts = join(
+            ["'" * p * "'" for p in splitpath(dest.library_subdir)], ", "
+        )
+        println(io, "        library_dir = fullfile(here, ", parts, ");")
+    end
     println(io, "    end")
     println(io, "    target = fullfile(here, '+", dest.package_name, "', 'private');")
     println(io, "    if ~isfolder(target)")

@@ -343,7 +343,10 @@ function _standard_targets(
     ]
     isnothing(matlab_package) || push!(
         targets,
-        MatlabTarget(out, matlab_package, libname; duplicate_arguments)
+        MatlabTarget(
+            out, matlab_package, libname; duplicate_arguments,
+            library_subdir = bundle ? joinpath(libname * "-bundle", "lib") : ""
+        )
     )
     return targets
 end

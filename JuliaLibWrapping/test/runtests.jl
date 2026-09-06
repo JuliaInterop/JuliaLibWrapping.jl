@@ -1491,6 +1491,7 @@ end
         @test sprint(show, t) == "MatlabTarget(\"out\", \"boundary\", \"boundary\")"
         @test t isa AbstractTarget
         @test t.duplicate_arguments === false
+        @test t.library_subdir == ""
 
         copied = MatlabTarget("out", "boundary", "boundary"; duplicate_arguments = true)
         @test copied.duplicate_arguments === true
@@ -2008,6 +2009,22 @@ end
             build = read(joinpath(path, "build_mex.m"), String)
             @test occursin("function build_mex(library_dir)", build)
             @test occursin("-DJLW_LIBRARY_PATH=", build)
+            # With no subdirectory the library sits beside the script.
+            @test occursin("library_dir = here;", build)
+        end
+
+        # A bundled build keeps the library next to the runtime its RUNPATH
+        # names, so the script defaults there instead.
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(
+                    path, "demo", "libdemo";
+                    library_subdir = joinpath("libdemo-bundle", "lib")
+                ),
+                abi
+            )
+            build = read(joinpath(path, "build_mex.m"), String)
+            @test occursin("fullfile(here, 'libdemo-bundle', 'lib')", build)
         end
     end
 
