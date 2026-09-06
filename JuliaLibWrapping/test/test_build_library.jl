@@ -607,10 +607,10 @@ end
                 )
                 @test result.metadata_path == joinpath(out, "twofn.jlw.json")
                 @test isfile(result.metadata_path)
-                facade = read(joinpath(out, "twofn_py", "_facade.py"), String)
-                @test occursin("def scale_one(x, *, factor=2.0):", facade)
-                @test occursin("def add_ints(a, b):", facade)
-                @test occursin("\"\"\"Scale it.\"\"\"", facade)
+                generated = read(joinpath(out, "twofn_py", "_generated.py"), String)
+                @test occursin("def scale_one(x, *, factor=2.0):", generated)
+                @test occursin("def add_ints(a, b):", generated)
+                @test occursin("\"\"\"Scale it.\"\"\"", generated)
             end
         end
     end

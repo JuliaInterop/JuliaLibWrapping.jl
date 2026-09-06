@@ -70,6 +70,7 @@ copies it into each Python target's declared `bundle_subdir`:
 mylib_py/
 ├── __init__.py
 ├── _facade.py
+├── _generated.py
 ├── _lowlevel.py
 └── bundle/
     ├── lib/

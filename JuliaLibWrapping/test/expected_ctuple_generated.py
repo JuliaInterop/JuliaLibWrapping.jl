@@ -1,17 +1,14 @@
-"""ctuple_demo idiomatic façade.
+"""ctuple_demo generated façade.
 
-This file is generated **once** by JuliaLibWrapping as a starter
-façade. Functions whose arguments and return are all recognized
-(primitives, `CArray{owned,T,N}`, `CString{owned}`, direct `JLWStatus`)
-are wrapped to accept and return idiomatic Python objects (numpy
-arrays, `str`). Anything else is re-exported from `_lowlevel`
-with a `TODO` comment naming what needs hand-wrapping.
+Idiomatic wrappers over `_lowlevel`: functions whose arguments and return
+are all recognized (primitives, carriers such as `CArray`, `CString`,
+`CDict`, `COpt`, enums, and `JLWResult`/`JLWStatus` returns) accept and
+return Python objects (numpy arrays, `str`, `dict`, ...). Anything else is
+re-exported from `_lowlevel` with a `TODO` comment naming what needs
+hand-wrapping.
 
-Edit this file freely — JuliaLibWrapping will never overwrite it
-on subsequent runs. Delete it to regenerate.
-
-The mechanical bindings live in `_lowlevel.py` and are regenerated
-on every `write_wrapper` call.
+This file is regenerated on every build. Do not edit it; put hand-written
+code in `_facade.py`, which imports everything defined here.
 """
 from . import _lowlevel  # noqa: F401
 import numpy as np  # noqa: F401
