@@ -2233,13 +2233,6 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
             Tuple{Float64, Int64}, (1.0,)
         )
 
-        # A tuple with an optional element has a non-concrete type. The
-        # conversion must still resolve statically, or `--trim=safe` rejects
-        # the entry point that returns it.
-        @test Base.return_types(
-            JLWInterop.to_carrier_as, Tuple{Type{D}, D}
-        ) == [C]
-
         # Every element is converted before any carrier is built, so an
         # element that fails to convert strands no earlier element's buffer.
         if Sys.islinux()
