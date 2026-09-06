@@ -213,6 +213,28 @@ The generated `from_optional` and `as_optional` helpers convert the value
 without a keepalive or release operation.
 
 
+## `CNTuple{N,T}` — tuple returns
+
+A tuple return is carried by `CNTuple`, whose one field holds a tuple of the
+elements' own carriers. Ownership is per element: a `CNTuple{2,
+Tuple{CVector{:owned, Float64}, Int64}}` has one buffer to release and one
+scalar to read.
+
+There is no borrowed form, because a tuple has no argument mapping.
+
+### Python target
+
+| Julia | Python |
+|---|---|
+| `Tuple{T1,…,TN}` for mapped `Ti` | `tuple` |
+
+The generated façade converts each element by its own kind and releases the
+owning ones afterwards.
+
+```@docs
+CNTuple
+```
+
 ## Owning carrier returns
 
 Libraries returning an owning `CArray`, `CString`, `CStrArray`, or `CDict`

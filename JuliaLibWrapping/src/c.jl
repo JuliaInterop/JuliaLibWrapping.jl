@@ -18,7 +18,7 @@ struct CTarget <: AbstractTarget
 end
 
 function Base.show(io::IO, t::CTarget)
-    print(io, "CTarget(", repr(t.dir), ", ", repr(t.headerbase), ")")
+    return print(io, "CTarget(", repr(t.dir), ", ", repr(t.headerbase), ")")
 end
 
 function unwrap_pointer_type(type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc})
@@ -51,7 +51,7 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
     # Write the header file for C
     headerfile = joinpath(dest.dir, dest.headerbase * ".h")
     libvar = "JULIALIB_" * uppercase(dest.headerbase) * "_H"
-    open(headerfile, "w") do f
+    return open(headerfile, "w") do f
         println(f, "#ifndef $libvar")
         println(f, "#define $libvar")
         println(f, "#include <stddef.h>")
@@ -93,26 +93,32 @@ function write_wrapper(dest::CTarget, abi_info::ABIInfo)
                 # We emit pointer types in-line - no need for a separate typedef
             elseif type isa ArrayDesc
                 # Arrays render inline at field-emit sites (`T name[N]`); no typedef.
-            else @assert false "unknown descriptor type" end
+            else
+                @assert false "unknown descriptor type"
+            end
             push!(printed, id)
         end
         println(f)
 
         for method in entrypoints
             if method.return_type !== nothing && typeinfo[method.return_type] isa ArrayDesc
-                error("C entrypoint `", method.symbol,
-                      "`: returning an array type is not representable in C; ",
-                      "wrap the result in a struct.")
+                error(
+                    "C entrypoint `", method.symbol,
+                    "`: returning an array type is not representable in C; ",
+                    "wrap the result in a struct."
+                )
             end
             mangled_rt = mangle_c!(typedict, method.return_type, typeinfo)
             print(f, mangled_rt, " ", method.symbol, "(")
             isfirst = true
             for arg in method.args
                 if typeinfo[arg.type] isa ArrayDesc
-                    error("C entrypoint `", method.symbol, "`: argument `",
-                          arg.name, "` has array type, which decays to a ",
-                          "pointer in C parameters; wrap it in a struct or ",
-                          "pass `Ptr{<element>}` plus a length.")
+                    error(
+                        "C entrypoint `", method.symbol, "`: argument `",
+                        arg.name, "` has array type, which decays to a ",
+                        "pointer in C parameters; wrap it in a struct or ",
+                        "pass `Ptr{<element>}` plus a length."
+                    )
                 end
                 if isfirst
                     isfirst = false
@@ -168,11 +174,11 @@ const ctypes = Dict{String, String}(
     sanitize_for_c(str) -> String
 
 Return `str` with all non-alphanumeric (non-underscore) characters
-replaced by `_`, leading/trailing underscores stripped, and runs of
-underscores collapsed. Used to coerce Julia identifiers and type names
-into valid C tokens. Two distinct inputs may collide; callers that need
-uniqueness (e.g. `mangle_c!`) suffix the result with a numeric
-disambiguator.
+replaced by `_`, leading/trailing underscores stripped, runs of
+underscores collapsed, and a leading digit prefixed with `_`. Used to
+coerce Julia identifiers and type names into valid C tokens. Two
+distinct inputs may collide; callers that need uniqueness (e.g.
+`mangle_c!`) suffix the result with a numeric disambiguator.
 """
 function sanitize_for_c(str::AbstractString)
     # Replace any non alphanumeric characters with '_'
@@ -180,10 +186,12 @@ function sanitize_for_c(str::AbstractString)
     # Strip any leading / trailing underscores
     str = strip(str, Char['_'])
     # Merge any repeated underscores to just one
-    return replace(str, r"_+" => "_")
+    str = replace(str, r"_+" => "_")
+    # juliac names a tuple field by its position, which is not a C identifier
+    return isempty(str) || !isdigit(first(str)) ? str : "_" * str
 end
 
-function mangle_c!(typedict::Dict{Int, String}, @nospecialize(type_id::Union{Int, Nothing}), typeinfo::OrderedDict{Int,TypeDesc})
+function mangle_c!(typedict::Dict{Int, String}, @nospecialize(type_id::Union{Int, Nothing}), typeinfo::OrderedDict{Int, TypeDesc})
     type_id === nothing && return "void"
     if type_id in keys(typedict)
         return typedict[type_id]

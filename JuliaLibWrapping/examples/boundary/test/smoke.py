@@ -26,6 +26,25 @@ assert b.str_len("wörld") == 6  # 'ö' is 2 UTF-8 code units
 assert b.str_len("a\x00b") == 3  # an embedded NUL is content, not a terminator
 assert b.shout("héllo") == "HÉLLO"  # an owning String return, freed by the facade
 
+x, n = b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
+assert list(x) == [2.0, 4.0, 6.0]
+assert n == 3
+
+# A tuple with four elements of different carried types: each is
+# converted by its own type, and only the owning ones are freed.
+shouted, words, lengths, mean = b.bundle("a bb ccc")
+assert shouted == "A BB CCC"
+assert words == ["a", "bb", "ccc"]
+assert lengths == {"a": 1.0, "bb": 2.0, "ccc": 3.0}
+assert mean == 2.0
+assert b.bundle("")[3] is None  # the optional element is absent
+
+# A tuple whose elements share one type; juliac emits that as an inline
+# array rather than named fields.
+cols, rows = b.maximum_marginals(np.asfortranarray([[1.0, 4.0], [3.0, 2.0]]))
+assert list(cols) == [3.0, 4.0]
+assert list(rows) == [4.0, 3.0]
+
 assert b.check_positive(1.0) is None
 try:
     b.check_positive(-1.0)
@@ -162,4 +181,7 @@ for _ in range(10_000):
     b.echo_strs(["x", "y"])
     b.echo_dict({"k": 1.0})
     b.make_vec(4)
+    b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
+    b.bundle("a bb ccc")
+    b.maximum_marginals(np.asfortranarray([[1.0, 4.0], [3.0, 2.0]]))
 print("boundary smoke: OK")

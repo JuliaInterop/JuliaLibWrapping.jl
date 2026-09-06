@@ -3,6 +3,14 @@ using LinearAlgebra
 using OffsetArrays
 using Test
 
+# An enum and a `mallinfo` binding for the tuple-return tests below; both
+# need file scope, which a testset body does not provide.
+@enum ApiTupleMode::Int32 atm_low = 0 atm_high = 1
+struct MallInfo2
+    fields::NTuple{10, Csize_t}
+end
+uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
+
 @testset "JLWInterop" begin
     @testset "jlw_ok" begin
         s = jlw_ok()
@@ -2074,9 +2082,11 @@ using Test
         # byte-identical to what it produced before enum support existed.
         m2 = Module(:ApiEnumNone)
         Core.eval(m2, :(using JLWInterop))
-        Core.eval(m2, quote
-            twice(x::Float64) = 2x
-        end)
+        Core.eval(
+            m2, quote
+                twice(x::Float64) = 2x
+            end
+        )
         Core.eval(m2, :(JLWInterop.@api twice(x::Float64)::Float64))
         mktempdir() do dir
             p = joinpath(dir, "none.jlw.json")
@@ -2092,16 +2102,26 @@ using Test
         # `enums` table, keyed by name — an error, not a silent merge.
         m3 = Module(:ApiEnumCollide)
         Core.eval(m3, :(using JLWInterop))
-        Core.eval(m3, :(module A
-            @enum PenaltyKind::Int32 a = 0
-        end))
-        Core.eval(m3, :(module B
-            @enum PenaltyKind::Int32 b = 0
-        end))
-        Core.eval(m3, quote
-            f(x::A.PenaltyKind) = x
-            g(x::B.PenaltyKind) = x
-        end)
+        Core.eval(
+            m3, :(
+                module A
+                @enum PenaltyKind::Int32 a = 0
+                end
+            )
+        )
+        Core.eval(
+            m3, :(
+                module B
+                @enum PenaltyKind::Int32 b = 0
+                end
+            )
+        )
+        Core.eval(
+            m3, quote
+                f(x::A.PenaltyKind) = x
+                g(x::B.PenaltyKind) = x
+            end
+        )
         Core.eval(m3, :(JLWInterop.@api f(x::A.PenaltyKind)::A.PenaltyKind))
         Core.eval(m3, :(JLWInterop.@api g(x::B.PenaltyKind)::B.PenaltyKind))
         mktempdir() do dir
@@ -2125,4 +2145,150 @@ using Test
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
     end
+
+    @testset "CNTuple carrier" begin
+        t = CNTuple((Int64(3), 2.5))
+        @test t isa CNTuple{2, Tuple{Int64, Float64}}
+        @test t.values === (Int64(3), 2.5)
+
+        # A tuple of carriers is isbits, so the generic `_zero_carrier`
+        # fallback works and `jlw_error` can build a failure value.
+        C = CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
+        @test isbitstype(C)
+        z = JLWInterop._zero_carrier(C)
+        @test z.values[1].data === Ptr{Float64}(C_NULL)
+        @test z.values[2] === Int64(0)
+
+        # Arity is a parameter, so any width works without a new type.
+        wide = CNTuple(ntuple(i -> Int64(i), 12))
+        @test wide isa CNTuple{12, NTuple{12, Int64}}
+    end
+
+    @testset "tuple returns map onto CNTuple" begin
+        @test JLWInterop.carrier_return_type(Tuple{Float64, Int64}) ===
+            CNTuple{2, Tuple{Float64, Int64}}
+        @test JLWInterop.carrier_return_type(Tuple{Vector{Float64}, Int64}) ===
+            CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
+        @test JLWInterop.carrier_return_type(Tuple{String, Vector{String}}) ===
+            CNTuple{2, Tuple{CString{:owned}, CStrArray{:owned}}}
+
+        # Tuples are return-only: the argument direction still has no mapping.
+        @test isnothing(JLWInterop.carrier_type(Tuple{Float64, Int64}))
+
+        # An element with no carrier makes the whole tuple unmapped, so the
+        # macro reports its usual error instead of building a broken carrier.
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64, Function}))
+
+        # A one-element tuple is not a multiple return.
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64}))
+
+        # A non-concrete tuple (from an optional element) still has one
+        # fixed carrier. A tuple with no definite length has no carrier.
+        @test JLWInterop.carrier_return_type(
+            Tuple{Float64, Union{Float64, Nothing}}
+        ) === CNTuple{2, Tuple{Float64, COpt{Float64}}}
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Vararg{Int64}}))
+        @test isnothing(JLWInterop.carrier_return_type(Tuple))
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{T, T} where {T}))
+
+        # A nested tuple and an enum element are rejected at expansion: the
+        # first has no target-side unwrapping, and the second would reach a
+        # target as a bare integer, unlike a scalar enum return.
+        @test isnothing(
+            JLWInterop.carrier_return_type(Tuple{Tuple{Float64, Int64}, Int64})
+        )
+        @test isnothing(
+            JLWInterop.carrier_return_type(Tuple{ApiTupleMode, Float64})
+        )
+
+        # `to_carrier` builds the carrier element-wise.
+        c = JLWInterop.to_carrier((2.5, Int64(7)))
+        @test c === CNTuple{2, Tuple{Float64, Int64}}((2.5, Int64(7)))
+
+        c2 = JLWInterop.to_carrier(([1.0, 2.0], Int64(2)))
+        @test c2 isa CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}
+        @test collect(c2.values[1]) == [1.0, 2.0]
+        @test c2.values[2] === Int64(2)
+        Libc.free(c2.values[1].data)
+
+        # `to_carrier_as` uses the declared element types: an optional
+        # element arrives as a bare value or `nothing`, and neither says
+        # which `COpt` to build.
+        D = Tuple{Float64, Union{Float64, Nothing}}
+        C = CNTuple{2, Tuple{Float64, COpt{Float64}}}
+        @test JLWInterop.to_carrier_as(D, (1.0, 2.0)) === C((1.0, COpt(2.0)))
+        @test JLWInterop.to_carrier_as(D, (1.0, nothing)) ===
+            C((1.0, COpt{Float64}(nothing)))
+
+        # Elements are converted to the declared types, as a scalar return is.
+        @test JLWInterop.to_carrier_as(D, (1, 2)) === C((1.0, COpt(2.0)))
+
+        # A count that disagrees with the declaration is an error either way:
+        # extra values would otherwise be dropped without a word. Converting
+        # the whole tuple at once is what reports it.
+        @test_throws MethodError JLWInterop.to_carrier_as(
+            Tuple{Float64, Int64}, (1.0, 2, 3)
+        )
+        @test_throws MethodError JLWInterop.to_carrier_as(
+            Tuple{Float64, Int64}, (1.0,)
+        )
+
+        # Every element is converted before any carrier is built, so an
+        # element that fails to convert strands no earlier element's buffer.
+        if Sys.islinux()
+            bad() = try
+                JLWInterop.to_carrier_as(
+                    Tuple{Vector{Float64}, Int64}, ([1.0, 2.0, 3.0], 2.5)
+                )
+            catch
+            end
+            foreach(_ -> bad(), 1:100)
+            GC.gc(true)
+            before = Int(uordblks())
+            foreach(_ -> bad(), 1:1000)
+            GC.gc(true)
+            @test Int(uordblks()) - before < 10_000
+        end
+    end
+
+
+    @testset "@api tuple return end to end" begin
+        status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))
+        m = Module(:ApiTestTuple)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                function stats(a::Vector{Float64})
+                    return (2 .* a, Int64(length(a)))
+                end
+                function bad(a::Vector{Float64})
+                    return error("no stats")
+                end
+            end
+        )
+        Core.eval(m, :(JLWInterop.@api stats(a::Vector{Float64})::Tuple{Vector{Float64}, Int64}))
+        Core.eval(m, :(JLWInterop.@api bad(a::Vector{Float64})::Tuple{Vector{Float64}, Int64}))
+
+        e = only(x for x in JLWInterop.api_entries(m) if x.name === :stats)
+        @test e.ret === Tuple{Vector{Float64}, Int64}
+
+        buf = [1.0, 2.0, 3.0]
+        GC.@preserve buf begin
+            arg = CVector{:borrowed, Float64}((Int32(3),), pointer(buf))
+            r = Core.eval(m, :(ApiTestTuple_stats($arg)))
+            @test iszero(r.status.code)
+            @test collect(r.value.values[1]) == [2.0, 4.0, 6.0]
+            @test r.value.values[2] === Int64(3)
+            Libc.free(r.value.values[1].data)
+
+            # On the error path every element is zeroed, so releasing is a
+            # no-op and nothing dangles.
+            rb = Core.eval(m, :(ApiTestTuple_bad($arg)))
+            @test rb.status.code == JLWInterop._API_ERROR_CODES.generic
+            @test status_message(rb.status) == "no stats"
+            @test rb.value.values[1].data === Ptr{Float64}(C_NULL)
+            @test rb.value.values[2] === Int64(0)
+        end
+    end
+
 end

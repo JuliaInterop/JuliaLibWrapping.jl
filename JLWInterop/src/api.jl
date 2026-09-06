@@ -150,6 +150,25 @@ carrier_return_type(::Type{<:Array{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
 carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
     isconcretetype(T) ? CArray{:owned, T, N} : nothing
+
+# A tuple return composes each element's own return carrier. An element with
+# no mapping, or a tuple of fewer than two elements, leaves it unmapped.
+# The tuple type need not be concrete: an optional element makes it a
+# `Union`, which still has one fixed carrier. It must have a definite
+# length, which rules out bare `Tuple` and the `Vararg` forms.
+function carrier_return_type(::Type{T}) where {T <: Tuple}
+    (T isa DataType && !Base.isvatuple(T)) || return nothing
+    n = fieldcount(T)
+    n >= 2 || return nothing
+    # A nested tuple has no unwrap in the generated bindings, and an enum
+    # element cannot be recorded the way a scalar enum return is, so a target
+    # would hand back a bare integer. Both are rejected here, at expansion,
+    # rather than after the library is built.
+    any(F -> F <: Tuple || F <: Base.Enum, fieldtypes(T)) && return nothing
+    elements = map(carrier_return_type, fieldtypes(T))
+    any(isnothing, elements) && return nothing
+    return CNTuple{n, Tuple{elements...}}
+end
 carrier_return_type(::Type{T}) where {T} = carrier_type(T)
 
 """
@@ -179,6 +198,13 @@ to_carrier(v::Vector{String}) = CStrArray{:owned}(v)
 to_carrier(d::Dict{String, V}) where {V} = CDict{:owned}(d)
 to_carrier(A::AbstractArray) = CArray{:owned}(A)
 
+# `@generated` so the element calls are written out for the concrete tuple
+# type and resolve statically, which is what keeps the conversion trim-safe.
+@generated function to_carrier(t::Tuple)
+    values = [:(to_carrier(t[$i])) for i in 1:fieldcount(t)]
+    return :(CNTuple(($(values...),)))
+end
+
 """
     to_carrier_opt(::Type{T}, x) -> COpt{T}
 
@@ -203,6 +229,38 @@ _api_as(::Type{T}, x) where {T} = convert(T, x)::T
 Convert `x` to `T`, then to its carrier.
 """
 to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
+
+# Convert against the declared element types, not the values' types: an
+# optional element arrives as a bare value or `nothing`, and neither says
+# which `COpt` to build (the reason [`to_carrier_opt`](@ref) exists).
+# `@generated` for the same reason as [`to_carrier`](@ref) — the element
+# calls resolve statically.
+@generated function to_carrier_as(::Type{T}, t::Tuple) where {T <: Tuple}
+    n = fieldcount(T)
+    types = fieldtypes(T)
+    whole = gensym(:converted)
+    names = [gensym(:element) for _ in 1:n]
+    # The generated code must not depend on the type of `t`: an optional
+    # element makes the returned tuple's type non-concrete, and a generated
+    # function whose body reads a non-concrete argument type is not expanded,
+    # leaving a dynamic call that `--trim=safe` rejects.
+    #
+    # So convert the whole tuple in one step. That enforces the declared arity
+    # and element types, and it is the only step that throws — a carrier built
+    # before a later element failed would be unreachable to the caller and
+    # never freed.
+    bindings = [:($(names[i]) = $whole[$i]) for i in 1:n]
+    values = map(1:n) do i
+        inner = _api_opt_inner(types[i])
+        return isnothing(inner) ? :(to_carrier($(names[i]))) :
+            :(to_carrier_opt($inner, $(names[i])))
+    end
+    return quote
+        $whole = _api_as($T, t)
+        $(bindings...)
+        CNTuple(($(values...),))
+    end
+end
 
 """
     from_carrier(::Type{T}, c) -> T
