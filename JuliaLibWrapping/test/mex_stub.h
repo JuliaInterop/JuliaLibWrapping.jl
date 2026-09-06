@@ -44,5 +44,6 @@ mxArray *mxCreateNumericArray(mwSize, const mwSize *, mxClassID, mxComplexity);
 mxArray *mxCreateNumericMatrix(mwSize, mwSize, mxClassID, mxComplexity);
 mxArray *mxCreateString(const char *);
 void mxDestroyArray(mxArray *);
+mxArray *mxDuplicateArray(const mxArray *);
 void mexErrMsgIdAndTxt(const char *, const char *, ...);
 #endif

@@ -1490,6 +1490,12 @@ end
         @test JuliaLibWrapping._matlab_gateway_name(t) == "boundary_mex"
         @test sprint(show, t) == "MatlabTarget(\"out\", \"boundary\", \"boundary\")"
         @test t isa AbstractTarget
+        @test t.duplicate_arguments === false
+
+        copied = MatlabTarget("out", "boundary", "boundary"; duplicate_arguments = true)
+        @test copied.duplicate_arguments === true
+        @test sprint(show, copied) ==
+            "MatlabTarget(\"out\", \"boundary\", \"boundary\"; duplicate_arguments = true)"
     end
 
     @testset "matlab argument classification" begin
@@ -1719,6 +1725,11 @@ end
             @test occursin("result.value.values[0]", gateway)
             @test occursin("result.value.values._1", gateway)
 
+            # By default an array argument borrows MATLAB's buffer, which is
+            # what makes a wrapped function writing to it corrupt every
+            # variable sharing that buffer.
+            @test !occursin("mxDuplicateArray", gateway)
+
             # A build script that compiles it, and nothing that needs MATLAB
             # to have been present while emitting.
             build = read(joinpath(path, "build_mex.m"), String)
@@ -1739,6 +1750,21 @@ end
 
         # A C header carries no names beyond the ABI's, so it needs nothing.
         @test !JuliaLibWrapping.accepts_api_metadata(CTarget("out", "demo"))
+    end
+
+    @testset "matlab duplicated arguments" begin
+        # Opt-in copies, for a library whose functions write to their
+        # arguments. Only arrays borrow, so only they change: strings,
+        # string arrays and dictionaries already copy, and scalars and
+        # optionals cross by value.
+        abi = read_abi_info("bindinginfo_carray3.json")
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"; duplicate_arguments = true), abi
+            )
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            @test occursin("value = mxDuplicateArray(value);", gateway)
+        end
     end
 
     @testset "matlab gateway compiles" begin
