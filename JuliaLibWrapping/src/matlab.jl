@@ -187,7 +187,10 @@ function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc}
     info = cstrarray_struct_info(desc, typeinfo)
     if !isnothing(info)
         info.ownership === :borrowed || return _matlab_owning_argument("CStrArray")
-        return (kind = :strarray, length_bits = info.length_bits)
+        return (;
+            kind = :strarray, length_bits = info.length_bits,
+            element_bits = info.element_length_bits,
+        )
     end
     info = cdict_struct_info(desc, typeinfo)
     if !isnothing(info)
@@ -201,7 +204,11 @@ function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc}
         info.ownership === :borrowed || return _matlab_owning_argument("CArray")
         class = get(MATLAB_CLASSES, info.eltype, nothing)
         isnothing(class) && return (kind = :opaque, reason = "unsupported array element type `$(info.eltype)`")
-        return (kind = :array, class = class, ndim = info.ndim, dims_bits = info.dims_bits)
+        return (;
+            kind = :array, class = class, ndim = info.ndim,
+            dims_bits = info.dims_bits,
+            integer = class in _MATLAB_INTEGER_CLASSES || class == "logical",
+        )
     end
     info = copt_struct_info(desc, typeinfo)
     if !isnothing(info)
@@ -223,6 +230,7 @@ _matlab_owning_argument(family::AbstractString) = (
 Classify an entry point's return for the façade and the gateway. `kind` is one
 of:
 
+- `:none` — no return at all, so the gateway calls and moves on
 - `:void` — a bare `JLWStatus`, which the gateway checks and discards
 - `:result` — a `JLWResult{C}`; `inner` is this classification applied to `C`
 - `:scalar` — a numeric or logical value
@@ -247,7 +255,9 @@ function _matlab_classify_return(
         type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc},
         release_present::Bool
     )
-    type_id === nothing && return (kind = :void, owns = false)
+    # No return type at all, which is different from a `JLWStatus`: there is
+    # no value to check.
+    type_id === nothing && return (kind = :none, owns = false)
     desc = typeinfo[type_id]
     if desc isa PrimitiveTypeDesc
         class = get(MATLAB_CLASSES, desc.name, nothing)
@@ -295,7 +305,7 @@ function _matlab_classify_return(
         ]
         for el in elements
             el.kind === :opaque && return (kind = :opaque, reason = el.reason, owns = false)
-            el.kind in (:tuple, :result, :void) && return (
+            el.kind in (:tuple, :result, :void, :none) && return (
                 kind = :opaque,
                 reason = "a tuple element the gateway cannot build an mxArray from",
                 owns = false,
@@ -357,11 +367,19 @@ function _matlab_arg_validation(kind, name::AbstractString)
     kind.kind === :strarray && return "(1,:) cell"
     kind.kind === :dict && return "(1,1) struct"
     # A vector argument takes either orientation; the body normalizes it.
-    # `mustBeVector` alone rejects `[]`, which is 0x0 and a legal empty vector.
-    kind.kind === :array &&
-        return kind.ndim == 1 ?
-        kind.class * " {mustBeVector(" * name * ", \"allow-all-empties\")}" :
-        kind.class
+    # An integer array is declared `double` for the reason a scalar one is:
+    # the block converts before validating, and `int64(2.5)` rounds. `[]` is
+    # 0x0, so a bare `mustBeVector` would reject a legal empty vector.
+    if kind.kind === :array
+        class = kind.integer ? "double" : kind.class
+        # `logical(2)` is `true`, so integrality alone would let 2 through.
+        checks = kind.class == "logical" ? String["mustBeMember(" * name * ", [0 1])"] :
+            kind.integer ? String["mustBeInteger"] : String[]
+        kind.ndim == 1 &&
+            push!(checks, "mustBeVector(" * name * ", \"allow-all-empties\")")
+        isempty(checks) && return class
+        return class * " {" * join(checks, ", ") * "}"
+    end
     # Absent is `[]`, present is a scalar; the body tells them apart. An
     # integer payload is declared `double` for the reason a scalar one is:
     # the block would coerce before validating, and `int64(2.5)` rounds.
@@ -380,7 +398,11 @@ function _matlab_arg_forward(name::AbstractString, kind)
     kind.kind === :string && return "convertStringsToChars(" * name * ")"
     # A MATLAB vector arrives 1×N or N×1; `(:)` yields the column the carrier
     # expects, without a copy.
-    kind.kind === :array && kind.ndim == 1 && return name * "(:)"
+    if kind.kind === :array
+        flat = kind.ndim == 1 ? name * "(:)" : name
+        # Declared `double`, so convert after the block has validated it.
+        return kind.integer ? kind.class * "(" * flat * ")" : flat
+    end
     kind.kind === :scalar && kind.integer && return kind.class * "(" * name * ")"
     return String(name)
 end
@@ -413,7 +435,12 @@ function _matlab_facade_plan(
         reason = "the sidecar names $(length(positional) + length(keywords)) arguments but the ABI has $(length(args))",
     )
     defaults = isnothing(api_entry) ? Any[] :
-        Any[get(kw, "default", nothing) for kw in get(api_entry, "kwargs", [])]
+        # A recorded default of `nothing` is a default; a missing key is not.
+        # Both read as `nothing`, so keep the two apart.
+        Any[
+            haskey(kw, "default") ? Some(kw["default"]) : nothing
+            for kw in get(api_entry, "kwargs", [])
+        ]
 
     # An enum argument is declared by name in the sidecar, and its default is
     # recorded as a member name. The façade accepts either a member name or
@@ -463,7 +490,7 @@ yields zero.
 """
 function _matlab_outputs(ret)
     inner = ret.kind === :result ? ret.inner : ret
-    inner.kind === :void && return String[]
+    inner.kind in (:void, :none) && return String[]
     inner.kind === :tuple && return String["out" * string(i) for i in 1:length(inner.elements)]
     return String["out"]
 end
@@ -522,7 +549,8 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
             default = plan.defaults[j]
             validation = isnothing(plan.enums[i]) ?
                 " " * _matlab_arg_validation(plan.args[i], name) : ""
-            suffix = isnothing(default) ? "" : " = " * _matlab_literal(default)
+            suffix = isnothing(default) ? "" :
+                " = " * _matlab_literal(something(default))
             println(io, "        opts.", name, validation, suffix)
         end
 
@@ -1119,8 +1147,13 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "        }")
             println(io, "        char *text = mxArrayToUTF8String(cell);")
             println(io, "        size_t size = strlen(text);")
-            _write_matlab_length_guard(io, "        ", "size", 32, "a string")
-            println(io, "        items[i].length = (int32_t)size;")
+            _write_matlab_length_guard(
+                io, "        ", "size", kind.element_bits, "a string"
+            )
+            println(
+                io, "        items[i].length = (",
+                _matlab_length_type(kind.element_bits), ")size;"
+            )
             println(io, "        items[i].data = (uint8_t *)text;")
             println(io, "    }")
             _write_matlab_length_guard(io, "    ", "count", kind.length_bits, "the cell array")
@@ -1267,8 +1300,9 @@ function _write_matlab_out_helpers(io::IO, carriers)
             println(io, "        for (int32_t j = 0; ok && j < n; j++) {")
             println(io, "            uint8_t c = carrier.keys[i].data[j];")
             println(io, "            int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');")
-            println(io, "            int digit = c >= '0' && c <= '9';")
-            println(io, "            ok = alpha || c == '_' || (j > 0 && digit);")
+            println(io, "            int rest = (c >= '0' && c <= '9') || c == '_';")
+            println(io, "            /* A field name starts with a letter. */")
+            println(io, "            ok = j == 0 ? alpha : (alpha || rest);")
             println(io, "        }")
             println(io, "        if (!ok) {")
             if kind.owns
@@ -1338,7 +1372,7 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
     # parameters unused; a MEX build with warnings on would say so.
     inner = plan.ret.kind === :result ? plan.ret.inner : plan.ret
     inner.kind === :tuple || println(io, "    (void)nlhs;")
-    inner.kind === :void && println(io, "    (void)plhs;")
+    inner.kind in (:void, :none) && println(io, "    (void)plhs;")
     isempty(plan.args) && println(io, "    (void)prhs;")
     _write_matlab_check(io, plan, symbol)
 
@@ -1360,12 +1394,19 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
             ], ", "
         )
     arguments = join(["arg" * string(i) for i in eachindex(plan.args)], ", ")
+    call = "((" * names.result * " (*)(" * signature * "))jlw_symbol(\"" *
+        symbol * "\"))(" * arguments * ");"
+    ret = plan.ret
+    if ret.kind === :none
+        # Nothing comes back, so there is nothing to name or to check.
+        println(io, "    ", call)
+        return println(io, "}")
+    end
     println(io, "    ", names.result, " result =")
-    println(io, "        ((", names.result, " (*)(", signature, "))jlw_symbol(\"", symbol, "\"))(", arguments, ");")
+    println(io, "        ", call)
 
     # On a failure the value is zero-filled, so the check raises while
     # holding nothing; that is what lets it run before any conversion.
-    ret = plan.ret
     if ret.kind === :result
         println(io, "    jlw_check(result.status);")
         _write_matlab_results(io, ret.inner, "result.value", names)
@@ -1388,7 +1429,7 @@ is converted regardless, because conversion is what releases Julia's storage
 for it. An unrequested element's `mxArray` is destroyed instead of assigned.
 """
 function _write_matlab_results(io::IO, ret, expression::AbstractString, names)
-    ret.kind === :void && return nothing
+    ret.kind in (:void, :none) && return nothing
     if ret.kind !== :tuple
         println(io, "    plhs[0] = jlw_out_", names.value, "(", expression, ");")
         return nothing
@@ -1473,7 +1514,7 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
             for (i, element) in pairs(ret.elements)
                 outgoing[names.elements[i]] = element
             end
-        elseif ret.kind !== :void
+        elseif ret.kind ∉ (:void, :none)
             outgoing[names.value] = ret
         end
     end
@@ -1550,8 +1591,9 @@ function _write_matlab_tuple_precheck(io::IO, ret, expression::AbstractString, n
         println(io, "        for (int32_t j = 0; ok && j < n; j++) {")
         println(io, "            uint8_t c = ", access, ".keys[k].data[j];")
         println(io, "            int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');")
-        println(io, "            int digit = c >= '0' && c <= '9';")
-        println(io, "            ok = alpha || c == '_' || (j > 0 && digit);")
+        println(io, "            int rest = (c >= '0' && c <= '9') || c == '_';")
+        println(io, "            /* A field name starts with a letter. */")
+        println(io, "            ok = j == 0 ? alpha : (alpha || rest);")
         println(io, "        }")
         println(io, "        if (!ok) {")
         for (j, element) in pairs(ret.elements)

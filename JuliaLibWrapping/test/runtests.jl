@@ -1584,7 +1584,8 @@ end
         )
 
         @test JuliaLibWrapping._matlab_classify_return(9, typeinfo, true).kind === :void
-        @test JuliaLibWrapping._matlab_classify_return(nothing, typeinfo, true).kind === :void
+        # A bare `JLWStatus` is `:void`; no return type at all is `:none`.
+        @test JuliaLibWrapping._matlab_classify_return(nothing, typeinfo, true).kind === :none
 
         owned = JuliaLibWrapping._matlab_classify_return(6, typeinfo, true)
         @test owned.kind === :string
@@ -1913,6 +1914,86 @@ end
             build = read(joinpath(path, "build_mex.m"), String)
             @test occursin("function build_mex(library_dir)", build)
             @test occursin("-DJLW_LIBRARY_PATH=", build)
+        end
+    end
+
+    @testset "matlab void return" begin
+        # A hand-written `Base.@ccallable f(x)::Cvoid` has no return type at
+        # all, which is not the same as a `JLWStatus`: there is no value to
+        # name or to check.
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8)
+        )
+        method = JuliaLibWrapping.MethodDesc(
+            "poke", "poke(x::Float64)", nothing,
+            [JuliaLibWrapping.ArgDesc("x", 1, false)]
+        )
+        abi = ABIInfo(typeinfo, BitSet(), [method])
+        @test JuliaLibWrapping._matlab_classify_return(nothing, typeinfo, true).kind ===
+            :none
+
+        compiler = Sys.which("cc")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            @test !occursin("void result", gateway)
+            @test occursin("jlw_symbol(\"poke\")", gateway)
+
+            if !isnothing(compiler)
+                cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
+                command = `$compiler -fsyntax-only -Wall -Wextra -Werror -I$path
+                           $(joinpath(path, "libdemo_mex.c"))`
+                @test success(run(pipeline(command; stdout = stdout, stderr = stderr); wait = true))
+            end
+        end
+    end
+
+    @testset "matlab dictionary field names" begin
+        # A MATLAB field name starts with a letter. The check exists to raise
+        # while nothing is held, so a name it lets through would reach
+        # `mxCreateStructMatrix` with the carrier live.
+        abi = read_abi_info("bindinginfo_cdict.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+            gateway = read(joinpath(path, "libdemo_mex.c"), String)
+            @test occursin("ok = j == 0 ? alpha : (alpha || rest);", gateway)
+        end
+    end
+
+    @testset "matlab integer arrays" begin
+        # An `arguments` block converts before validating, so an integer
+        # array must be declared `double` and converted in the body, as a
+        # scalar one is. `logical(2)` is `true`, so a logical array takes
+        # 0 and 1 only.
+        abi = read_abi_info("bindinginfo_carray_bool.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+            src = read(joinpath(path, "+demo", "mylib_count_true.m"), String)
+            @test occursin("v double {mustBeMember(v, [0 1])", src)
+            @test occursin("logical(v(:))", src)
+        end
+    end
+
+    @testset "matlab keyword default of nothing" begin
+        # A recorded default of `nothing` is a default. Reading it as
+        # "no default" would make the keyword required.
+        abi = read_abi_info("bindinginfo_copt.json")
+        meta = Dict{String, Any}(
+            "take_opt" => Dict{String, Any}(
+                "name" => "take_opt", "args" => String[],
+                "kwargs" => [Dict{String, Any}("name" => "o", "default" => nothing)],
+                "doc" => "",
+            ),
+        )
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"), abi;
+                api_metadata = meta, api_enums = Dict{String, Any}()
+            )
+            @test occursin(
+                "opts.o (:,:) double = []",
+                read(joinpath(path, "+demo", "take_opt.m"), String)
+            )
         end
     end
 

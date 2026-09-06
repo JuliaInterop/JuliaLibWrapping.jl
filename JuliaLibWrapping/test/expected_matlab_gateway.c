@@ -134,8 +134,9 @@ static mxArray *jlw_out_CDict_owned_Float64(CDict_owned_Float64 carrier)
         for (int32_t j = 0; ok && j < n; j++) {
             uint8_t c = carrier.keys[i].data[j];
             int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-            int digit = c >= '0' && c <= '9';
-            ok = alpha || c == '_' || (j > 0 && digit);
+            int rest = (c >= '0' && c <= '9') || c == '_';
+            /* A field name starts with a letter. */
+            ok = j == 0 ? alpha : (alpha || rest);
         }
         if (!ok) {
             jlw_release_strings(carrier.keys, carrier.length);
@@ -211,8 +212,9 @@ static void jlw_call_bundle
         for (int32_t j = 0; ok && j < n; j++) {
             uint8_t c = result.value.values._3.keys[k].data[j];
             int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-            int digit = c >= '0' && c <= '9';
-            ok = alpha || c == '_' || (j > 0 && digit);
+            int rest = (c >= '0' && c <= '9') || c == '_';
+            /* A field name starts with a letter. */
+            ok = j == 0 ? alpha : (alpha || rest);
         }
         if (!ok) {
             jlw_release(result.value.values._1.data);
