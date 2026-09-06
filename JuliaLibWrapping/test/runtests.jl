@@ -1617,6 +1617,83 @@ end
         @test JuliaLibWrapping._matlab_classify_return(7, typeinfo, false).kind === :string
     end
 
+    @testset "matlab facade emission" begin
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            emitted = write_wrapper(MatlabTarget(path, "ctuple_demo", "libctuple"), abi)
+            # The release entrypoints are the gateway's business, so they get
+            # no façade even though they are exported.
+            @test emitted == ["bundle", "pair", "stats"]
+
+            for name in emitted
+                actual = read(joinpath(path, "+ctuple_demo", name * ".m"), String)
+                golden = read(joinpath(@__DIR__, "expected_matlab_" * name * ".m"), String)
+                @test actual == golden
+            end
+
+            # A package directory, so a façade is called as `ctuple_demo.stats()`
+            # and cannot collide with a name already on the MATLAB path.
+            @test isdir(joinpath(path, "+ctuple_demo", "private"))
+        end
+    end
+
+    @testset "matlab facade from sidecar metadata" begin
+        # The tuple fixture's entry points take no arguments, so the keyword,
+        # default and enum paths need a declaration that has some.
+        abi = read_abi_info("bindinginfo_enum.json")
+        meta = Dict{String, Any}(
+            "EnumFixture_scale_by" => Dict{String, Any}(
+                "name" => "scale_by",
+                "args" => ["x"],
+                "kwargs" => [Dict{String, Any}("name" => "penalty", "default" => "abslog1")],
+                "arg_enums" => Dict{String, Any}("penalty" => "PenaltyKind"),
+                "doc" => "Scale `x`.",
+            ),
+            "EnumFixture_pick" => Dict{String, Any}(
+                "name" => "pick",
+                "args" => ["x"],
+                "kwargs" => [],
+                "return_enum" => "PenaltyKind",
+                "doc" => "Classify `x`.",
+            ),
+        )
+        enums = Dict{String, Any}(
+            "PenaltyKind" => Dict{String, Any}(
+                "basetype" => "Int32",
+                "members" => [
+                    Dict{String, Any}("name" => "abslog1", "value" => 0),
+                    Dict{String, Any}("name" => "square", "value" => 1),
+                ],
+            ),
+        )
+        mktempdir() do path
+            write_wrapper(
+                MatlabTarget(path, "demo", "libdemo"), abi;
+                api_metadata = meta, api_enums = enums
+            )
+            src = read(joinpath(path, "+demo", "scale_by.m"), String)
+
+            # The sidecar's public name and argument names, not the ABI's.
+            @test occursin("function out = scale_by(x, opts)", src)
+            @test occursin("%SCALE_BY  Scale `x`.", src)
+
+            # A keyword becomes a name-value argument carrying its default.
+            @test occursin("opts.penalty = \"abslog1\"", src)
+
+            # An enum takes a member name or the integer, so it carries no
+            # class declaration and the body translates it.
+            @test occursin("switch string(opts.penalty)", src)
+            @test occursin("case \"abslog1\"; penalty_ = int32(0);", src)
+            @test occursin("if isnumeric(opts.penalty) && isscalar(opts.penalty)", src)
+            @test occursin("libdemo_mex(\"EnumFixture_scale_by\", x, penalty_)", src)
+
+            # An enum return comes back as the member name, which is a form
+            # the façades accept, so a result can be passed straight back in.
+            pick = read(joinpath(path, "+demo", "pick.m"), String)
+            @test occursin("case 0; out = \"abslog1\";", pick)
+        end
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the
