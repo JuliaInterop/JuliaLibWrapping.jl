@@ -231,7 +231,7 @@ _matlab_owning_argument(family::AbstractString) = (
 Classify an entry point's return for the façade and the gateway. `kind` is one
 of:
 
-- `:none` — no return at all, so the gateway calls and moves on
+- `:none` — no return at all, so the gateway just calls
 - `:void` — a bare `JLWStatus`, which the gateway checks and discards
 - `:result` — a `JLWResult{C}`; `inner` is this classification applied to `C`
 - `:scalar` — a numeric or logical value
@@ -256,8 +256,7 @@ function _matlab_classify_return(
         type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc},
         release_present::Bool
     )
-    # No return type at all, which is different from a `JLWStatus`: there is
-    # no value to check.
+    # No return type at all, unlike a `JLWStatus`: there is no value to check.
     type_id === nothing && return (kind = :none, owns = false)
     desc = typeinfo[type_id]
     if desc isa PrimitiveTypeDesc
@@ -365,17 +364,17 @@ function _matlab_arg_validation(kind, name::AbstractString)
         return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
     kind.kind === :string && return "(1,1) string"
-    # No class: `cellstr` in the body takes a cell of char, a string array
-    # and a char matrix alike, which are all natural ways to write this.
+    # No class: `cellstr` in the body takes a cell, a string array or a char
+    # matrix.
     kind.kind === :strarray && return ""
     kind.kind === :dict && return "(1,1) struct"
     # A vector argument takes either orientation; the body normalizes it.
-    # An integer array is declared `double` for the reason a scalar one is:
-    # the block converts before validating, and `int64(2.5)` rounds. `[]` is
-    # 0x0, so a bare `mustBeVector` would reject a legal empty vector.
+    # Integer arrays are declared `double` for the reason scalars are: the
+    # block converts before validating, and `int64(2.5)` rounds to 3.
+    # `mustBeVector` needs the flag to accept `[]`, which is 0x0.
     if kind.kind === :array
         class = kind.integer ? "double" : kind.class
-        # `logical(2)` is `true`, so integrality alone would let 2 through.
+        # `logical(2)` is `true`, so integrality alone would pass 2.
         checks = kind.class == "logical" ? String["mustBeMember(" * name * ", [0 1])"] :
             kind.integer ? String["mustBeInteger"] : String[]
         kind.ndim == 1 &&
@@ -404,7 +403,7 @@ function _matlab_arg_forward(name::AbstractString, kind)
     # expects, without a copy.
     if kind.kind === :array
         flat = kind.ndim == 1 ? name * "(:)" : name
-        # Declared `double`, so convert after the block has validated it.
+        # Declared `double`, so convert once the block has validated it.
         return kind.integer ? kind.class * "(" * flat * ")" : flat
     end
     kind.kind === :scalar && kind.integer && return kind.class * "(" * name * ")"
@@ -439,8 +438,8 @@ function _matlab_facade_plan(
         reason = "the sidecar names $(length(positional) + length(keywords)) arguments but the ABI has $(length(args))",
     )
     defaults = isnothing(api_entry) ? Any[] :
-        # A recorded default of `nothing` is a default; a missing key is not.
-        # Both read as `nothing`, so keep the two apart.
+        # A recorded `nothing` is a default; a missing key means there is
+        # none. Both read as `nothing`, so keep them apart.
         Any[
             haskey(kw, "default") ? Some(kw["default"]) : nothing
             for kw in get(api_entry, "kwargs", [])
@@ -651,8 +650,8 @@ function write_wrapper(
             get(api_metadata, method.symbol, nothing), api_enums
         )
         plan.kind === :auto || continue
-        # Two symbols can sanitize to one name; the second would overwrite
-        # the first's file, and only one of them would be callable.
+        # Two symbols can sanitize to one name. The second would overwrite
+        # the first's file, leaving one of them callable.
         if haskey(taken, plan.name)
             error(
                 "MATLAB façade name \"" * plan.name * "\" is claimed by both " *
@@ -774,6 +773,7 @@ function _write_matlab_enum_out(io::IO, output::AbstractString, edesc)
         )
     end
     # A value outside the enum means the library and these bindings disagree.
+    # Say so rather than hand back the integer.
     println(io, "        otherwise")
     println(
         io, "            error(\"jlw:error\", \"", output,
@@ -835,9 +835,9 @@ function _write_matlab_gateway_prologue(
     println(io)
     println(io, "static void *jlw_library = NULL;")
     println(io)
-    println(io, "/* Julia's runtime marks inherited pipes non-blocking when it starts")
-    println(io, "   and leaves them that way, which MATLAB's own reads then see as")
-    println(io, "   errors. Live whenever MATLAB runs under -batch in a pipeline. */")
+    println(io, "/* Julia's runtime marks inherited pipes non-blocking and leaves")
+    println(io, "   them that way, which MATLAB's own reads then see as errors.")
+    println(io, "   It bites when MATLAB runs under -batch in a pipeline. */")
     println(io, "typedef struct { int ok; int flags[3]; } jlw_stdio_flags;")
     println(io)
     println(io, "static jlw_stdio_flags jlw_save_stdio(void)")
@@ -1245,7 +1245,7 @@ function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
             println(io, "        /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */")
             println(io, "        keys[i].data = (uint8_t *)key;")
             println(io, "        const mxArray *field = mxGetFieldByNumber(value, 0, i);")
-            println(io, "        /* A sparse field passes a class check but has no")
+            println(io, "        /* A sparse field passes a class check and has no")
             println(io, "           dense buffer to read. */")
             println(io, "        if (field == NULL || mxIsSparse(field) ||")
             println(io, "            !mxIs", uppercasefirst(kind.class), "(field) ||")
@@ -1466,7 +1466,7 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
         symbol * "\"))(" * arguments * ");"
     ret = plan.ret
     if ret.kind === :none
-        # Nothing comes back, so there is nothing to name or to check.
+        # Nothing comes back, so there is nothing to name or check.
         println(io, "    ", call)
         return println(io, "}")
     end

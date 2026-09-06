@@ -23,9 +23,9 @@
 
 static void *jlw_library = NULL;
 
-/* Julia's runtime marks inherited pipes non-blocking when it starts
-   and leaves them that way, which MATLAB's own reads then see as
-   errors. Live whenever MATLAB runs under -batch in a pipeline. */
+/* Julia's runtime marks inherited pipes non-blocking and leaves
+   them that way, which MATLAB's own reads then see as errors.
+   It bites when MATLAB runs under -batch in a pipeline. */
 typedef struct { int ok; int flags[3]; } jlw_stdio_flags;
 
 static jlw_stdio_flags jlw_save_stdio(void)
