@@ -1685,7 +1685,7 @@ end
             @test occursin("switch string(opts.penalty)", src)
             @test occursin("case \"abslog1\"; penalty_ = int32(0);", src)
             @test occursin("if isnumeric(opts.penalty) && isscalar(opts.penalty)", src)
-            @test occursin("libdemo_mex(\"EnumFixture_scale_by\", x, penalty_)", src)
+            @test occursin("libdemo_mex('EnumFixture_scale_by', x, penalty_)", src)
 
             # An enum return comes back as the member name, which is a form
             # the façades accept, so a result can be passed straight back in.

@@ -533,7 +533,10 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
         push!(forwarded, _matlab_arg_forward(expression, kind))
     end
 
-    call = _matlab_gateway_name(dest) * "(\"" * method.symbol * "\""
+    # The dispatch name is `char`, not a double-quoted `string`: the gateway
+    # reads it with `mxArrayToUTF8String`, and there is no public C API for
+    # reading a MATLAB `string` object.
+    call = _matlab_gateway_name(dest) * "('" * method.symbol * "'"
     isempty(forwarded) || (call *= ", " * join(forwarded, ", "))
     call *= ")"
     if isempty(outputs)
