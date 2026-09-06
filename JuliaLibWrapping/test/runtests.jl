@@ -8,6 +8,8 @@ using ExplicitImports
 import JuliaLibWrapping: StructDesc, FieldDesc, PointerDesc, PrimitiveTypeDesc, ArrayDesc, TypeDesc
 import JuliaLibWrapping: sort_declarations!, mangle_c!
 
+include("matlab_blocks.jl")
+
 function onlymatch(f, collection)
     matches = filter(f, collection)
     if length(matches) != 1
@@ -1678,16 +1680,15 @@ end
                 read(joinpath(@__DIR__, "expected_matlab_build.m"), String)
         end
 
-        # `ctuple`'s entry points take no arguments, so that golden pins none
-        # of the conversions that read an `mxArray`. This one does.
-        mktempdir() do path
-            write_wrapper(
-                MatlabTarget(path, "demo", "libdemo"),
-                read_abi_info("bindinginfo_cdict.json")
-            )
-            @test read(joinpath(path, "libdemo_mex.c"), String) ==
-                read(joinpath(@__DIR__, "expected_matlab_gateway_args.c"), String)
-        end
+    end
+
+    @testset "matlab helper golden" begin
+        # `ctuple`'s entry points take no arguments, so the gateway golden
+        # pins none of the conversions that read an `mxArray`. This one holds
+        # every helper and handler the fixtures produce between them, with and
+        # without `duplicate_arguments`.
+        @test matlab_emitted_blocks(@__DIR__) ==
+            read(joinpath(@__DIR__, "expected_matlab_helpers.c"), String)
     end
 
     @testset "matlab facade from sidecar metadata" begin

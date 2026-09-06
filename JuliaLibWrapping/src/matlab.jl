@@ -1182,60 +1182,65 @@ The body of the helper that converts an `mxArray` into carrier `name`, or
 """
 function _matlab_in_body(name::AbstractString, kind, duplicate::Bool)
     if kind.kind === :array
-        ctype = _matlab_ctype(kind.class)
         length_type = _matlab_length_type(kind.dims_bits)
-        duplicated = !duplicate ? "" : """
+        duplicated = ""
+        if duplicate
+            duplicated = """
                 /* The caller asked for copies: a wrapped function that
                    writes to its argument would otherwise corrupt every
                    MATLAB variable sharing this buffer. The duplicate is
                    reclaimed when `mexFunction` exits. */
                 value = mxDuplicateArray(value);
             """
-        dims = if kind.ndim == 1
-            _matlab_length_guard(
+        end
+        if kind.ndim == 1
+            dims = _matlab_length_guard(
                 "    ", "mxGetNumberOfElements(value)", kind.dims_bits,
                 "the vector's length"
-            ) * """
-                    carrier.dims[0] = ($length_type)mxGetNumberOfElements(value);
-                """
-        else
+            )
+            dims *= """
+                carrier.dims[0] = ($length_type)mxGetNumberOfElements(value);
             """
+        else
+            dims = """
                 const mwSize *shape = mxGetDimensions(value);
                 mwSize rank = mxGetNumberOfDimensions(value);
                 for (int i = 0; i < $(kind.ndim); i++) {
                     /* MATLAB drops trailing singletons, so a missing
                        dimension is 1 rather than an error. */
-            """ * _matlab_length_guard(
-                "        ", "(i < (int)rank ? shape[i] : 1)", kind.dims_bits, "a dimension"
-            ) * """
-                        carrier.dims[i] = ($length_type)(i < (int)rank ? shape[i] : 1);
-                    }
-                """
-        end
-        return duplicated * """
-                $name carrier;
-            """ * dims * """
-                carrier.data = ($ctype *)$(_matlab_accessor(kind.class))(value);
-                return carrier;
             """
+            dims *= _matlab_length_guard(
+                "        ", "(i < (int)rank ? shape[i] : 1)", kind.dims_bits, "a dimension"
+            )
+            dims *= """
+                    carrier.dims[i] = ($length_type)(i < (int)rank ? shape[i] : 1);
+                }
+            """
+        end
+        tail = """
+            carrier.data = ($(_matlab_ctype(kind.class)) *)$(_matlab_accessor(kind.class))(value);
+            return carrier;
+        """
+        return duplicated * "    $name carrier;\n" * dims * tail
     elseif kind.kind === :string
-        return """
+        head = """
             /* From `mxMalloc`, so it is reclaimed even if an error unwinds past here. */
             char *text = mxArrayToUTF8String(value);
             if (text == NULL) {
                 mexErrMsgIdAndTxt("jlw:argument", "could not read char data");
             }
             size_t size = strlen(text);
-        """ * _matlab_length_guard(
-            "    ", "size", kind.length_bits, "the string"
-        ) * """
-                $name carrier;
-                carrier.length = ($(_matlab_length_type(kind.length_bits)))size;
-                carrier.data = (uint8_t *)text;
-                return carrier;
-            """
+        """
+        guard = _matlab_length_guard("    ", "size", kind.length_bits, "the string")
+        tail = """
+            $name carrier;
+            carrier.length = ($(_matlab_length_type(kind.length_bits)))size;
+            carrier.data = (uint8_t *)text;
+            return carrier;
+        """
+        return head * guard * tail
     elseif kind.kind === :strarray
-        return """
+        head = """
             mwSize count = mxGetNumberOfElements(value);
             CString_borrowed *items =
                 (CString_borrowed *)mxMalloc((count ? count : 1) * sizeof(CString_borrowed));
@@ -1245,21 +1250,29 @@ function _matlab_in_body(name::AbstractString, kind, duplicate::Bool)
                     mexErrMsgIdAndTxt("jlw:argument", "every cell must be char");
                 }
                 char *text = mxArrayToUTF8String(cell);
-                size_t size = strlen(text);
-        """ * _matlab_length_guard(
-            "        ", "size", kind.element_bits, "a string"
-        ) * """
-                    items[i].length = ($(_matlab_length_type(kind.element_bits)))size;
-                    items[i].data = (uint8_t *)text;
+                if (text == NULL) {
+                    mexErrMsgIdAndTxt("jlw:argument", "could not read char data");
                 }
-            """ * _matlab_length_guard(
+                size_t size = strlen(text);
+        """
+        element_guard = _matlab_length_guard(
+            "        ", "size", kind.element_bits, "a string"
+        )
+        middle = """
+                items[i].length = ($(_matlab_length_type(kind.element_bits)))size;
+                items[i].data = (uint8_t *)text;
+            }
+        """
+        count_guard = _matlab_length_guard(
             "    ", "count", kind.length_bits, "the cell array"
-        ) * """
-                $name carrier;
-                carrier.length = ($(_matlab_length_type(kind.length_bits)))count;
-                carrier.data = items;
-                return carrier;
-            """
+        )
+        tail = """
+            $name carrier;
+            carrier.length = ($(_matlab_length_type(kind.length_bits)))count;
+            carrier.data = items;
+            return carrier;
+        """
+        return head * element_guard * middle * count_guard * tail
     elseif kind.kind === :dict
         ctype = _matlab_ctype(kind.class)
         return """
@@ -1407,30 +1420,39 @@ releases what Julia allocated, which is why every element of a tuple return is
 converted even when the caller wants fewer outputs.
 """
 function _matlab_out_body(kind)
+    # One spelling of the release, from the same place the tuple unwind uses.
+    release = join(
+        "    $statement\n" for statement in _matlab_release_expression(kind, "carrier")
+    )
     if kind.kind === :array
-        ctype = _matlab_ctype(kind.class)
         rank = max(kind.ndim, 2)
-        shape = join("    shape[$(d - 1)] = (mwSize)carrier.dims[$(d - 1)];\n" for d in 1:kind.ndim)
-        return """
+        shape = """
             mwSize shape[$rank] = {$(join(fill("1", rank), ", "))};
-        """ * shape * """
-                mxArray *out = $(_matlab_create_array(kind.class, rank, "shape"));
-                memcpy($(_matlab_accessor(kind.class))(out), carrier.data,
-                       mxGetNumberOfElements(out) * sizeof($ctype));
-            """ * (kind.owns ? "    jlw_release(carrier.data);\n" : "")
+        """
+        shape *= join(
+            "    shape[$(d - 1)] = (mwSize)carrier.dims[$(d - 1)];\n" for d in 1:kind.ndim
+        )
+        body = """
+            mxArray *out = $(_matlab_create_array(kind.class, rank, "shape"));
+            memcpy($(_matlab_accessor(kind.class))(out), carrier.data,
+                   mxGetNumberOfElements(out) * sizeof($(_matlab_ctype(kind.class))));
+        """
+        return shape * body * release
     elseif kind.kind === :string
-        return """
+        head = """
             /* `mxCreateString` takes a C string, so an embedded NUL
                truncates; Julia permits them. */
             char *text = (char *)mxMalloc((size_t)carrier.length + 1);
             memcpy(text, carrier.data, (size_t)carrier.length);
             text[carrier.length] = '\\0';
-        """ * (kind.owns ? "    jlw_release(carrier.data);\n" : "") * """
-                mxArray *out = mxCreateString(text);
-                mxFree(text);
-            """
+        """
+        tail = """
+            mxArray *out = mxCreateString(text);
+            mxFree(text);
+        """
+        return head * release * tail
     elseif kind.kind === :strarray
-        return """
+        body = """
             mxArray *out = mxCreateCellMatrix((mwSize)carrier.length, 1);
             for (int64_t i = 0; i < carrier.length; i++) {
                 char *text = (char *)mxMalloc((size_t)carrier.data[i].length + 1);
@@ -1439,41 +1461,41 @@ function _matlab_out_body(kind)
                 mxSetCell(out, (mwSize)i, mxCreateString(text));
                 mxFree(text);
             }
-        """ * (kind.owns ? "    jlw_release_strings(carrier.data, carrier.length);\n" : "")
+        """
+        return body * release
     elseif kind.kind === :dict
-        ctype = _matlab_ctype(kind.class)
-        release = kind.owns ? """
-                jlw_release_strings(carrier.keys, carrier.length);
-                jlw_release(carrier.values);
-            """ : ""
-        return """
+        head = """
             /* Keys are checked before anything is created, so a bad
                one is reported while nothing is held. */
             for (int64_t i = 0; i < carrier.length; i++) {
                 if (!jlw_valid_field_name(carrier.keys[i].data, carrier.keys[i].length)) {
-        """ * join(
+        """
+        # Two levels deeper than the tail release: inside the loop and the `if`.
+        head *= join(
             "            $statement\n"
                 for statement in _matlab_release_expression(kind, "carrier")
-        ) * """
-                        mexErrMsgIdAndTxt("jlw:argument",
-                            "a dictionary key is not a legal MATLAB field name");
-                    }
+        )
+        body = """
+                    mexErrMsgIdAndTxt("jlw:argument",
+                        "a dictionary key is not a legal MATLAB field name");
                 }
-                const char **names =
-                    (const char **)mxMalloc((size_t)(carrier.length ? carrier.length : 1) * sizeof(char *));
-                for (int64_t i = 0; i < carrier.length; i++) {
-                    char *key = (char *)mxMalloc((size_t)carrier.keys[i].length + 1);
-                    memcpy(key, carrier.keys[i].data, (size_t)carrier.keys[i].length);
-                    key[carrier.keys[i].length] = '\\0';
-                    names[i] = key;
-                }
-                mxArray *out = mxCreateStructMatrix(1, 1, (int)carrier.length, names);
-                for (int64_t i = 0; i < carrier.length; i++) {
-                    mxArray *field = $(_matlab_create_scalar(kind.class, 1, 1));
-                    *$(_matlab_accessor(kind.class))(field) = ($ctype)carrier.values[i];
-                    mxSetFieldByNumber(out, 0, (int)i, field);
-                }
-            """ * release
+            }
+            const char **names =
+                (const char **)mxMalloc((size_t)(carrier.length ? carrier.length : 1) * sizeof(char *));
+            for (int64_t i = 0; i < carrier.length; i++) {
+                char *key = (char *)mxMalloc((size_t)carrier.keys[i].length + 1);
+                memcpy(key, carrier.keys[i].data, (size_t)carrier.keys[i].length);
+                key[carrier.keys[i].length] = '\\0';
+                names[i] = key;
+            }
+            mxArray *out = mxCreateStructMatrix(1, 1, (int)carrier.length, names);
+            for (int64_t i = 0; i < carrier.length; i++) {
+                mxArray *field = $(_matlab_create_scalar(kind.class, 1, 1));
+                *$(_matlab_accessor(kind.class))(field) = ($(_matlab_ctype(kind.class)))carrier.values[i];
+                mxSetFieldByNumber(out, 0, (int)i, field);
+            }
+        """
+        return head * body * release
     elseif kind.kind === :opt
         return """
             if (carrier.has_value == 0) {
@@ -1561,25 +1583,24 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
         symbol * "\"))(" * arguments * ");"
 
     ret = plan.ret
-    tail = if ret.kind === :none
+    if ret.kind === :none
         # Nothing comes back, so there is nothing to name or check.
-        "    $call\n"
+        tail = "    $call\n"
     else
-        results = IOBuffer()
         # On a failure the value is zero-filled, so the check raises while
         # holding nothing; that is what lets it run before any conversion.
-        if ret.kind === :result
-            println(results, "    jlw_check(result.status);")
-            _write_matlab_results(results, ret.inner, "result.value", names)
+        results = if ret.kind === :result
+            "    jlw_check(result.status);\n" *
+                _matlab_results(ret.inner, "result.value", names)
         elseif ret.kind === :void
-            println(results, "    jlw_check(result);")
+            "    jlw_check(result);\n"
         else
-            _write_matlab_results(results, ret, "result", names)
+            _matlab_results(ret, "result", names)
         end
-        """
-            $(names.result) result =
-                $call
-        """ * String(take!(results))
+        tail = """
+                $(names.result) result =
+                    $call
+            """ * results
     end
 
     print(
@@ -1593,9 +1614,8 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
     )
     return nothing
 end
-
 """
-    _write_matlab_results(io, ret, expression, names)
+    _matlab_results(ret, expression, names) -> String
 
 Assign an entry point's results into `plhs`.
 
@@ -1603,26 +1623,28 @@ A caller may request fewer outputs than a declaration produces; every element
 is converted regardless, because conversion is what releases Julia's storage
 for it. An unrequested element's `mxArray` is destroyed instead of assigned.
 """
-function _write_matlab_results(io::IO, ret, expression::AbstractString, names)
-    ret.kind in (:void, :none) && return nothing
-    if ret.kind !== :tuple
-        println(io, "    plhs[0] = jlw_out_", names.value, "(", expression, ");")
-        return nothing
+function _matlab_results(ret, expression::AbstractString, names)
+    ret.kind in (:void, :none) && return ""
+    ret.kind === :tuple || return "    plhs[0] = jlw_out_$(names.value)($expression);\n"
+    accesses = [
+        expression * ".values" * _matlab_element_access(ret.fields, i)
+            for i in eachindex(ret.elements)
+    ]
+    text = _matlab_tuple_precheck(ret, accesses)
+    text *= join(
+        "    mxArray *out$i = jlw_out_$(names.elements[i])($(accesses[i]));\n"
+            for i in eachindex(ret.elements)
+    )
+    for i in eachindex(ret.elements)
+        text *= """
+            if (wanted >= $i) {
+                plhs[$(i - 1)] = out$i;
+            } else {
+                mxDestroyArray(out$i);
+            }
+        """
     end
-    count = length(ret.elements)
-    _write_matlab_tuple_precheck(io, ret, expression, names)
-    for i in 1:count
-        access = expression * ".values" * _matlab_element_access(ret.fields, i)
-        println(io, "    mxArray *out", i, " = jlw_out_", names.elements[i], "(", access, ");")
-    end
-    for i in 1:count
-        println(io, "    if (wanted >= ", i, ") {")
-        println(io, "        plhs[", i - 1, "] = out", i, ";")
-        println(io, "    } else {")
-        println(io, "        mxDestroyArray(out", i, ");")
-        println(io, "    }")
-    end
-    return nothing
+    return text
 end
 
 """
@@ -1701,38 +1723,48 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
         _write_matlab_handler(io, plan, method.symbol, names)
     end
 
-    println(io)
-    println(io, "void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])")
-    println(io, "{")
-    println(io, "    if (nrhs < 1 || !mxIsChar(prhs[0])) {")
-    println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"the first argument names the function\");")
-    println(io, "    }")
-    # Read the dispatch name only when a function is wrapped; an empty gateway
-    # would carry an unused variable.
-    isempty(named) || println(io, "    char *name = mxArrayToUTF8String(prhs[0]);")
-    for (i, (method, _, _)) in pairs(named)
-        keyword = i == 1 ? "    if" : "    } else if"
-        println(io, keyword, " (strcmp(name, \"", method.symbol, "\") == 0) {")
-        println(io, "        jlw_call_", method.symbol, "(nlhs, plhs, nrhs, prhs);")
-    end
+    dispatch = ""
     if isempty(named)
-        println(io, "    (void)nlhs;")
-        println(io, "    (void)plhs;")
-        println(io, "    mexErrMsgIdAndTxt(\"jlw:argument\", \"no wrapped functions\");")
+        dispatch = """
+            (void)nlhs;
+            (void)plhs;
+            mexErrMsgIdAndTxt("jlw:argument", "no wrapped functions");
+        """
     else
-        println(io, "    } else {")
-        println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"unknown function %s\", name);")
-        println(io, "    }")
+        # Read the dispatch name only when a function is wrapped; an empty
+        # gateway would carry an unused variable.
+        dispatch = "    char *name = mxArrayToUTF8String(prhs[0]);\n"
+        for (i, (method, _, _)) in pairs(named)
+            keyword = i == 1 ? "    if" : "    } else if"
+            dispatch *= "$keyword (strcmp(name, \"$(method.symbol)\") == 0) {\n"
+            dispatch *= "        jlw_call_$(method.symbol)(nlhs, plhs, nrhs, prhs);\n"
+        end
+        dispatch *= """
+            } else {
+                mexErrMsgIdAndTxt("jlw:argument", "unknown function %s", name);
+            }
+        """
     end
-    println(io, "}")
+    print(
+        io, """
+
+        void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+        {
+            if (nrhs < 1 || !mxIsChar(prhs[0])) {
+                mexErrMsgIdAndTxt("jlw:argument", "the first argument names the function");
+            }
+        $(dispatch)}
+        """
+    )
     return nothing
 end
 
 """
     _matlab_release_expression(kind, access) -> Vector{String}
 
-The statements that release a carrier's storage without converting it. Used to
-unwind a tuple whose elements have been produced but not yet converted.
+The statements that release a carrier's storage without converting it. The out
+helpers release this way once they have copied, and a tuple whose elements are
+produced but not yet converted unwinds this way.
 """
 function _matlab_release_expression(kind, access::AbstractString)
     kind.owns || return String[]
@@ -1746,7 +1778,7 @@ function _matlab_release_expression(kind, access::AbstractString)
 end
 
 """
-    _write_matlab_tuple_precheck(io, ret, expression, names)
+    _matlab_tuple_precheck(ret, accesses) -> String
 
 Validate every dictionary element's field names before any element of a tuple
 is converted.
@@ -1756,26 +1788,28 @@ the unconverted ones. Dictionary keys are runtime data from Julia, so this is
 an ordinary path, not an edge case. Checking first means a raise happens
 while the whole tuple is still intact and can be released.
 """
-function _write_matlab_tuple_precheck(io::IO, ret, expression::AbstractString, names)
-    dicts = [i for (i, element) in pairs(ret.elements) if element.kind === :dict]
-    isempty(dicts) && return nothing
-    for i in dicts
-        access = expression * ".values" * _matlab_element_access(ret.fields, i)
-        println(io, "    for (int64_t k = 0; k < ", access, ".length; k++) {")
-        println(
-            io, "        if (!jlw_valid_field_name(", access, ".keys[k].data, ",
-            access, ".keys[k].length)) {"
-        )
-        for (j, element) in pairs(ret.elements)
-            other = expression * ".values" * _matlab_element_access(ret.fields, j)
-            for statement in _matlab_release_expression(element, other)
-                println(io, "            ", statement)
-            end
-        end
-        println(io, "            mexErrMsgIdAndTxt(\"jlw:argument\",")
-        println(io, "                \"a dictionary key is not a legal MATLAB field name\");")
-        println(io, "        }")
-        println(io, "    }")
+function _matlab_tuple_precheck(ret, accesses)
+    # Releasing every element, including the one being checked, since none has
+    # been converted yet.
+    unwind = join(
+        "            $statement\n"
+            for (element, access) in zip(ret.elements, accesses)
+            for statement in _matlab_release_expression(element, access)
+    )
+    text = ""
+    for (element, access) in zip(ret.elements, accesses)
+        element.kind === :dict || continue
+        text *= """
+            for (int64_t k = 0; k < $access.length; k++) {
+                if (!jlw_valid_field_name($access.keys[k].data, $access.keys[k].length)) {
+        """
+        text *= unwind
+        text *= """
+                    mexErrMsgIdAndTxt("jlw:argument",
+                        "a dictionary key is not a legal MATLAB field name");
+                }
+            }
+        """
     end
-    return nothing
+    return text
 end
