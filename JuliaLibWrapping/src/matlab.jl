@@ -14,10 +14,10 @@ needs no MATLAB installed, exactly as [`PythonTarget`](@ref) needs no Python.
 `duplicate_arguments` decides how array arguments reach Julia. By default the
 gateway borrows MATLAB's own buffer, which is free but makes a wrapped
 function that writes to its argument corrupt the caller. MATLAB gives
-assignment value semantics and implements them by copying on write, so
-`b = a` shares one buffer until MATLAB observes a write — and a write from
-Julia is one it never observes. The damage reaches every variable sharing that
-buffer, invisibly, since nothing in the MATLAB source says a copy was due.
+assignment value semantics by copying on write: `b = a` shares one buffer until
+MATLAB observes a write, and a write from Julia is one it never observes. The
+damage reaches every variable sharing that buffer, and nothing in the MATLAB
+source reveals it.
 
 Set it when the wrapped library mutates arguments. Each array argument is then
 duplicated for the call, at the cost of a copy. It affects arrays only: string,
@@ -66,10 +66,10 @@ const MATLAB_KEYWORDS = Set{String}(
     sanitize_matlab_name(name) -> String
 
 Return a MATLAB-identifier form of `name`. MATLAB identifiers begin with a
-letter and continue with letters, digits and underscores, which is stricter
-than C: a leading underscore is legal in C and in the Python emitter's output,
-but not here, so [`sanitize_for_c`](@ref)'s result is prefixed with `x` when it
-does not begin with a letter. A reserved word is suffixed with `_`.
+letter and continue with letters, digits, and underscores. That is stricter
+than C — a leading underscore is legal in C and in the Python output — so a
+[`sanitize_for_c`](@ref) result that does not begin with a letter gets an `x`
+prefix. Reserved words get an `_` suffix.
 """
 function sanitize_matlab_name(name::AbstractString)
     sanitized = sanitize_for_c(name)
@@ -101,9 +101,8 @@ end
 """
     _matlab_arg_names(method, api_entry) -> (positional, keywords)
 
-The façade's argument names. The sidecar records the declared names, which
-read better than the ABI's; a symbol absent from it falls back to the ABI
-argument names. Keywords become a name-value block, so they are kept apart
+The façade's argument names, from the sidecar when it records them and from
+the ABI otherwise. Keywords become a name-value block, so they are kept apart
 from the positional arguments.
 """
 function _matlab_arg_names(method::MethodDesc, api_entry)
@@ -150,9 +149,9 @@ const MATLAB_CLASSES = Dict{String, String}(
     "UInt64" => "uint64", "Bool" => "logical",
 )
 
-# The integer classes, which an `arguments` block must not name directly: the
-# block converts before validators run, and `int64(2.5)` rounds rather than
-# failing, so an integrality check placed after it would always pass.
+# The integer classes: an `arguments` block must not name them directly,
+# because it converts before validators run, and `int64(2.5)` rounds rather
+# than failing.
 const _MATLAB_INTEGER_CLASSES = Set{String}(
     ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
 )
@@ -171,9 +170,8 @@ one of:
 - `:opt` — a `COpt`, taken as the value or `[]`
 - `:opaque` — anything else, which leaves the entry point unwrapped
 
-An owning carrier is `:opaque` in argument position: the ownership model gives
-arguments to the callee borrowed, and a carrier that says otherwise is a shape
-this emitter must not guess at.
+An owning carrier is `:opaque` in argument position: arguments cross borrowed,
+and an owning carrier is one this emitter must not guess at.
 """
 function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     desc = typeinfo[type_id]
@@ -240,10 +238,9 @@ of:
 - `:opaque` — anything else, which leaves the entry point unwrapped
 
 Every classification carries `owns`: whether the gateway must release Julia's
-storage for it. That is what a tuple's release loop reads, and it must be
-honored for every element, including elements a caller did not ask for — a
-MATLAB caller may request fewer outputs than a declaration produces, and the
-unrequested ones are allocated all the same.
+storage for it. A tuple's release loop reads it, and it must hold for every
+element — a caller may request fewer outputs than a declaration produces, but
+the unrequested ones are allocated all the same.
 
 An owning return classifies `:opaque` when `release_present` is `false`: the
 library exports no deallocation entry points, so the gateway would have nothing
@@ -349,10 +346,10 @@ end
 
 The `arguments`-block declaration for one argument, without its name.
 
-An integer is declared `double` on purpose. An `arguments` block converts to
-the declared class *before* its validators run, and `int64(2.5)` rounds rather
-than failing, so an integrality check placed after a conversion always passes.
-The façade validates as a double and converts in its body.
+Integers are declared `double` on purpose: an `arguments` block converts
+before its validators run, and `int64(2.5)` rounds rather than failing, so a
+later integrality check would always pass. The façade validates as a double
+and converts in its body.
 """
 function _matlab_arg_validation(kind)
     kind.kind === :scalar &&
@@ -377,8 +374,8 @@ The expression a façade passes to the gateway for one argument.
 function _matlab_arg_forward(name::AbstractString, kind)
     # The gateway reads `char`; there is no public C API for a MATLAB string.
     kind.kind === :string && return "convertStringsToChars(" * name * ")"
-    # MATLAB has no 1-D array, so a vector arrives 1×N or N×1; `(:)` makes it
-    # the column the carrier expects without copying either orientation twice.
+    # MATLAB has no 1-D array, so a vector arrives 1×N or N×1; `(:)` yields the
+    # column the carrier expects, without a copy.
     kind.kind === :array && kind.ndim == 1 && return name * "(:)"
     kind.kind === :scalar && kind.integer && return kind.class * "(" * name * ")"
     return String(name)
@@ -391,9 +388,8 @@ Decide whether an entry point gets a façade, and gather what writing one needs.
 `kind` is `:auto` when every argument and the return are mapped, and `:skip`
 otherwise, with a `reason`.
 
-`:skip` emits no file at all. A `.m` that exists but raises when called is
-worse than an absent one: MATLAB reports a missing function clearly, whereas a
-present one that fails looks like a bug in the wrapped library.
+`:skip` emits no file at all: MATLAB reports a missing function clearly, but a
+façade that exists and fails looks like a bug in the wrapped library.
 """
 function _matlab_facade_plan(
         method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
@@ -551,9 +547,9 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
         push!(forwarded, _matlab_arg_forward(expression, kind))
     end
 
-    # The dispatch name is `char`, not a double-quoted `string`: the gateway
-    # reads it with `mxArrayToUTF8String`, and there is no public C API for
-    # reading a MATLAB `string` object.
+    # The dispatch name is passed as `char`, not a MATLAB `string` object: the
+    # gateway reads it with `mxArrayToUTF8String`, and the C API cannot read a
+    # `string` object.
     call = _matlab_gateway_name(dest) * "('" * method.symbol * "'"
     isempty(forwarded) || (call *= ", " * join(forwarded, ", "))
     call *= ")"
@@ -722,10 +718,10 @@ const MATLAB_ERROR_IDENTIFIERS = Dict{Int, String}(
 
 Write the gateway's includes, its library loader and its status check.
 
-The library is opened here rather than linked, and never closed. `clear mex`
-unloads the MEX file, and dropping the last reference to the library would run
-`jl_init` a second time in one process on the next call, which aborts.
-`RTLD_NODELETE` keeps the runtime mapped even if the handle is closed.
+The library is opened here rather than linked, and never closed: `clear mex`
+unloads the MEX file, and the next load would run `jl_init` twice in one
+process, which aborts. `RTLD_NODELETE` keeps the runtime mapped even if the
+handle is closed.
 """
 function _write_matlab_gateway_prologue(
         io::IO, dest::MatlabTarget, header::AbstractString,
@@ -820,14 +816,22 @@ end
     _write_matlab_check(io, plan, symbol)
 
 Write the validation phase of one handler: everything that can raise, before
-anything is acquired.
-
-This ordering is the first of the gateway's defenses against leaking.
-`mexErrMsgIdAndTxt` leaves by `longjmp`, and a `longjmp` runs no cleanup
-handlers, so a check that raises while a carrier is live would strand it.
-Class, shape and sparsity checks acquire nothing, so they can all run first.
+anything is acquired. `mexErrMsgIdAndTxt` leaves by `longjmp`, which runs no
+cleanup, so a check that raises while a carrier is live would leak it. Class,
+shape, and sparsity checks acquire nothing, so they all run first.
 """
 function _write_matlab_check(io::IO, plan, symbol::AbstractString)
+    # `nlhs` is known before the call, so the output-count check runs here with
+    # the other raises: after the call, `longjmp` would unwind past storage
+    # Julia has already allocated.
+    inner = plan.ret.kind === :result ? plan.ret.inner : plan.ret
+    if inner.kind === :tuple
+        count = length(inner.elements)
+        println(io, "    int wanted = nlhs < 1 ? 1 : nlhs;")
+        println(io, "    if (wanted > ", count, ") {")
+        println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"at most ", count, " outputs\");")
+        println(io, "    }")
+    end
     println(io, "    if (nrhs != ", length(plan.args) + 1, ") {")
     println(
         io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"", symbol,
@@ -919,6 +923,25 @@ The `mxClassID` naming a MATLAB class, for `mxCreateNumericArray`.
 _matlab_class_id(class::AbstractString) = "mx" * uppercase(class) * "_CLASS"
 
 """
+    _matlab_create_array(class, rank, shape) -> String
+    _matlab_create_scalar(class, rows, cols) -> String
+
+The `mxCreate…` call for a class. `logical` has its own creators:
+`mxCreateNumericArray` takes a numeric `mxClassID`, and `mxLOGICAL_CLASS` is
+not one of them.
+"""
+_matlab_create_array(class::AbstractString, rank, shape::AbstractString) =
+    class == "logical" ? "mxCreateLogicalArray(" * string(rank) * ", " * shape * ")" :
+    "mxCreateNumericArray(" * string(rank) * ", " * shape * ", " *
+    _matlab_class_id(class) * ", mxREAL)"
+
+_matlab_create_scalar(class::AbstractString, rows, cols) =
+    class == "logical" ?
+    "mxCreateLogicalMatrix(" * string(rows) * ", " * string(cols) * ")" :
+    "mxCreateNumericMatrix(" * string(rows) * ", " * string(cols) * ", " *
+    _matlab_class_id(class) * ", mxREAL)"
+
+"""
     _matlab_ctype(class) -> String
 
 The C type behind a MATLAB class, as the generated header spells it.
@@ -926,7 +949,8 @@ The C type behind a MATLAB class, as the generated header spells it.
 function _matlab_ctype(class::AbstractString)
     class == "double" && return "double"
     class == "single" && return "float"
-    class == "logical" && return "mxLogical"
+    # The header spells `Bool` as C's `bool`, not MATLAB's `mxLogical`.
+    class == "logical" && return "bool"
     return class * "_t"
 end
 
@@ -937,9 +961,8 @@ Write one conversion helper per distinct borrowed carrier an argument uses.
 
 Each takes an `mxArray` its caller has already validated and returns a carrier
 borrowing MATLAB's storage. Storage these allocate comes from `mxMalloc`, which
-MATLAB tracks and reclaims when `mexFunction` exits, including through an
-error — the second of the gateway's defenses, and what makes an unwind past
-them safe.
+MATLAB reclaims when `mexFunction` exits, including through an error; that is
+what makes an unwind past the helpers safe.
 """
 function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
     for (name, kind) in carriers
@@ -1071,11 +1094,14 @@ function _write_matlab_release(io::IO)
     println(io, "    entry(pointer);")
     println(io, "}")
     println(io)
-    println(io, "static void jlw_release_strings(CString_owned *items, int64_t count)")
+    # `void *`, not `CString_owned *`: the header declares that typedef only
+    # when some entry point uses the carrier, and a library with none still
+    # needs a gateway that compiles.
+    println(io, "static void jlw_release_strings(void *items, int64_t count)")
     println(io, "{")
-    println(io, "    static void (*entry)(CString_owned *, int64_t) = NULL;")
+    println(io, "    static void (*entry)(void *, int64_t) = NULL;")
     println(io, "    if (entry == NULL) {")
-    println(io, "        entry = (void (*)(CString_owned *, int64_t))jlw_symbol(\"jlw_free_strings\");")
+    println(io, "        entry = (void (*)(void *, int64_t))jlw_symbol(\"jlw_free_strings\");")
     println(io, "    }")
     println(io, "    entry(items, count);")
     println(io, "}")
@@ -1088,9 +1114,9 @@ end
 Write one conversion helper per distinct return carrier, each copying Julia's
 storage into a fresh `mxArray` and releasing the original.
 
-A helper that can raise between acquiring and releasing frees first: cleanup
-does not run through `mexErrMsgIdAndTxt`'s `longjmp`, so "release on every exit
-path" has to be written out rather than delegated.
+A helper that can raise between acquiring and releasing frees first:
+`mexErrMsgIdAndTxt` leaves by `longjmp`, which runs no cleanup, so every exit
+path releases explicitly.
 """
 function _write_matlab_out_helpers(io::IO, carriers)
     for (name, kind) in carriers
@@ -1103,13 +1129,13 @@ function _write_matlab_out_helpers(io::IO, carriers)
             for d in 1:kind.ndim
                 println(io, "    shape[", d - 1, "] = (mwSize)carrier.dims[", d - 1, "];")
             end
-            println(io, "    mxArray *out = mxCreateNumericArray(", max(kind.ndim, 2), ", shape, ", _matlab_class_id(kind.class), ", mxREAL);")
+            println(io, "    mxArray *out = ", _matlab_create_array(kind.class, max(kind.ndim, 2), "shape"), ";")
             println(io, "    memcpy(", _matlab_accessor(kind.class), "(out), carrier.data,")
             println(io, "           mxGetNumberOfElements(out) * sizeof(", ctype, "));")
             kind.owns && println(io, "    jlw_release(carrier.data);")
         elseif kind.kind === :string
             println(io, "    /* `mxCreateString` takes a C string, so an embedded NUL")
-            println(io, "       truncates. Julia permits them; this is documented. */")
+            println(io, "       truncates; Julia permits them. */")
             println(io, "    char *text = (char *)mxMalloc((size_t)carrier.length + 1);")
             println(io, "    memcpy(text, carrier.data, (size_t)carrier.length);")
             println(io, "    text[carrier.length] = '\\0';")
@@ -1158,7 +1184,7 @@ function _write_matlab_out_helpers(io::IO, carriers)
             println(io, "    }")
             println(io, "    mxArray *out = mxCreateStructMatrix(1, 1, (int)carrier.length, names);")
             println(io, "    for (int64_t i = 0; i < carrier.length; i++) {")
-            println(io, "        mxArray *field = mxCreateNumericMatrix(1, 1, ", _matlab_class_id(kind.class), ", mxREAL);")
+            println(io, "        mxArray *field = ", _matlab_create_scalar(kind.class, 1, 1), ";")
             println(io, "        *", _matlab_accessor(kind.class), "(field) = (", ctype, ")carrier.values[i];")
             println(io, "        mxSetFieldByNumber(out, 0, (int)i, field);")
             println(io, "    }")
@@ -1168,12 +1194,12 @@ function _write_matlab_out_helpers(io::IO, carriers)
             end
         elseif kind.kind === :opt
             println(io, "    if (carrier.has_value == 0) {")
-            println(io, "        return mxCreateNumericMatrix(0, 0, ", _matlab_class_id(kind.class), ", mxREAL);")
+            println(io, "        return ", _matlab_create_scalar(kind.class, 0, 0), ";")
             println(io, "    }")
-            println(io, "    mxArray *out = mxCreateNumericMatrix(1, 1, ", _matlab_class_id(kind.class), ", mxREAL);")
+            println(io, "    mxArray *out = ", _matlab_create_scalar(kind.class, 1, 1), ";")
             println(io, "    *", _matlab_accessor(kind.class), "(out) = carrier.value;")
         elseif kind.kind === :scalar
-            println(io, "    mxArray *out = mxCreateNumericMatrix(1, 1, ", _matlab_class_id(kind.class), ", mxREAL);")
+            println(io, "    mxArray *out = ", _matlab_create_scalar(kind.class, 1, 1), ";")
             println(io, "    *", _matlab_accessor(kind.class), "(out) = carrier;")
         end
         println(io, "    return out;")
@@ -1252,10 +1278,9 @@ end
 
 Assign an entry point's results into `plhs`.
 
-A caller may request fewer outputs than a declaration produces. Every element
-is converted regardless, because conversion is also what releases Julia's
-storage for it; an element the caller did not ask for has its `mxArray`
-destroyed instead of being assigned.
+A caller may request fewer outputs than a declaration produces; every element
+is converted regardless, because conversion is what releases Julia's storage
+for it. An unrequested element's `mxArray` is destroyed instead of assigned.
 """
 function _write_matlab_results(io::IO, ret, expression::AbstractString, names)
     ret.kind === :void && return nothing
@@ -1264,10 +1289,6 @@ function _write_matlab_results(io::IO, ret, expression::AbstractString, names)
         return nothing
     end
     count = length(ret.elements)
-    println(io, "    int wanted = nlhs < 1 ? 1 : nlhs;")
-    println(io, "    if (wanted > ", count, ") {")
-    println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"at most ", count, " outputs\");")
-    println(io, "    }")
     for i in 1:count
         access = expression * ".values" * _matlab_element_access(ret.fields, i)
         println(io, "    mxArray *out", i, " = jlw_out_", names.elements[i], "(", access, ");")

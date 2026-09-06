@@ -1538,8 +1538,8 @@ end
         @test array.class == "double"
         @test array.ndim == 1
 
-        # Arguments are borrowed. An owning carrier in argument position is a
-        # shape this emitter must not guess at.
+        # Arguments are borrowed; an owning carrier in argument position is
+        # left unwrapped because the emitter does not guess.
         owning = JuliaLibWrapping._matlab_classify_arg(7, typeinfo)
         @test owning.kind === :opaque
         @test occursin("borrowed", owning.reason)
@@ -1591,7 +1591,7 @@ end
         @test owned.owns === true
 
         # A borrowed return is the caller's storage passed straight back, so
-        # releasing it would free memory the gateway does not own.
+        # releasing it would free memory it does not own.
         borrowed = JuliaLibWrapping._matlab_classify_return(7, typeinfo, true)
         @test borrowed.kind === :string
         @test borrowed.owns === false
@@ -1725,13 +1725,12 @@ end
             @test occursin("result.value.values[0]", gateway)
             @test occursin("result.value.values._1", gateway)
 
-            # By default an array argument borrows MATLAB's buffer, which is
-            # what makes a wrapped function writing to it corrupt every
-            # variable sharing that buffer.
+            # By default an array argument borrows MATLAB's buffer, so a
+            # wrapped function that writes to it corrupts every variable
+            # sharing that buffer.
             @test !occursin("mxDuplicateArray", gateway)
 
-            # A build script that compiles it, and nothing that needs MATLAB
-            # to have been present while emitting.
+            # A build script that compiles it. Emitting it needs no MATLAB.
             build = read(joinpath(path, "build_mex.m"), String)
             @test occursin("mex('-R2018a'", build)
             @test occursin("'private'", build)
@@ -1766,8 +1765,8 @@ end
 
     @testset "targets that read the sidecar" begin
         # `build_library` asks this before deciding what to hand a target. A
-        # target that reads the sidecar but answers `false` is given the ABI
-        # alone, and silently loses its public names, keyword defaults and
+        # target that reads the sidecar but answers `false` gets the ABI alone
+        # and silently loses its public names, keyword defaults, and
         # docstrings.
         @test JuliaLibWrapping.accepts_api_metadata(
             PythonTarget("out", "demo_py", "demo")
@@ -1794,20 +1793,32 @@ end
     end
 
     @testset "matlab gateway compiles" begin
-        # The generated C is checked against a stand-in for `mex.h`, so a
-        # syntax or type error is caught without MATLAB installed.
+        # Every fixture, not one: the gateway's shape depends on which
+        # carriers an ABI happens to contain, so checking a single one
+        # leaves whole branches of the emitter uncompiled. A stand-in for
+        # `mex.h` is what makes this possible without MATLAB installed.
         compiler = Sys.which("cc")
         if isnothing(compiler)
             @info "Skipping MATLAB gateway compile check (no cc)"
         else
-            abi = read_abi_info("bindinginfo_ctuple.json")
-            mktempdir() do path
-                write_wrapper(MatlabTarget(path, "ctuple_demo", "libctuple"), abi)
-                write_wrapper(CTarget(path, "libctuple"), abi)
-                cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
-                command = `$compiler -fsyntax-only -Wall -Wextra -I$path
-                           $(joinpath(path, "libctuple_mex.c"))`
-                @test success(run(pipeline(command; stdout = stdout, stderr = stderr); wait = true))
+            fixtures = filter(
+                name -> startswith(name, "bindinginfo_") && endswith(name, ".json"),
+                readdir(@__DIR__)
+            )
+            @test !isempty(fixtures)
+            for fixture in fixtures
+                abi = read_abi_info(fixture)
+                mktempdir() do path
+                    write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+                    # The gateway includes the C target's header.
+                    write_wrapper(CTarget(path, "libdemo"), abi)
+                    cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
+                    source = joinpath(path, "libdemo_mex.c")
+                    command = `$compiler -fsyntax-only -Werror -I$path $source`
+                    process = run(pipeline(command; stdout = stdout, stderr = stderr); wait = true)
+                    success(process) || @error "gateway failed to compile" fixture
+                    @test success(process)
+                end
             end
         end
     end
