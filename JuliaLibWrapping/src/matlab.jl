@@ -3,26 +3,17 @@
 
 Emit MATLAB bindings for a JuliaLibWrapping library into `dir`.
 
-`package_name` names a MATLAB package directory, written as `+<package_name>`,
-so a wrapped function is called as `<package_name>.f(x)`, a form that stays
-clear of the MATLAB path. `library_basename` is the shared
-library's name without its extension.
+`package_name` becomes a `+<package_name>` directory, so a wrapped function is
+called as `<package_name>.f(x)`. `library_basename` is the shared library's
+name without its extension.
 
-MATLAB compiles the emitted sources; emitting them needs no MATLAB
-installed.
+MATLAB compiles the emitted sources; emitting them is pure Julia.
 
-`duplicate_arguments` decides how array arguments reach Julia. By default the
-gateway borrows MATLAB's own buffer, which is free but makes a wrapped
-function that writes to its argument corrupt the caller. MATLAB gives
-assignment value semantics by copying on write: `b = a` shares one buffer until
-MATLAB observes a write, and a write from Julia is one it never observes. The
-damage reaches every variable sharing that buffer, and nothing in the MATLAB
-source reveals it.
-
-Set it when the wrapped library mutates arguments. Each array argument is then
-duplicated for the call, at the cost of a copy. It affects arrays only: string,
-string-array and dictionary arguments already copy into `mxMalloc`ed storage,
-and scalars and optionals cross by value.
+`duplicate_arguments` copies each array argument for the call. Use it when the
+wrapped library writes to its arguments. By default the gateway hands Julia a
+pointer into MATLAB's own buffer, and a write there changes every variable
+sharing it, because MATLAB copies on write only for writes it sees. Arrays are
+the only case: other carriers already copy or cross by value.
 """
 struct MatlabTarget <: AbstractTarget
     dir::String
@@ -51,8 +42,8 @@ end
 """
     MATLAB_KEYWORDS :: Set{String}
 
-The words MATLAB reserves, as `iskeyword` reports them. One of these used as
-an identifier is a syntax error, so [`sanitize_matlab_name`](@ref) suffixes it.
+The words MATLAB reserves, as `iskeyword` reports them.
+[`sanitize_matlab_name`](@ref) gives them an `_` suffix.
 """
 const MATLAB_KEYWORDS = Set{String}(
     [
@@ -65,11 +56,10 @@ const MATLAB_KEYWORDS = Set{String}(
 """
     sanitize_matlab_name(name) -> String
 
-Return a MATLAB-identifier form of `name`. MATLAB identifiers begin with a
-letter and continue with letters, digits, and underscores. That is stricter
-than C — a leading underscore is legal in C — so a
-[`sanitize_for_c`](@ref) result that does not begin with a letter gets an `x`
-prefix. Reserved words get an `_` suffix.
+Return a MATLAB identifier for `name`. MATLAB identifiers start with a letter,
+then take letters, digits and underscores — stricter than C. A
+[`sanitize_for_c`](@ref) result starting with anything else gets an `x` prefix,
+and a reserved word gets an `_` suffix.
 """
 function sanitize_matlab_name(name::AbstractString)
     sanitized = sanitize_for_c(name)
@@ -82,25 +72,24 @@ end
 """
     _matlab_gateway_name(dest::MatlabTarget) -> String
 
-The gateway's MEX function name. It lives under the package's `private/`
-directory, so it is callable from the façades and invisible everywhere else.
+The gateway's MEX function name. It lives in the package's `private/`, where
+the façades can call it and other code cannot.
 """
 _matlab_gateway_name(dest::MatlabTarget) = dest.library_basename * "_mex"
 
 """
     _matlab_types_header(dest::MatlabTarget) -> String
 
-The basename of the header carrying the carrier typedefs the gateway needs.
-Distinct from the C target's own header so that emitting it here is visibly
-this target's file rather than an overwrite of somebody else's.
+The header of carrier typedefs the gateway includes. Named after the gateway,
+so it reads as this target's own file.
 """
 _matlab_types_header(dest::MatlabTarget) = _matlab_gateway_name(dest) * "_types"
 
 """
     _matlab_entry_name(method, api_entry) -> String
 
-The name a façade is written under: the declared public name when the sidecar
-records one, otherwise the exported symbol.
+The name a façade is written under: the sidecar's public name, or the exported
+symbol.
 """
 function _matlab_entry_name(method::MethodDesc, api_entry)
     isnothing(api_entry) && return sanitize_matlab_name(method.symbol)
@@ -110,9 +99,8 @@ end
 """
     _matlab_arg_names(method, api_entry) -> (positional, keywords)
 
-The façade's argument names, from the sidecar when it records them and from
-the ABI otherwise. Keywords become a name-value block, so they are kept apart
-from the positional arguments.
+The façade's argument names, from the sidecar when it has them and the ABI
+otherwise. Keywords come back separately: they become a name-value block.
 """
 function _matlab_arg_names(method::MethodDesc, api_entry)
     # Keywords arrive as a struct named `opts`, so a positional argument of
@@ -149,10 +137,8 @@ end
 """
     MATLAB_CLASSES :: Dict{String, String}
 
-The MATLAB class each carrier element type is passed and returned as. MATLAB
-numeric literals are `double`, so an integer argument is *declared* `double`
-and converted in the façade body; these names are what the gateway checks with
-`mxIs…` and what a return is built as.
+The MATLAB class each carrier element type crosses as. The gateway checks
+arguments against these and builds returns from them.
 """
 const MATLAB_CLASSES = Dict{String, String}(
     "Float64" => "double", "Float32" => "single",
@@ -182,8 +168,7 @@ one of:
 - `:opt` — a `COpt`, taken as the value or `[]`
 - `:opaque` — anything else, which leaves the entry point unwrapped
 
-An owning carrier is `:opaque` in argument position: arguments cross borrowed,
-and this emitter wraps only borrowed ones.
+An owning carrier is `:opaque` as an argument: arguments cross borrowed.
 """
 function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     desc = typeinfo[type_id]
@@ -1053,12 +1038,11 @@ end
 """
     _write_matlab_in_helpers(io, carriers)
 
-Write one conversion helper per distinct borrowed carrier an argument uses.
+Write one conversion helper per borrowed carrier an argument uses.
 
-Each takes an `mxArray` its caller has already validated and returns a carrier
-borrowing MATLAB's storage. Storage these allocate comes from `mxMalloc`, which
-MATLAB reclaims when `mexFunction` exits, including through an error; that is
-what makes an unwind past the helpers safe.
+Each takes an already-validated `mxArray` and returns a carrier over MATLAB's
+storage. What they allocate comes from `mxMalloc`, which MATLAB reclaims when
+`mexFunction` exits, so an unwind past them is safe.
 """
 function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
     for (name, kind) in carriers
