@@ -45,7 +45,7 @@ end
 "Double the vector and report how many elements it had."
 stats(a::Vector{Float64}) = (2 .* a, Int64(length(a)))
 
-"Upper-case `s`, split it into words, measure each one, and average those lengths."
+"Upper-case `s`, split it into words, and return each word's length and their mean."
 function bundle(s::String)
     words = String.(split(s))
     lengths = Dict(w => Float64(ncodeunits(w)) for w in words)
@@ -53,7 +53,7 @@ function bundle(s::String)
     return (uppercase(s), words, lengths, mean)
 end
 
-"Largest value in each column of `A`, and in each row."
+"The maximum of each column and each row of `A`."
 function maximum_marginals(A::Matrix{Float64})
     cols = [maximum(view(A, :, j)) for j in axes(A, 2)]
     rows = [maximum(view(A, i, :)) for i in axes(A, 1)]

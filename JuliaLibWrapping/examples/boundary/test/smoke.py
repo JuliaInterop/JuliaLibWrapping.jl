@@ -30,17 +30,17 @@ x, n = b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
 assert list(x) == [2.0, 4.0, 6.0]
 assert n == 3
 
-# A tuple whose elements are of four different carried types: each is
-# converted by its own kind, and only the owning ones are released.
+# A tuple with four elements of different carried types: each is
+# converted by its own type, and only the owning ones are freed.
 shouted, words, lengths, mean = b.bundle("a bb ccc")
 assert shouted == "A BB CCC"
 assert words == ["a", "bb", "ccc"]
 assert lengths == {"a": 1.0, "bb": 2.0, "ccc": 3.0}
 assert mean == 2.0
-assert b.bundle("")[3] is None  # an absent optional inside a tuple
+assert b.bundle("")[3] is None  # the optional element is absent
 
-# A tuple whose elements share one type, which juliac emits as an inline
-# array rather than as named fields.
+# A tuple whose elements share one type; juliac emits that as an inline
+# array rather than named fields.
 cols, rows = b.maximum_marginals(np.asfortranarray([[1.0, 4.0], [3.0, 2.0]]))
 assert list(cols) == [3.0, 4.0]
 assert list(rows) == [4.0, 3.0]

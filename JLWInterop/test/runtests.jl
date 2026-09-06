@@ -2182,8 +2182,8 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         # A one-element tuple is not a multiple return.
         @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64}))
 
-        # An optional element makes the tuple a non-concrete type, which is
-        # still one fixed carrier. A tuple of no definite length is not.
+        # A non-concrete tuple (from an optional element) still has one
+        # fixed carrier. A tuple with no definite length has no carrier.
         @test JLWInterop.carrier_return_type(
             Tuple{Float64, Union{Float64, Nothing}}
         ) === CNTuple{2, Tuple{Float64, COpt{Float64}}}
@@ -2211,7 +2211,7 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test c2.values[2] === Int64(2)
         Libc.free(c2.values[1].data)
 
-        # `to_carrier_as` goes by the declared element types: an optional
+        # `to_carrier_as` uses the declared element types: an optional
         # element arrives as a bare value or `nothing`, and neither says
         # which `COpt` to build.
         D = Tuple{Float64, Union{Float64, Nothing}}

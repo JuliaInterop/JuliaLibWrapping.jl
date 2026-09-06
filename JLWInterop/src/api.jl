@@ -153,9 +153,9 @@ carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
 
 # A tuple return composes each element's own return carrier. An element with
 # no mapping, or a tuple of fewer than two elements, leaves it unmapped.
-# The tuple itself need not be concrete: an optional element makes it a
-# `Union`, which still has one fixed carrier. It must have a definite length,
-# which is what rules out `Tuple` itself and the `Vararg` forms.
+# The tuple type need not be concrete: an optional element makes it a
+# `Union`, which still has one fixed carrier. It must have a definite
+# length, which rules out bare `Tuple` and the `Vararg` forms.
 function carrier_return_type(::Type{T}) where {T <: Tuple}
     (T isa DataType && !Base.isvatuple(T)) || return nothing
     n = fieldcount(T)
@@ -230,11 +230,11 @@ Convert `x` to `T`, then to its carrier.
 """
 to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
 
-# A tuple is converted against its declared element types rather than the
-# types of the values in hand, for the reason [`to_carrier_opt`](@ref) exists:
-# an optional element arrives as a bare value or as `nothing`, and neither
-# says which `COpt` to build. `@generated` for the same reason as
-# [`to_carrier`](@ref) — the element calls resolve statically.
+# Convert against the declared element types, not the values' types: an
+# optional element arrives as a bare value or `nothing`, and neither says
+# which `COpt` to build (the reason [`to_carrier_opt`](@ref) exists).
+# `@generated` for the same reason as [`to_carrier`](@ref) — the element
+# calls resolve statically.
 @generated function to_carrier_as(::Type{T}, t::Tuple) where {T <: Tuple}
     n = fieldcount(T)
     if fieldcount(t) != n
