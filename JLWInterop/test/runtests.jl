@@ -3,6 +3,14 @@ using LinearAlgebra
 using OffsetArrays
 using Test
 
+# An enum and a `mallinfo` binding for the tuple-return tests below; both
+# need file scope, which a testset body does not provide.
+@enum ApiTupleMode::Int32 atm_low = 0 atm_high = 1
+struct MallInfo2
+    fields::NTuple{10, Csize_t}
+end
+uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
+
 @testset "JLWInterop" begin
     @testset "jlw_ok" begin
         s = jlw_ok()
@@ -2183,6 +2191,16 @@ using Test
         @test isnothing(JLWInterop.carrier_return_type(Tuple))
         @test isnothing(JLWInterop.carrier_return_type(Tuple{T, T} where {T}))
 
+        # A nested tuple and an enum element are rejected at expansion: the
+        # first has no target-side unwrapping, and the second would reach a
+        # target as a bare integer, unlike a scalar enum return.
+        @test isnothing(
+            JLWInterop.carrier_return_type(Tuple{Tuple{Float64, Int64}, Int64})
+        )
+        @test isnothing(
+            JLWInterop.carrier_return_type(Tuple{ApiTupleMode, Float64})
+        )
+
         # `to_carrier` builds the carrier element-wise.
         c = JLWInterop.to_carrier((2.5, Int64(7)))
         @test c === CNTuple{2, Tuple{Float64, Int64}}((2.5, Int64(7)))
@@ -2204,6 +2222,32 @@ using Test
 
         # Elements are converted to the declared types, as a scalar return is.
         @test JLWInterop.to_carrier_as(D, (1, 2)) === C((1.0, COpt(2.0)))
+
+        # A count that disagrees with the declaration is an error either way:
+        # extra values would otherwise be dropped without a word.
+        @test_throws "declared 2 return values, got 3" JLWInterop.to_carrier_as(
+            Tuple{Float64, Int64}, (1.0, 2, 3)
+        )
+        @test_throws "declared 2 return values, got 1" JLWInterop.to_carrier_as(
+            Tuple{Float64, Int64}, (1.0,)
+        )
+
+        # Every element is converted before any carrier is built, so an
+        # element that fails to convert strands no earlier element's buffer.
+        if Sys.islinux()
+            bad() = try
+                JLWInterop.to_carrier_as(
+                    Tuple{Vector{Float64}, Int64}, ([1.0, 2.0, 3.0], 2.5)
+                )
+            catch
+            end
+            foreach(_ -> bad(), 1:100)
+            GC.gc(true)
+            before = Int(uordblks())
+            foreach(_ -> bad(), 1:1000)
+            GC.gc(true)
+            @test Int(uordblks()) - before < 10_000
+        end
     end
 
 

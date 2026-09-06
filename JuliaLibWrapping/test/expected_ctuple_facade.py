@@ -18,6 +18,7 @@ import numpy as np  # noqa: F401
 
 from ._lowlevel import (
     CString_owned,
+    CStrArray_owned,
     JLWStatus,
     CVector_owned_Float64,
     Tuple_CVector_owned_Float64_Int64,
@@ -25,6 +26,11 @@ from ._lowlevel import (
     JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64,
     CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64,
     JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64,
+    CDict_owned_Float64,
+    COpt_Float64,
+    Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64,
+    CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64,
+    JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64,
     JLWError,
 )
 
@@ -47,4 +53,15 @@ def pair():
         _v.values[1].free()
     return _out
 
-__all__ = ["CString_owned", "JLWStatus", "CVector_owned_Float64", "Tuple_CVector_owned_Float64_Int64", "CNTuple_2_Tuple_CVector_owned_Float64_Int64", "JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64", "CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", "JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", "JLWError", "stats", "pair"]
+def bundle():
+    _r = _lowlevel.bundle()
+    _v = _r.value
+    try:
+        _out = (_v.values._1.as_str(), _v.values._2.as_list(), _v.values._3.as_dict(), _v.values._4.as_optional(),)
+    finally:
+        _v.values._1.free()
+        _v.values._2.free()
+        _v.values._3.free()
+    return _out
+
+__all__ = ["CString_owned", "CStrArray_owned", "JLWStatus", "CVector_owned_Float64", "Tuple_CVector_owned_Float64_Int64", "CNTuple_2_Tuple_CVector_owned_Float64_Int64", "JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64", "CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", "JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", "CDict_owned_Float64", "COpt_Float64", "Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", "CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", "JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", "JLWError", "stats", "pair", "bundle"]

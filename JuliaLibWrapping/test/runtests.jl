@@ -3035,7 +3035,9 @@ end
             @test bindings == golden
 
             # Both elements are converted before either is released, so a
-            # later element's conversion cannot read freed memory.
+            # later element's conversion cannot read freed memory. The
+            # `finally` is pinned in full, which is also what shows the
+            # scalar element is not released.
             facade = read(joinpath(path, "ctuple_demo", "_facade.py"), String)
             @test occursin(
                 "    _v = _r.value\n    try:\n" *
@@ -3043,7 +3045,17 @@ end
                     "    finally:\n        _v.values._1.free()\n    return _out",
                 facade
             )
-            @test !occursin("_v.values._2.free()", facade)
+
+            # Every element kind the façade can convert, in one tuple: only
+            # the three owning ones are released, the by-value COpt is not.
+            @test occursin(
+                "        _out = (_v.values._1.as_str(), _v.values._2.as_list(), " *
+                    "_v.values._3.as_dict(), _v.values._4.as_optional(),)\n" *
+                    "    finally:\n        _v.values._1.free()\n" *
+                    "        _v.values._2.free()\n        _v.values._3.free()\n",
+                facade
+            )
+            @test !occursin("_v.values._4.free()", facade)
 
             # An inline array is reached by position, and both elements own
             # their storage, so both are released.

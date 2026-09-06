@@ -108,6 +108,41 @@ class CString_owned(ctypes.Structure):
         self.length = 0
 _check_layout(CString_owned, 16, (0, 8))
 
+class CStrArray_owned(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("data", ctypes.POINTER(CString_owned)),
+    ]
+
+    def as_list(self):
+        if not self.data:
+            raise RuntimeError("CStrArray_owned has already been freed")
+        out = []
+        for i in range(self.length):
+            e = self.data[i]
+            out.append(ctypes.string_at(e.data, e.length).decode("utf-8"))
+        return out
+
+    def free(self):
+        """Free the Julia-allocated buffer.
+
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `data` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `data` and resets the other fields; an accessor
+        called afterwards sees the null and raises RuntimeError rather than
+        reading the released memory or returning an empty result.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.data:
+            return
+        _lib.jlw_free_strings(self.data, self.length)
+        self.data = type(self.data)()
+        self.length = 0
+_check_layout(CStrArray_owned, 16, (0, 8))
+
 class JLWStatus(ctypes.Structure):
     _fields_ = [
         ("code", ctypes.c_int32),
@@ -180,6 +215,83 @@ class JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64(ctyp
     ]
 _check_layout(JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64, 296, (0, 264))
 
+class CDict_owned_Float64(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("keys", ctypes.POINTER(CString_owned)),
+        ("values", ctypes.POINTER(ctypes.c_double)),
+    ]
+
+    def as_dict(self):
+        if not self.keys:
+            raise RuntimeError("CDict_owned_Float64 has already been freed")
+        out = {}
+        for i in range(self.length):
+            e = self.keys[i]
+            k = ctypes.string_at(e.data, e.length).decode("utf-8")
+            out[k] = self.values[i]
+        return out
+
+    def free(self):
+        """Free the Julia-allocated buffers.
+
+        Idempotent: a second call is a no-op. The guard is this struct's own
+        `keys` field rather than a Python attribute: reading a struct field
+        nested in a result yields a fresh wrapper each time, so a flag set on the
+        wrapper would be lost, while a field write reaches the shared buffer.
+        Freeing nulls `keys` and resets the other fields; an accessor
+        called afterwards sees the null and raises RuntimeError rather than
+        reading the released memory or returning an empty result.
+
+        For callers who bypass the façade's convert-then-free wrapper and talk
+        to `_lowlevel` directly."""
+        if not self.keys:
+            return
+        _lib.jlw_free_strings(self.keys, self.length)
+        _lib.jlw_free(ctypes.cast(self.values, ctypes.c_void_p))
+        self.keys = type(self.keys)()
+        self.values = type(self.values)()
+        self.length = 0
+_check_layout(CDict_owned_Float64, 24, (0, 8, 16))
+
+class COpt_Float64(ctypes.Structure):
+    _fields_ = [
+        ("has_value", ctypes.c_int32),
+        ("value", ctypes.c_double),
+    ]
+
+    @classmethod
+    def from_optional(cls, x):
+        if x is None:
+            return cls(has_value=0, value=0)
+        return cls(has_value=1, value=x)
+
+    def as_optional(self):
+        return None if self.has_value == 0 else self.value
+_check_layout(COpt_Float64, 16, (0, 8))
+
+class Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64(ctypes.Structure):
+    _fields_ = [
+        ("_1", CString_owned),
+        ("_2", CStrArray_owned),
+        ("_3", CDict_owned_Float64),
+        ("_4", COpt_Float64),
+    ]
+_check_layout(Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64, 72, (0, 16, 32, 56))
+
+class CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64(ctypes.Structure):
+    _fields_ = [
+        ("values", Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64),
+    ]
+_check_layout(CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64, 72, (0,))
+
+class JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64(ctypes.Structure):
+    _fields_ = [
+        ("status", JLWStatus),
+        ("value", CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64),
+    ]
+_check_layout(JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64, 336, (0, 264))
+
 _lib.stats.argtypes = []
 _lib.stats.restype = JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64
 def stats():
@@ -193,6 +305,15 @@ _lib.pair.argtypes = []
 _lib.pair.restype = JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64
 def pair():
     _result = _lib.pair()
+    if _result.status.code != 0:
+        _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
+        raise JLWError(_result.status.code, _msg)
+    return _result
+
+_lib.bundle.argtypes = []
+_lib.bundle.restype = JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64
+def bundle():
+    _result = _lib.bundle()
     if _result.status.code != 0:
         _msg = bytes(_result.status.message).rstrip(b"\x00").decode("utf-8", errors="replace")
         raise JLWError(_result.status.code, _msg)

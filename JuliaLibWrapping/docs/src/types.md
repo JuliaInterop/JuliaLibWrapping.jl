@@ -28,7 +28,9 @@ reinterpreted.
 | registered concrete type | its registered carrier | its registered carrier | target-dependent |
 
 A tuple is a return type only. Each element carries its own ownership, so an
-owning element is released while a scalar beside it is not.
+owning element is released while a scalar beside it is not. An element may not
+itself be a tuple or an enum: neither has a target-side unwrapping, so both are
+rejected when the declaration is expanded.
 
 `Vector{T}` and `Matrix{T}` use the one- and two-dimensional `CArray`
 specializations. Optional enums and nested containers such as

@@ -160,6 +160,11 @@ function carrier_return_type(::Type{T}) where {T <: Tuple}
     (T isa DataType && !Base.isvatuple(T)) || return nothing
     n = fieldcount(T)
     n >= 2 || return nothing
+    # A nested tuple has no unwrap in the generated bindings, and an enum
+    # element cannot be recorded the way a scalar enum return is, so a target
+    # would hand back a bare integer. Both are rejected here, at expansion,
+    # rather than after the library is built.
+    any(F -> F <: Tuple || F <: Base.Enum, fieldtypes(T)) && return nothing
     elements = map(carrier_return_type, fieldtypes(T))
     any(isnothing, elements) && return nothing
     return CNTuple{n, Tuple{elements...}}
@@ -231,12 +236,27 @@ to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
 # says which `COpt` to build. `@generated` for the same reason as
 # [`to_carrier`](@ref) — the element calls resolve statically.
 @generated function to_carrier_as(::Type{T}, t::Tuple) where {T <: Tuple}
-    values = map(enumerate(fieldtypes(T))) do (i, Ti)
-        inner = _api_opt_inner(Ti)
-        return isnothing(inner) ? :(to_carrier_as($Ti, t[$i])) :
-            :(to_carrier_opt($inner, _api_as($Ti, t[$i])))
+    n = fieldcount(T)
+    if fieldcount(t) != n
+        # Too few would be a `BoundsError` below; too many would be dropped.
+        message = "declared $n return values, got $(fieldcount(t))"
+        return :(error($message))
     end
-    return :(CNTuple(($(values...),)))
+    types = fieldtypes(T)
+    names = [gensym(:element) for _ in 1:n]
+    # Convert every element before building any carrier. Conversion is the
+    # step that throws, and a carrier already built when a later element
+    # throws would be unreachable to the caller and never freed.
+    conversions = [:($(names[i]) = _api_as($(types[i]), t[$i])) for i in 1:n]
+    values = map(1:n) do i
+        inner = _api_opt_inner(types[i])
+        return isnothing(inner) ? :(to_carrier($(names[i]))) :
+            :(to_carrier_opt($inner, $(names[i])))
+    end
+    return quote
+        $(conversions...)
+        CNTuple(($(values...),))
+    end
 end
 
 """
