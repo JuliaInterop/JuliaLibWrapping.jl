@@ -1492,6 +1492,57 @@ end
         @test t isa AbstractTarget
     end
 
+    @testset "matlab argument classification" begin
+        typeinfo = OrderedDict{Int, TypeDesc}(
+            1 => PrimitiveTypeDesc("Float64", true, 64, 8, 8),
+            2 => PrimitiveTypeDesc("Int64", true, 64, 8, 8),
+            3 => PrimitiveTypeDesc("UInt8", false, 8, 1, 1),
+            4 => PointerDesc("Ptr{UInt8}", 3),
+            5 => PrimitiveTypeDesc("Int32", true, 32, 4, 4),
+            6 => StructDesc(
+                "CString{:borrowed}", 16, 8,
+                FieldDesc[FieldDesc("length", 5, 0), FieldDesc("data", 4, 8)]
+            ),
+            7 => StructDesc(
+                "CString{:owned}", 16, 8,
+                FieldDesc[FieldDesc("length", 5, 0), FieldDesc("data", 4, 8)]
+            ),
+            8 => PointerDesc("Ptr{Float64}", 1),
+            9 => ArrayDesc("NTuple{1, Int32}", 5, 1, 4, 4),
+            10 => StructDesc(
+                "CArray{:borrowed, Float64, 1}", 16, 8,
+                FieldDesc[FieldDesc("dims", 9, 0), FieldDesc("data", 8, 8)]
+            ),
+            11 => PrimitiveTypeDesc("ComplexF64", false, 128, 16, 8),
+        )
+
+        scalar = JuliaLibWrapping._matlab_classify_arg(1, typeinfo)
+        @test scalar.kind === :scalar
+        @test scalar.class == "double"
+        @test scalar.integer === false
+
+        # An integer argument is declared `double` in the façade and converted
+        # in the body, so the classification records that it is one.
+        @test JuliaLibWrapping._matlab_classify_arg(2, typeinfo).integer === true
+
+        @test JuliaLibWrapping._matlab_classify_arg(6, typeinfo).kind === :string
+
+        array = JuliaLibWrapping._matlab_classify_arg(10, typeinfo)
+        @test array.kind === :array
+        @test array.class == "double"
+        @test array.ndim == 1
+
+        # Arguments are borrowed. An owning carrier in argument position is a
+        # shape this emitter must not guess at.
+        owning = JuliaLibWrapping._matlab_classify_arg(7, typeinfo)
+        @test owning.kind === :opaque
+        @test occursin("borrowed", owning.reason)
+
+        # A raw pointer and a scalar with no MATLAB class are both unwrappable.
+        @test JuliaLibWrapping._matlab_classify_arg(8, typeinfo).kind === :opaque
+        @test JuliaLibWrapping._matlab_classify_arg(11, typeinfo).kind === :opaque
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the

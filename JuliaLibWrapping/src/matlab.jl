@@ -116,3 +116,90 @@ function _uniquify!(names::Vector{String}, seen::Set{String})
     end
     return names
 end
+
+"""
+    MATLAB_CLASSES :: Dict{String, String}
+
+The MATLAB class each carrier element type is passed and returned as. MATLAB
+numeric literals are `double`, so an integer argument is *declared* `double`
+and converted in the façade body; these names are what the gateway checks with
+`mxIs…` and what a return is built as.
+"""
+const MATLAB_CLASSES = Dict{String, String}(
+    "Float64" => "double", "Float32" => "single",
+    "Int8" => "int8", "Int16" => "int16", "Int32" => "int32", "Int64" => "int64",
+    "UInt8" => "uint8", "UInt16" => "uint16", "UInt32" => "uint32",
+    "UInt64" => "uint64", "Bool" => "logical",
+)
+
+# The integer classes, which an `arguments` block must not name directly: the
+# block converts before validators run, and `int64(2.5)` rounds rather than
+# failing, so an integrality check placed after it would always pass.
+const _MATLAB_INTEGER_CLASSES = Set{String}(
+    ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+)
+
+"""
+    _matlab_classify_arg(type_id, typeinfo) -> NamedTuple
+
+Classify an entry point's argument for the façade and the gateway. `kind` is
+one of:
+
+- `:scalar` — a numeric or logical value, with the MATLAB `class` it arrives as
+- `:string` — a borrowed `CString`, taken as `char` or `string`
+- `:strarray` — a borrowed `CStrArray`, taken as a `cellstr`
+- `:dict` — a borrowed `CDict`, taken as a `struct`
+- `:array` — a borrowed `CArray` of rank `ndim`, borrowed in place
+- `:opt` — a `COpt`, taken as the value or `[]`
+- `:opaque` — anything else, which leaves the entry point unwrapped
+
+An owning carrier is `:opaque` in argument position: the ownership model gives
+arguments to the callee borrowed, and a carrier that says otherwise is a shape
+this emitter must not guess at.
+"""
+function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
+    desc = typeinfo[type_id]
+    if desc isa PrimitiveTypeDesc
+        class = get(MATLAB_CLASSES, desc.name, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported scalar type `$(desc.name)`")
+        return (kind = :scalar, class = class, integer = class in _MATLAB_INTEGER_CLASSES)
+    end
+    desc isa StructDesc || return (kind = :opaque, reason = "argument is not a struct")
+
+    info = cstring_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        info.ownership === :borrowed || return _matlab_owning_argument("CString")
+        return (kind = :string,)
+    end
+    info = cstrarray_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        info.ownership === :borrowed || return _matlab_owning_argument("CStrArray")
+        return (kind = :strarray,)
+    end
+    info = cdict_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        info.ownership === :borrowed || return _matlab_owning_argument("CDict")
+        class = get(MATLAB_CLASSES, info.value_type, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported dictionary value type `$(info.value_type)`")
+        return (kind = :dict, class = class)
+    end
+    info = carray_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        info.ownership === :borrowed || return _matlab_owning_argument("CArray")
+        class = get(MATLAB_CLASSES, info.eltype, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported array element type `$(info.eltype)`")
+        return (kind = :array, class = class, ndim = info.ndim)
+    end
+    info = copt_struct_info(desc, typeinfo)
+    if !isnothing(info)
+        class = get(MATLAB_CLASSES, info.value_type, nothing)
+        isnothing(class) && return (kind = :opaque, reason = "unsupported optional payload type `$(info.value_type)`")
+        return (kind = :opt, class = class, integer = class in _MATLAB_INTEGER_CLASSES)
+    end
+    return (kind = :opaque, reason = "unrecognized argument carrier `$(desc.name)`")
+end
+
+_matlab_owning_argument(family::AbstractString) = (
+    kind = :opaque,
+    reason = "an owning $family cannot be an argument; arguments are borrowed",
+)
