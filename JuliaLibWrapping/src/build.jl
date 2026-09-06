@@ -281,8 +281,9 @@ build_library(joinpath(dir, "src", libname*".jl"),
 ```
 
 `matlab_package` adds a [`MatlabTarget`](@ref) emitting into a
-`+<matlab_package>` directory. It is off by default because the MATLAB sources
-need `mex` run against them before they can be called, which this does not do.
+`+<matlab_package>` directory. It is opt-in: the emitted MATLAB sources need
+`mex` run against them before they can be called, and `standard_build`
+leaves that to the user.
 `duplicate_arguments` is passed to it; see [`MatlabTarget`](@ref) for when a
 library needs it.
 

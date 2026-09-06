@@ -4,12 +4,12 @@
 Emit MATLAB bindings for a JuliaLibWrapping library into `dir`.
 
 `package_name` names a MATLAB package directory, written as `+<package_name>`,
-so a wrapped function is called as `<package_name>.f(x)` and cannot collide
-with a name already on the MATLAB path. `library_basename` is the shared
+so a wrapped function is called as `<package_name>.f(x)`, a form that stays
+clear of the MATLAB path. `library_basename` is the shared
 library's name without its extension.
 
-The emitted sources are compiled by MATLAB, not by this package: emitting
-needs no MATLAB installed, exactly as [`PythonTarget`](@ref) needs no Python.
+MATLAB compiles the emitted sources; emitting them needs no MATLAB
+installed.
 
 `duplicate_arguments` decides how array arguments reach Julia. By default the
 gateway borrows MATLAB's own buffer, which is free but makes a wrapped
@@ -67,7 +67,7 @@ const MATLAB_KEYWORDS = Set{String}(
 
 Return a MATLAB-identifier form of `name`. MATLAB identifiers begin with a
 letter and continue with letters, digits, and underscores. That is stricter
-than C — a leading underscore is legal in C and in the Python output — so a
+than C — a leading underscore is legal in C — so a
 [`sanitize_for_c`](@ref) result that does not begin with a letter gets an `x`
 prefix. Reserved words get an `_` suffix.
 """
@@ -161,9 +161,9 @@ const MATLAB_CLASSES = Dict{String, String}(
     "UInt64" => "uint64", "Bool" => "logical",
 )
 
-# The integer classes: an `arguments` block must not name them directly,
-# because it converts before validators run, and `int64(2.5)` rounds rather
-# than failing.
+# The integer classes. An `arguments` block converts before validators run,
+# and `int64(2.5)` rounds, so they cross as `double` with a `mustBeInteger`
+# validator.
 const _MATLAB_INTEGER_CLASSES = Set{String}(
     ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
 )
@@ -183,7 +183,7 @@ one of:
 - `:opaque` — anything else, which leaves the entry point unwrapped
 
 An owning carrier is `:opaque` in argument position: arguments cross borrowed,
-and an owning carrier is one this emitter must not guess at.
+and this emitter wraps only borrowed ones.
 """
 function _matlab_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
     desc = typeinfo[type_id]
@@ -356,7 +356,7 @@ end
 """
     _matlab_arg_validation(kind, name) -> String
 
-The `arguments`-block declaration for one argument, without its name.
+The `arguments`-block declaration following one argument's name.
 
 Integers are declared `double` on purpose: an `arguments` block converts
 before its validators run, and `int64(2.5)` rounds rather than failing, so a
@@ -364,7 +364,7 @@ later integrality check would always pass. The façade validates as a double
 and converts in its body.
 """
 function _matlab_arg_validation(kind, name::AbstractString)
-    # The cost of the `double` declaration: magnitudes above 2^53 are not exact.
+    # The cost of the `double` declaration: magnitudes above 2^53 lose precision.
     kind.kind === :scalar &&
         return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
@@ -391,10 +391,10 @@ end
 The expression a façade passes to the gateway for one argument.
 """
 function _matlab_arg_forward(name::AbstractString, kind)
-    # The gateway reads `char`; there is no public C API for a MATLAB string.
+    # The gateway reads `char`; the C API reads char arrays only.
     kind.kind === :string && return "convertStringsToChars(" * name * ")"
-    # MATLAB has no 1-D array, so a vector arrives 1×N or N×1; `(:)` yields the
-    # column the carrier expects, without a copy.
+    # A MATLAB vector arrives 1×N or N×1; `(:)` yields the column the carrier
+    # expects, without a copy.
     kind.kind === :array && kind.ndim == 1 && return name * "(:)"
     kind.kind === :scalar && kind.integer && return kind.class * "(" * name * ")"
     return String(name)
@@ -458,7 +458,7 @@ end
     _matlab_declared_names(method, api_entry) -> Vector{String}
 
 The argument names as the sidecar spells them, before sanitizing. `arg_enums`
-is keyed by these, not by the MATLAB identifiers derived from them.
+is keyed by these, from which the MATLAB identifiers derive.
 """
 function _matlab_declared_names(method::MethodDesc, api_entry)
     isnothing(api_entry) && return String[a.name for a in method.args]
@@ -474,7 +474,7 @@ end
 
 The façade's output names. A tuple return becomes one output per element, in
 declaration order; anything else is a single output, and a `Nothing` return
-none at all.
+yields zero.
 """
 function _matlab_outputs(ret)
     inner = ret.kind === :result ? ret.inner : ret
@@ -510,7 +510,7 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
         end
     end
 
-    # An empty `arguments` block is legal but says nothing.
+    # Emit the `arguments` block only when it declares something.
     if !isempty(names)
         println(io, "    arguments")
         for (i, name) in pairs(plan.positional)
@@ -546,7 +546,8 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
             continue
         end
         if kind.kind === :opt
-            # `[]` is absent and a scalar is present; nothing else is either.
+            # `[]` is the absent form and a scalar the present one; the check
+            # below rejects the rest.
             println(
                 io, "    if ~isempty(", expression, ") && ~isscalar(", expression, ")"
             )
@@ -566,9 +567,8 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
         push!(forwarded, _matlab_arg_forward(expression, kind))
     end
 
-    # The dispatch name is passed as `char`, not a MATLAB `string` object: the
-    # gateway reads it with `mxArrayToUTF8String`, and the C API cannot read a
-    # `string` object.
+    # The dispatch name is passed as `char`: the gateway reads it with
+    # `mxArrayToUTF8String`, the form the C API reads.
     call = _matlab_gateway_name(dest) * "('" * method.symbol * "'"
     isempty(forwarded) || (call *= ", " * join(forwarded, ", "))
     call *= ")"
@@ -596,8 +596,8 @@ keyword defaults and documentation. A symbol absent from it — a hand-written
 `Base.@ccallable` — falls back to the ABI's own names.
 
 The façades land in `+<package_name>/`, so they are called as
-`<package_name>.f(x)`. Entry points whose arguments or return this emitter
-cannot map get no file.
+`<package_name>.f(x)`. An entry point gets a file only when the emitter maps
+its arguments and return.
 """
 function write_wrapper(
         dest::MatlabTarget, abi_info::ABIInfo;
@@ -613,8 +613,8 @@ function write_wrapper(
     written = String[]
     wrapped = Tuple{MethodDesc, Any}[]
     for method in sort(entrypoints; by = m -> m.symbol)
-        # The release entry points are the gateway's business, not the
-        # caller's, so they never get a façade.
+        # The release entry points serve the gateway, and the façades omit
+        # them.
         method.symbol in ("jlw_free", "jlw_free_strings") && continue
         plan = _matlab_facade_plan(
             method, typeinfo, release_present,
@@ -648,12 +648,11 @@ end
     _write_matlab_build_script(io, dest, gateway)
 
 Write the script that compiles the gateway. It is run by the user, in MATLAB;
-emitting it needs no MATLAB, exactly as emitting a Python package needs no
-Python.
+emitting it needs no MATLAB.
 
 The library is opened at run time rather than linked, so this passes no
 `-l` flag for it. The compiled MEX file lands in the package's `private/`
-directory, where the façades can call it and nothing else can.
+directory, where only the façades can call it.
 """
 function _write_matlab_build_script(io::IO, dest::MatlabTarget, gateway::AbstractString)
     println(io, "function build_mex(library_dir)")
@@ -743,8 +742,8 @@ end
     MATLAB_ERROR_IDENTIFIERS :: Dict{Int, String}
 
 The MATLAB error identifier each `JLWStatus.code` becomes, so a caller gets
-`ME.identifier` dispatch from the same codes the Python bindings turn into
-`JLWError.code`. A code outside this table falls back to `jlw:error`.
+`ME.identifier` dispatch on the shared status codes. A code outside this
+table falls back to `jlw:error`.
 """
 const MATLAB_ERROR_IDENTIFIERS = Dict{Int, String}(
     1 => "jlw:error", 2 => "jlw:argument", 3 => "jlw:dimension",
@@ -825,7 +824,7 @@ function _write_matlab_gateway_prologue(
     println(io, "    return address;")
     println(io, "}")
     println(io)
-    # A library that never reports a status has no errors to translate.
+    # The status check is emitted only when the library reports a status.
     isnothing(message_bytes) && return nothing
     println(io, "/* Raises, so every caller must release what it holds before calling:")
     println(io, "   `mexErrMsgIdAndTxt` leaves by `longjmp`, which runs no cleanup. */")
@@ -853,9 +852,9 @@ end
     _matlab_status_message_bytes(typeinfo) -> Union{Int, Nothing}
 
 The size of `JLWStatus.message`, read from the ABI rather than assumed, or
-`nothing` when the library declares no `JLWStatus` at all. A library of
-hand-written entry points need not use the status channel, and then the
-gateway has no errors to translate.
+`nothing` when the library declares no `JLWStatus`. A library of
+hand-written entry points may skip the status channel; then the gateway has
+no errors to translate.
 """
 function _matlab_status_message_bytes(typeinfo::OrderedDict{Int, TypeDesc})
     for desc in values(typeinfo)
@@ -873,7 +872,7 @@ end
 Write the validation phase of one handler: everything that can raise, before
 anything is acquired. `mexErrMsgIdAndTxt` leaves by `longjmp`, which runs no
 cleanup, so a check that raises while a carrier is live would leak it. Class,
-shape, and sparsity checks acquire nothing, so they all run first.
+shape, and sparsity checks hold no carrier, so they all run first.
 """
 function _write_matlab_check(io::IO, plan, symbol::AbstractString)
     # `nlhs` is known before the call, so the output-count check runs here with
@@ -897,8 +896,8 @@ function _write_matlab_check(io::IO, plan, symbol::AbstractString)
         argument = "prhs[" * string(i) * "]"
         name = i <= length(plan.positional) ? plan.positional[i] :
             plan.keywords[i - length(plan.positional)]
-        # A sparse mxArray passes a class check but is not a dense buffer, so
-        # borrowing one would read the wrong memory.
+        # A sparse mxArray passes a class check but stores (i, j, v) triples,
+        # so borrowing it as a dense buffer would read the wrong memory.
         if kind.kind in (:array, :scalar, :opt, :dict)
             println(io, "    if (mxIsSparse(", argument, ")) {")
             println(
@@ -1004,7 +1003,7 @@ The C type behind a MATLAB class, as the generated header spells it.
 function _matlab_ctype(class::AbstractString)
     class == "double" && return "double"
     class == "single" && return "float"
-    # The header spells `Bool` as C's `bool`, not MATLAB's `mxLogical`.
+    # The header spells `Bool` as C's `bool`.
     class == "logical" && return "bool"
     return class * "_t"
 end
@@ -1205,9 +1204,8 @@ function _write_matlab_release(io::IO)
     println(io, "    entry(pointer);")
     println(io, "}")
     println(io)
-    # `void *`, not `CString_owned *`: the header declares that typedef only
-    # when some entry point uses the carrier, and a library with none still
-    # needs a gateway that compiles.
+    # `void *`: the header declares the carrier typedef only when an entry
+    # point uses it, so a carrier-free library still compiles.
     println(io, "static void jlw_release_strings(void *items, int64_t count)")
     println(io, "{")
     println(io, "    static void (*entry)(void *, int64_t) = NULL;")
@@ -1369,8 +1367,8 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
     println(io, "    ", names.result, " result =")
     println(io, "        ((", names.result, " (*)(", signature, "))jlw_symbol(\"", symbol, "\"))(", arguments, ");")
 
-    # On a failure the value is zero-filled, so nothing is held while this
-    # raises; that is what lets the check come before any conversion.
+    # On a failure the value is zero-filled, so the check raises while
+    # holding nothing; that is what lets it run before any conversion.
     ret = plan.ret
     if ret.kind === :result
         println(io, "    jlw_check(result.status);")
@@ -1466,8 +1464,8 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
     _write_matlab_gateway_prologue(io, dest, header, _matlab_status_message_bytes(typeinfo))
     _write_matlab_release(io)
 
-    # One helper per distinct carrier, not per use: the memory discipline for a
-    # carrier then lives in a single place.
+    # One helper per distinct carrier: its memory discipline lives in a single
+    # place.
     incoming = OrderedDict{String, Any}()
     outgoing = OrderedDict{String, Any}()
     for (_, plan, names) in named
@@ -1496,8 +1494,8 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
     println(io, "    if (nrhs < 1 || !mxIsChar(prhs[0])) {")
     println(io, "        mexErrMsgIdAndTxt(\"jlw:argument\", \"the first argument names the function\");")
     println(io, "    }")
-    # With nothing wrapped there is no name to compare, and reading it would
-    # leave an unused variable.
+    # Read the dispatch name only when a function is wrapped; an empty gateway
+    # would carry an unused variable.
     isempty(named) || println(io, "    char *name = mxArrayToUTF8String(prhs[0]);")
     for (i, (method, _, _)) in pairs(named)
         keyword = i == 1 ? "    if" : "    } else if"
