@@ -503,11 +503,23 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
     parameters = isempty(plan.keywords) ? plan.positional : vcat(plan.positional, "opts")
     println(io, "function ", signature, "(", join(parameters, ", "), ")")
 
-    if !isempty(plan.doc)
-        for (i, line) in pairs(split(plan.doc, '\n'))
+    # A borrowed array is MATLAB's own buffer, and nothing in the MATLAB
+    # source says a copy was due, so a caller cannot learn this from the code.
+    borrows = !dest.duplicate_arguments && any(a -> a.kind === :array, plan.args)
+    # `help` reads the first comment line as the summary, so it is written
+    # even when the sidecar records no docstring: a bare `%` leaves it empty.
+    if !isempty(plan.doc) || borrows
+        lines = isempty(plan.doc) ? [""] : split(plan.doc, '\n')
+        for (i, line) in pairs(lines)
             prefix = i == 1 ? "%" * uppercase(plan.name) * "  " : "%   "
             println(io, rstrip(prefix * line))
         end
+    end
+    if borrows
+        println(io, "%")
+        println(io, "%   Array arguments are passed without copying. If this function")
+        println(io, "%   writes to one, every variable sharing that data changes with")
+        println(io, "%   it. Rebuild with duplicate_arguments = true if it does.")
     end
 
     # Emit the `arguments` block only when it declares something.

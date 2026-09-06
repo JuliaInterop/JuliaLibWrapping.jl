@@ -1643,6 +1643,40 @@ end
         end
     end
 
+    @testset "matlab facade goldens per argument kind" begin
+        # One façade per argument kind, frozen. The tuple fixture's entry
+        # points take no arguments, so without these the validation, the
+        # guards and the forwarding are pinned by nothing.
+        picks = [
+            ("cstring", "greeting_length"), ("cstrarray", "take_strs"),
+            ("cdict", "take_dict"), ("copt", "take_opt"),
+            ("cmatrix", "trace_cmatrix"), ("carray3", "sum3d"),
+        ]
+        for (fixture, name) in picks
+            abi = read_abi_info("bindinginfo_" * fixture * ".json")
+            mktempdir() do path
+                write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+                actual = read(joinpath(path, "+demo", name * ".m"), String)
+                golden = read(joinpath(@__DIR__, "expected_matlab_" * name * ".m"), String)
+                @test actual == golden
+            end
+        end
+    end
+
+    @testset "matlab gateway golden" begin
+        # The gateway compiles under `-Werror`, but that says nothing about
+        # what it does. A release dropped or reordered would still compile,
+        # so the text is frozen too.
+        abi = read_abi_info("bindinginfo_ctuple.json")
+        mktempdir() do path
+            write_wrapper(MatlabTarget(path, "ctuple_demo", "libctuple"), abi)
+            @test read(joinpath(path, "libctuple_mex.c"), String) ==
+                read(joinpath(@__DIR__, "expected_matlab_gateway.c"), String)
+            @test read(joinpath(path, "build_mex.m"), String) ==
+                read(joinpath(@__DIR__, "expected_matlab_build.m"), String)
+        end
+    end
+
     @testset "matlab facade from sidecar metadata" begin
         # The tuple fixture's entry points take no arguments, so the keyword,
         # default and enum paths need a declaration that has some.
