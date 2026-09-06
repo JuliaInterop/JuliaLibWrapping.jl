@@ -805,8 +805,8 @@ order. Enum names must be unique across the exported API.
 `arg_enums` maps argument names to enum names. `return_enum` names an enum
 return type. Empty annotations are omitted.
 
-`target` names the targets that may consume the entry. It is `"any"` for every
-declaration, and a sidecar written without the field reads as `"any"`.
+`target` names the targets that may consume the entry. It is `"all"` for every
+declaration, and a sidecar written without the field reads as `"all"`.
 
 The JSON is written by hand so that JLWInterop needs no JSON dependency.
 """
@@ -862,7 +862,7 @@ function write_metadata(path::AbstractString, root::Module = Main)
         write(io, "      \"doc\": ", _json_str(e.doc), ",\n")
         # A consumer filters on this, so a target-specific declaration can be
         # added without changing the metadata version.
-        write(io, "      \"target\": \"any\"\n")
+        write(io, "      \"target\": \"all\"\n")
         write(io, "    }", i < length(entries) ? "," : "", "\n")
     end
     write(io, "  }\n}\n")

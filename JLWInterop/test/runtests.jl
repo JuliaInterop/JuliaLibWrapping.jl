@@ -2248,7 +2248,7 @@ using Test
 
     @testset "sidecar records a target" begin
         # Reserved for a future target-specific declaration macro. Every
-        # entry is portable today, so every entry is "any"; a consumer
+        # entry is portable today, so every entry is "all"; a consumer
         # filters on it rather than assuming.
         m = Module(:ApiTestTarget)
         Core.eval(m, :(using JLWInterop))
@@ -2262,7 +2262,7 @@ using Test
             p = joinpath(dir, "t.jlw.json")
             JLWInterop.write_metadata(p, m)
             txt = read(p, String)
-            @test occursin("\"target\": \"any\"", txt)
+            @test occursin("\"target\": \"all\"", txt)
         end
     end
 end
