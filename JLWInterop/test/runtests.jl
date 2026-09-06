@@ -2174,6 +2174,15 @@ using Test
         # A one-element tuple is not a multiple return.
         @test isnothing(JLWInterop.carrier_return_type(Tuple{Float64}))
 
+        # An optional element makes the tuple a non-concrete type, which is
+        # still one fixed carrier. A tuple of no definite length is not.
+        @test JLWInterop.carrier_return_type(
+            Tuple{Float64, Union{Float64, Nothing}}
+        ) === CNTuple{2, Tuple{Float64, COpt{Float64}}}
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{Vararg{Int64}}))
+        @test isnothing(JLWInterop.carrier_return_type(Tuple))
+        @test isnothing(JLWInterop.carrier_return_type(Tuple{T, T} where {T}))
+
         # `to_carrier` builds the carrier element-wise.
         c = JLWInterop.to_carrier((2.5, Int64(7)))
         @test c === CNTuple{2, Tuple{Float64, Int64}}((2.5, Int64(7)))
@@ -2183,7 +2192,20 @@ using Test
         @test collect(c2.values[1]) == [1.0, 2.0]
         @test c2.values[2] === Int64(2)
         Libc.free(c2.values[1].data)
+
+        # `to_carrier_as` goes by the declared element types: an optional
+        # element arrives as a bare value or `nothing`, and neither says
+        # which `COpt` to build.
+        D = Tuple{Float64, Union{Float64, Nothing}}
+        C = CNTuple{2, Tuple{Float64, COpt{Float64}}}
+        @test JLWInterop.to_carrier_as(D, (1.0, 2.0)) === C((1.0, COpt(2.0)))
+        @test JLWInterop.to_carrier_as(D, (1.0, nothing)) ===
+            C((1.0, COpt{Float64}(nothing)))
+
+        # Elements are converted to the declared types, as a scalar return is.
+        @test JLWInterop.to_carrier_as(D, (1, 2)) === C((1.0, COpt(2.0)))
     end
+
 
     @testset "@api tuple return end to end" begin
         status_message(st) = String(collect(Iterators.takewhile(!iszero, st.message)))

@@ -153,8 +153,11 @@ carrier_return_type(::Type{StridedArray{T, N}}) where {T <: _API_SCALARS, N} =
 
 # A tuple return composes each element's own return carrier. An element with
 # no mapping, or a tuple of fewer than two elements, leaves it unmapped.
+# The tuple itself need not be concrete: an optional element makes it a
+# `Union`, which still has one fixed carrier. It must have a definite length,
+# which is what rules out `Tuple` itself and the `Vararg` forms.
 function carrier_return_type(::Type{T}) where {T <: Tuple}
-    isconcretetype(T) || return nothing
+    (T isa DataType && !Base.isvatuple(T)) || return nothing
     n = fieldcount(T)
     n >= 2 || return nothing
     elements = map(carrier_return_type, fieldtypes(T))
@@ -221,6 +224,20 @@ _api_as(::Type{T}, x) where {T} = convert(T, x)::T
 Convert `x` to `T`, then to its carrier.
 """
 to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
+
+# A tuple is converted against its declared element types rather than the
+# types of the values in hand, for the reason [`to_carrier_opt`](@ref) exists:
+# an optional element arrives as a bare value or as `nothing`, and neither
+# says which `COpt` to build. `@generated` for the same reason as
+# [`to_carrier`](@ref) — the element calls resolve statically.
+@generated function to_carrier_as(::Type{T}, t::Tuple) where {T <: Tuple}
+    values = map(enumerate(fieldtypes(T))) do (i, Ti)
+        inner = _api_opt_inner(Ti)
+        return isnothing(inner) ? :(to_carrier_as($Ti, t[$i])) :
+            :(to_carrier_opt($inner, _api_as($Ti, t[$i])))
+    end
+    return :(CNTuple(($(values...),)))
+end
 
 """
     from_carrier(::Type{T}, c) -> T

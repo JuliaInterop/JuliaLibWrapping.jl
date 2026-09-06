@@ -30,6 +30,21 @@ x, n = b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
 assert list(x) == [2.0, 4.0, 6.0]
 assert n == 3
 
+# A tuple whose elements are of four different carried types: each is
+# converted by its own kind, and only the owning ones are released.
+shouted, words, lengths, mean = b.bundle("a bb ccc")
+assert shouted == "A BB CCC"
+assert words == ["a", "bb", "ccc"]
+assert lengths == {"a": 1.0, "bb": 2.0, "ccc": 3.0}
+assert mean == 2.0
+assert b.bundle("")[3] is None  # an absent optional inside a tuple
+
+# A tuple whose elements share one type, which juliac emits as an inline
+# array rather than as named fields.
+cols, rows = b.maximum_marginals(np.asfortranarray([[1.0, 4.0], [3.0, 2.0]]))
+assert list(cols) == [3.0, 4.0]
+assert list(rows) == [4.0, 3.0]
+
 assert b.check_positive(1.0) is None
 try:
     b.check_positive(-1.0)
@@ -167,4 +182,6 @@ for _ in range(10_000):
     b.echo_dict({"k": 1.0})
     b.make_vec(4)
     b.stats(np.asfortranarray([1.0, 2.0, 3.0]))
+    b.bundle("a bb ccc")
+    b.maximum_marginals(np.asfortranarray([[1.0, 4.0], [3.0, 2.0]]))
 print("boundary smoke: OK")
