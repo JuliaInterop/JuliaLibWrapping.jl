@@ -1464,6 +1464,34 @@ end
         @test JuliaLibWrapping.sanitize_for_c("") == ""
     end
 
+    @testset "sanitize_matlab_name" begin
+        @test JuliaLibWrapping.sanitize_matlab_name("stats") == "stats"
+        @test JuliaLibWrapping.sanitize_matlab_name("sum-dict") == "sum_dict"
+
+        # MATLAB identifiers begin with a letter, which is stricter than C:
+        # `_1` is a legal C field name and a legal Python attribute.
+        @test JuliaLibWrapping.sanitize_matlab_name("1") == "x_1"
+        @test JuliaLibWrapping.sanitize_matlab_name("") == "x"
+
+        # A reserved word is a syntax error where an identifier is expected.
+        @test JuliaLibWrapping.sanitize_matlab_name("end") == "end_"
+        @test JuliaLibWrapping.sanitize_matlab_name("for") == "for_"
+
+        # Distinct declared names can sanitize alike; the later one is
+        # suffixed rather than shadowing the earlier.
+        seen = Set{String}()
+        names = [JuliaLibWrapping.sanitize_matlab_name(n) for n in ("a-b", "a_b", "a.b")]
+        @test JuliaLibWrapping._uniquify!(names, seen) == ["a_b", "a_b2", "a_b3"]
+    end
+
+    @testset "MatlabTarget" begin
+        t = MatlabTarget("out", "boundary", "boundary")
+        @test t.package_name == "boundary"
+        @test JuliaLibWrapping._matlab_gateway_name(t) == "boundary_mex"
+        @test sprint(show, t) == "MatlabTarget(\"out\", \"boundary\", \"boundary\")"
+        @test t isa AbstractTarget
+    end
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the
