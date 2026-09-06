@@ -363,10 +363,12 @@ end
             write_wrapper(dest, abi_info)
 
             bindings_path = joinpath(path, "libsimple", "_lowlevel.py")
+            generated_path = joinpath(path, "libsimple", "_generated.py")
             facade_path = joinpath(path, "libsimple", "_facade.py")
             init_path = joinpath(path, "libsimple", "__init__.py")
             pyproject_path = joinpath(path, "pyproject.toml")
             @test isfile(bindings_path)
+            @test isfile(generated_path)
             @test isfile(facade_path)
             @test isfile(init_path)
             @test isfile(pyproject_path)
@@ -404,24 +406,35 @@ end
             @test occursin("from ._facade import *", init)
             @test occursin("from ._facade import __all__", init)
 
-            # `_facade.py` is the author-editable public API and is not overwritten;
-            # the starter stub re-exports every public name from `_lowlevel`.
-            facade = read(facade_path, String)
-            @test occursin("from ._lowlevel import (", facade)
-            @test occursin("copyto_and_sum", facade)
-            @test occursin("CTree_Float64", facade)
-            @test occursin("__all__ = [", facade)
+            # `_generated.py` carries the wrappers and the re-exports; it is
+            # rewritten on every call.
+            generated = read(generated_path, String)
+            @test occursin("from ._lowlevel import (", generated)
+            @test occursin("copyto_and_sum", generated)
+            @test occursin("CTree_Float64", generated)
+            @test occursin("__all__ = [", generated)
 
-            golden_facade = read(joinpath(@__DIR__, "expected_libsimple_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_libsimple_generated.py"), String)
+            @test generated == golden_generated
 
-            # No-clobber contract: a hand-edit must survive a re-emission.
+            # `_facade.py` is the author-editable public API: a starter that
+            # imports everything `_generated` defines.
+            @test read(facade_path, String) ==
+                read(joinpath(@__DIR__, "expected_facade_starter.py"), String)
+
+            # No-clobber contract: a hand-edit to `_facade.py` survives a
+            # re-emission, while `_generated.py` is refreshed.
             sentinel = "# sentinel: hand-edited façade — do not overwrite\n"
             open(facade_path, "a") do io
                 write(io, sentinel)
             end
+            open(generated_path, "a") do io
+                write(io, "# sentinel: this file is regenerated\n")
+            end
             write_wrapper(dest, abi_info)
             @test occursin(sentinel, read(facade_path, String))
+            @test !occursin("# sentinel: this file is regenerated", read(generated_path, String))
+            @test read(generated_path, String) == golden_generated
 
             pyproject = read(pyproject_path, String)
             @test occursin("[build-system]", pyproject)
@@ -455,10 +468,10 @@ end
                 # so contributors without python3 can still run the suite.
                 haskey(ENV, "CI") && error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             else
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (bindings_path, generated_path, facade_path)
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             end
         end
 
@@ -476,6 +489,70 @@ end
             tv = PythonTarget("/tmp/foo", "libsimple", "libsimple"; version = "1.2.3")
             @test sprint(show, tv) ==
                 "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; version = \"1.2.3\")"
+            tc = PythonTarget("/tmp/foo", "libsimple", "libsimple"; coerce_arrays = true)
+            @test sprint(show, tc) ==
+                "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; coerce_arrays = true)"
+            @test tc.coerce_arrays
+        end
+
+        @testset "coerce_arrays" begin
+            # A matrix argument is coerced to Fortran order, a vector to
+            # contiguous order, both to the carrier's dtype.
+            python3 = Sys.which("python3")
+            function check_parses(path)
+                isnothing(python3) && return nothing
+                cmd = `$python3 -c "import ast; ast.parse(open('$path').read())"`
+                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                return nothing
+            end
+
+            abi_m = read_abi_info("bindinginfo_cmatrix.json")
+            mktempdir() do path
+                dest = PythonTarget(path, "cmatrix_demo", "libcmatrix"; coerce_arrays = true)
+                write_wrapper(dest, abi_m)
+                generated_path = joinpath(path, "cmatrix_demo", "_generated.py")
+                generated = read(generated_path, String)
+                @test occursin(
+                    "    _m = CMatrix_borrowed_Float64.from_numpy(np.asfortranarray(m, dtype=\"float64\"))",
+                    generated
+                )
+                @test occursin(
+                    "Array arguments are coerced before the call: `np.asfortranarray(x, dtype=...)`",
+                    generated
+                )
+                @test generated ==
+                    read(joinpath(@__DIR__, "expected_cmatrix_coerce_generated.py"), String)
+                check_parses(generated_path)
+            end
+
+            abi_s = read_abi_info("bindinginfo_api_scale.json")
+            meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json")).exports
+            mktempdir() do dir
+                dest = PythonTarget(dir, "mylib_py", "mylib"; coerce_arrays = true)
+                write_wrapper(dest, abi_s; api_metadata = meta)
+                generated_path = joinpath(dir, "mylib_py", "_generated.py")
+                generated = read(generated_path, String)
+                @test occursin(
+                    "    _x = CVector_borrowed_Float64.from_numpy(np.ascontiguousarray(x, dtype=\"float64\"))",
+                    generated
+                )
+                @test occursin(
+                    "for vectors. Input with the wrong dtype or memory order is copied silently.",
+                    generated
+                )
+                @test generated ==
+                    read(joinpath(@__DIR__, "expected_api_scale_coerce_generated.py"), String)
+                check_parses(generated_path)
+            end
+
+            # The default leaves the array untouched, so a mismatched dtype
+            # or memory order raises rather than being copied.
+            mktempdir() do path
+                write_wrapper(PythonTarget(path, "cmatrix_demo", "libcmatrix"), abi_m)
+                generated = read(joinpath(path, "cmatrix_demo", "_generated.py"), String)
+                @test !occursin("asfortranarray", generated)
+                @test !occursin("ascontiguousarray", generated)
+            end
         end
 
         @testset "PythonTarget version" begin
@@ -1583,26 +1660,29 @@ end
         mktempdir() do dir
             dest = PythonTarget(dir, "mylib_py", "mylib")
             write_wrapper(dest, info; api_metadata = meta)
-            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
-            @test occursin("def scale(x, *, factor=2.0, label):", facade)
-            @test occursin("\"\"\"Scale every entry.\"\"\"", facade)
+            generated = read(joinpath(dir, "mylib_py", "_generated.py"), String)
+            @test occursin("def scale(x, *, factor=2.0, label):", generated)
+            @test occursin("\"\"\"Scale every entry.\"\"\"", generated)
             # `_lowlevel` raises JLWError on a failed status; the façade
             # re-exports the class but never re-checks the status itself.
-            @test occursin("JLWError", facade)
-            @test !occursin("status.code", facade)
-            @test occursin("_label = CString_borrowed.from_str(label)", facade)
-            @test facade == read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+            @test occursin("JLWError", generated)
+            @test !occursin("status.code", generated)
+            @test occursin("_label = CString_borrowed.from_str(label)", generated)
+            @test generated == read(joinpath(@__DIR__, "expected_api_scale_generated.py"), String)
             bindings_path = joinpath(dir, "mylib_py", "_lowlevel.py")
             bindings = read(bindings_path, String)
             @test bindings == read(joinpath(@__DIR__, "expected_api_scale_lowlevel.py"), String)
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(dir, "mylib_py", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(dir, "mylib_py", "_generated.py"),
+                        joinpath(dir, "mylib_py", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1628,18 +1708,21 @@ end
             @test occursin("def _enum_coerce(cls, v):", bindings)
             @test bindings == read(joinpath(@__DIR__, "expected_enum_lowlevel.py"), String)
 
-            facade_path = joinpath(dir, "enum_py", "_facade.py")
-            facade = read(facade_path, String)
-            @test occursin("def scale_by(x, *, penalty=PenaltyKind.abslog1):", facade)
-            @test occursin("_penalty = _enum_coerce(PenaltyKind, penalty)", facade)
-            @test occursin("def pick(x):", facade)
-            @test occursin("return PenaltyKind(_r.value)", facade)
-            @test occursin("\"PenaltyKind\"", facade)  # re-exported and in __all__
-            @test facade == read(joinpath(@__DIR__, "expected_enum_facade.py"), String)
+            generated_path = joinpath(dir, "enum_py", "_generated.py")
+            generated = read(generated_path, String)
+            @test occursin("def scale_by(x, *, penalty=PenaltyKind.abslog1):", generated)
+            @test occursin("_penalty = _enum_coerce(PenaltyKind, penalty)", generated)
+            @test occursin("def pick(x):", generated)
+            @test occursin("return PenaltyKind(_r.value)", generated)
+            @test occursin("\"PenaltyKind\"", generated)  # re-exported and in __all__
+            @test generated == read(joinpath(@__DIR__, "expected_enum_generated.py"), String)
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                for path in (bindings_path, facade_path)
+                for path in (
+                        bindings_path, generated_path,
+                        joinpath(dir, "enum_py", "_facade.py"),
+                    )
                     cmd = `$python3 -c "import ast; ast.parse(open('$path').read())"`
                     @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 end
@@ -1738,15 +1821,17 @@ end
         mktempdir() do dir
             dest = PythonTarget(dir, "mylib_py", "mylib")
             write_wrapper(dest, info; api_metadata = meta)
-            facade_path = joinpath(dir, "mylib_py", "_facade.py")
+            generated_path = joinpath(dir, "mylib_py", "_generated.py")
             @test occursin(
                 "def scale(x, *, factor=1.5, label=\"a\\\\b\\\"c\"):",
-                read(facade_path, String)
+                read(generated_path, String)
             )
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                for p in (generated_path, joinpath(dir, "mylib_py", "_facade.py"))
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -1915,7 +2000,7 @@ end
             write_wrapper(dest, info; api_metadata = meta)
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                for name in ("_lowlevel.py", "_facade.py")
+                for name in ("_lowlevel.py", "_generated.py", "_facade.py")
                     path = joinpath(dir, "mylib_py", name)
                     cmd = `$python3 -c "import ast; ast.parse(open('$path').read())"`
                     @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
@@ -1958,11 +2043,11 @@ end
         mktempdir() do dir
             dest = PythonTarget(dir, "mylib_py", "mylib")
             write_wrapper(dest, nofree)
-            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
-            @test !occursin("def scale(", facade)
+            generated = read(joinpath(dir, "mylib_py", "_generated.py"), String)
+            @test !occursin("def scale(", generated)
             @test occursin(
                 "from ._lowlevel import mylib_scale  # TODO: hand-wrap — owning return needs release entrypoints",
-                facade
+                generated
             )
         end
 
@@ -2044,9 +2129,9 @@ end
         mktempdir() do dir
             dest = PythonTarget(dir, "mylib_py", "mylib")
             write_wrapper(dest, info)
-            facade = read(joinpath(dir, "mylib_py", "_facade.py"), String)
-            @test occursin("import mylib_mask  # TODO: hand-wrap", facade)
-            @test occursin("import mylib_count_true  # TODO: hand-wrap", facade)
+            generated = read(joinpath(dir, "mylib_py", "_generated.py"), String)
+            @test occursin("import mylib_mask  # TODO: hand-wrap", generated)
+            @test occursin("import mylib_count_true  # TODO: hand-wrap", generated)
         end
     end
 
@@ -2119,18 +2204,18 @@ end
             @test bindings == golden
 
             # Façade auto-wrap: CString args/returns become str in/out.
-            facade = read(joinpath(path, "cstring_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "cstring_demo", "_generated.py"), String)
             @test occursin(
                 "def greeting_length(s):\n    _s = CString_borrowed.from_str(s)\n" *
-                    "    return _lowlevel.greeting_length(_s)", facade
+                    "    return _lowlevel.greeting_length(_s)", generated
             )
             @test occursin(
                 "def greeting():\n    _result = _lowlevel.greeting()\n" *
-                    "    return _result.as_str()", facade
+                    "    return _result.as_str()", generated
             )
-            @test !occursin("_result.free()", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_cstring_facade.py"), String)
-            @test facade == golden_facade
+            @test !occursin("_result.free()", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_cstring_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if python3 !== nothing
@@ -2166,24 +2251,27 @@ end
             @test bindings == golden
 
             # Façade auto-wrap: decode to `str` first, then free in `finally`.
-            facade = read(joinpath(path, "cstring_owned_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "cstring_owned_demo", "_generated.py"), String)
             @test occursin(
                 "def give_greeting():\n    _result = _lowlevel.give_greeting()\n" *
                     "    try:\n        _out = _result.as_str()\n" *
                     "    finally:\n        _result.free()\n    return _out",
-                facade
+                generated
             )
-            @test !occursin("_lowlevel._lib.jlw_free", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_cstring_owned_facade.py"), String)
-            @test facade == golden_facade
+            @test !occursin("_lowlevel._lib.jlw_free", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_cstring_owned_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cstring_owned_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cstring_owned_demo", "_generated.py"),
+                        joinpath(path, "cstring_owned_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2215,26 +2303,30 @@ end
             )
             @test bindings == read(joinpath(@__DIR__, "expected_jlwresult_owned_lowlevel.py"), String)
 
-            facade = read(joinpath(path, "jlwresult_owned_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "jlwresult_owned_demo", "_generated.py"), String)
             @test occursin(
                 "def greet():\n    _r = _lowlevel.greet()\n" *
                     "    try:\n        _out = _r.value.as_str()\n" *
                     "    finally:\n        _r.value.free()\n    return _out",
-                facade
+                generated
             )
             @test occursin(
                 "def tally():\n    _r = _lowlevel.tally()\n" *
                     "    try:\n        _out = _r.value.as_dict()\n" *
                     "    finally:\n        _r.value.free()\n    return _out",
-                facade
+                generated
             )
             # The façade never re-checks the status `_lowlevel` raised on.
-            @test !occursin("status.code", facade)
-            @test facade == read(joinpath(@__DIR__, "expected_jlwresult_owned_facade.py"), String)
+            @test !occursin("status.code", generated)
+            @test generated == read(joinpath(@__DIR__, "expected_jlwresult_owned_generated.py"), String)
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                for p in (bindings_path, joinpath(path, "jlwresult_owned_demo", "_facade.py"))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "jlwresult_owned_demo", "_generated.py"),
+                        joinpath(path, "jlwresult_owned_demo", "_facade.py"),
+                    )
                     cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
                     @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
                 end
@@ -2268,16 +2360,16 @@ end
             golden = read(joinpath(@__DIR__, "expected_cstring_owned_nofree_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "cstring_owned_nofree_demo", "_facade.py"), String)
-            @test !occursin("def give_greeting():", facade)
+            generated = read(joinpath(path, "cstring_owned_nofree_demo", "_generated.py"), String)
+            @test !occursin("def give_greeting():", generated)
             @test occursin(
                 "from ._lowlevel import give_greeting  # TODO: hand-wrap — " *
                     "owning return needs release entrypoints; add " *
                     "JLWInterop.@export_release_entrypoints to the library",
-                facade
+                generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_cstring_owned_nofree_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_cstring_owned_nofree_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
@@ -2348,25 +2440,28 @@ end
             # re-export) and never listed in `__all__`, regardless of what
             # their own (raw-pointer) argument shape would otherwise
             # classify to.
-            facade = read(joinpath(path, "cstrarray_demo", "_facade.py"), String)
-            @test !occursin("import jlw_free", facade)
-            @test !occursin("\"jlw_free\"", facade)
-            @test !occursin("\"jlw_free_strings\"", facade)
+            generated = read(joinpath(path, "cstrarray_demo", "_generated.py"), String)
+            @test !occursin("import jlw_free", generated)
+            @test !occursin("\"jlw_free\"", generated)
+            @test !occursin("\"jlw_free_strings\"", generated)
             # The owning-return result is converted, then freed via
             # `.free()` in a `finally`.
-            @test occursin("try:\n        _out = _result.as_list()\n    finally:\n        _result.free()", facade)
-            @test !occursin("if _result.owned", facade)
-            @test !occursin("_lowlevel._lib.jlw_free", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_facade.py"), String)
-            @test facade == golden_facade
+            @test occursin("try:\n        _out = _result.as_list()\n    finally:\n        _result.free()", generated)
+            @test !occursin("if _result.owned", generated)
+            @test !occursin("_lowlevel._lib.jlw_free", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_cstrarray_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cstrarray_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cstrarray_demo", "_generated.py"),
+                        joinpath(path, "cstrarray_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2432,27 +2527,30 @@ end
 
             # jlw_free/jlw_free_strings are release-entrypoint internals —
             # never re-exported and never listed in `__all__`.
-            facade = read(joinpath(path, "cdict_demo", "_facade.py"), String)
-            @test !occursin("import jlw_free", facade)
-            @test !occursin("\"jlw_free\"", facade)
-            @test !occursin("\"jlw_free_strings\"", facade)
+            generated = read(joinpath(path, "cdict_demo", "_generated.py"), String)
+            @test !occursin("import jlw_free", generated)
+            @test !occursin("\"jlw_free\"", generated)
+            @test !occursin("\"jlw_free_strings\"", generated)
             # The owning-return result is converted, then freed via
             # `.free()` in a `finally`, with no manual `owned` check or
             # `ctypes` import in the façade itself.
-            @test occursin("try:\n        _out = _result.as_dict()\n    finally:\n        _result.free()", facade)
-            @test !occursin("if _result.owned", facade)
-            @test !occursin("_lowlevel._lib.jlw_free", facade)
-            @test !occursin("import ctypes", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_cdict_facade.py"), String)
-            @test facade == golden_facade
+            @test occursin("try:\n        _out = _result.as_dict()\n    finally:\n        _result.free()", generated)
+            @test !occursin("if _result.owned", generated)
+            @test !occursin("_lowlevel._lib.jlw_free", generated)
+            @test !occursin("import ctypes", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_cdict_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cdict_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cdict_demo", "_generated.py"),
+                        joinpath(path, "cdict_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2505,22 +2603,25 @@ end
             golden = read(joinpath(@__DIR__, "expected_cdict_int32_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "cdict_int32_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "cdict_int32_demo", "_generated.py"), String)
             @test occursin(
                 "def give_dict_i32():\n    _result = _lowlevel.give_dict_i32()\n" *
                     "    try:\n        _out = _result.as_dict()\n" *
-                    "    finally:\n        _result.free()\n    return _out", facade
+                    "    finally:\n        _result.free()\n    return _out", generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_cdict_int32_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_cdict_int32_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cdict_int32_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cdict_int32_demo", "_generated.py"),
+                        joinpath(path, "cdict_int32_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2550,18 +2651,21 @@ end
             @test bindings == golden
 
             # COpt's owning return unwraps with NO free call (by-value).
-            facade = read(joinpath(path, "copt_demo", "_facade.py"), String)
-            @test !occursin("jlw_free", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_copt_facade.py"), String)
-            @test facade == golden_facade
+            generated = read(joinpath(path, "copt_demo", "_generated.py"), String)
+            @test !occursin("jlw_free", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_copt_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "copt_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "copt_demo", "_generated.py"),
+                        joinpath(path, "copt_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2767,30 +2871,33 @@ end
             golden = read(joinpath(@__DIR__, "expected_cstrarray_nofree_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "cstrarray_nofree_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "cstrarray_nofree_demo", "_generated.py"), String)
             # Borrowed arguments remain auto-wrapped.
             @test occursin(
                 "def take_strs(a):\n    _a = CStrArray_borrowed.from_list(a)\n" *
-                    "    return _lowlevel.take_strs(_a)", facade
+                    "    return _lowlevel.take_strs(_a)", generated
             )
             # Owning returns fall back to a TODO re-export.
-            @test !occursin("def give_strs():", facade)
+            @test !occursin("def give_strs():", generated)
             @test occursin(
                 "from ._lowlevel import give_strs  # TODO: hand-wrap — " *
                     "owning return needs release entrypoints; add " *
                     "JLWInterop.@export_release_entrypoints to the library",
-                facade
+                generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_cstrarray_nofree_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_cstrarray_nofree_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cstrarray_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cstrarray_nofree_demo", "_generated.py"),
+                        joinpath(path, "cstrarray_nofree_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2822,28 +2929,31 @@ end
             golden = read(joinpath(@__DIR__, "expected_cdict_nofree_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "cdict_nofree_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "cdict_nofree_demo", "_generated.py"), String)
             @test occursin(
                 "def take_dict(d):\n    _d = CDict_borrowed_Float64.from_dict(d)\n" *
-                    "    return _lowlevel.take_dict(_d)", facade
+                    "    return _lowlevel.take_dict(_d)", generated
             )
-            @test !occursin("def give_dict():", facade)
+            @test !occursin("def give_dict():", generated)
             @test occursin(
                 "from ._lowlevel import give_dict  # TODO: hand-wrap — " *
                     "owning return needs release entrypoints; add " *
                     "JLWInterop.@export_release_entrypoints to the library",
-                facade
+                generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_cdict_nofree_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_cdict_nofree_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "cdict_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "cdict_nofree_demo", "_generated.py"),
+                        joinpath(path, "cdict_nofree_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -2896,14 +3006,14 @@ end
             @test bindings == golden
 
             # Façade auto-wrap: CMatrix arg becomes numpy in.
-            facade = read(joinpath(path, "cmatrix_demo", "_facade.py"), String)
-            @test occursin("import numpy as np", facade)
+            generated = read(joinpath(path, "cmatrix_demo", "_generated.py"), String)
+            @test occursin("import numpy as np", generated)
             @test occursin(
                 "def trace_cmatrix(m):\n    _m = CMatrix_borrowed_Float64.from_numpy(m)\n" *
-                    "    return _lowlevel.trace_cmatrix(_m)", facade
+                    "    return _lowlevel.trace_cmatrix(_m)", generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_cmatrix_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_cmatrix_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if python3 !== nothing
@@ -2942,13 +3052,13 @@ end
             golden = read(joinpath(@__DIR__, "expected_carray3_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "carray3_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "carray3_demo", "_generated.py"), String)
             @test occursin(
                 "def sum3d(a):\n    _a = CArray_borrowed_Float64_3.from_numpy(a)\n" *
-                    "    return _lowlevel.sum3d(_a)", facade
+                    "    return _lowlevel.sum3d(_a)", generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_carray3_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_carray3_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if python3 !== nothing
@@ -2988,22 +3098,22 @@ end
             @test bindings == golden
 
             # Façade auto-wrap: copy unconditionally, then free in `finally`.
-            facade = read(joinpath(path, "carray_owned_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "carray_owned_demo", "_generated.py"), String)
             @test occursin(
                 "def give_vec():\n    _result = _lowlevel.give_vec()\n" *
                     "    try:\n        _out = np.array(_result.as_numpy(), copy=True)\n" *
                     "    finally:\n        _result.free()\n    return _out",
-                facade
+                generated
             )
             # No runtime ownership test survives: the type already decided.
-            @test !occursin("_result.owned", facade)
+            @test !occursin("_result.owned", generated)
             # No manual free call bypassing `.free()`, and no `ctypes` import
             # (the façade no longer touches `ctypes.*` directly).
-            @test !occursin("_lowlevel._lib.jlw_free", facade)
-            @test !occursin("import ctypes", facade)
+            @test !occursin("_lowlevel._lib.jlw_free", generated)
+            @test !occursin("import ctypes", generated)
 
-            golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_carray_owned_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
@@ -3038,12 +3148,12 @@ end
             # later element's conversion cannot read freed memory. The
             # `finally` is pinned in full, which is also what shows the
             # scalar element is not released.
-            facade = read(joinpath(path, "ctuple_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "ctuple_demo", "_generated.py"), String)
             @test occursin(
                 "    _v = _r.value\n    try:\n" *
                     "        _out = (np.array(_v.values._1.as_numpy(), copy=True), _v.values._2,)\n" *
                     "    finally:\n        _v.values._1.free()\n    return _out",
-                facade
+                generated
             )
 
             # Every element kind the façade can convert, in one tuple: only
@@ -3053,9 +3163,9 @@ end
                     "_v.values._3.as_dict(), _v.values._4.as_optional(),)\n" *
                     "    finally:\n        _v.values._1.free()\n" *
                     "        _v.values._2.free()\n        _v.values._3.free()\n",
-                facade
+                generated
             )
-            @test !occursin("_v.values._4.free()", facade)
+            @test !occursin("_v.values._4.free()", generated)
 
             # An inline array is reached by position, and both elements own
             # their storage, so both are released.
@@ -3065,19 +3175,22 @@ end
                     "np.array(_v.values[1].as_numpy(), copy=True),)\n" *
                     "    finally:\n        _v.values[0].free()\n        _v.values[1].free()\n" *
                     "    return _out",
-                facade
+                generated
             )
 
-            golden_facade = read(joinpath(@__DIR__, "expected_ctuple_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_ctuple_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "ctuple_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "ctuple_demo", "_generated.py"),
+                        joinpath(path, "ctuple_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -3167,24 +3280,27 @@ end
             golden = read(joinpath(@__DIR__, "expected_carray_owned_nofree_lowlevel.py"), String)
             @test bindings == golden
 
-            facade = read(joinpath(path, "carray_owned_nofree_demo", "_facade.py"), String)
-            @test !occursin("def give_vec():", facade)
+            generated = read(joinpath(path, "carray_owned_nofree_demo", "_generated.py"), String)
+            @test !occursin("def give_vec():", generated)
             @test occursin(
                 "from ._lowlevel import give_vec  # TODO: hand-wrap — " *
                     "owning return needs release entrypoints; add " *
                     "JLWInterop.@export_release_entrypoints to the library",
-                facade
+                generated
             )
-            golden_facade = read(joinpath(@__DIR__, "expected_carray_owned_nofree_facade.py"), String)
-            @test facade == golden_facade
+            golden_generated = read(joinpath(@__DIR__, "expected_carray_owned_nofree_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if !isnothing(python3)
-                cmd = `$python3 -c "import ast; ast.parse(open('$bindings_path').read())"`
-                @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
-                facade_path = joinpath(path, "carray_owned_nofree_demo", "_facade.py")
-                cmd_f = `$python3 -c "import ast; ast.parse(open('$facade_path').read())"`
-                @test success(run(pipeline(cmd_f; stderr = devnull, stdout = devnull); wait = true))
+                for p in (
+                        bindings_path,
+                        joinpath(path, "carray_owned_nofree_demo", "_generated.py"),
+                        joinpath(path, "carray_owned_nofree_demo", "_facade.py"),
+                    )
+                    cmd = `$python3 -c "import ast; ast.parse(open('$p').read())"`
+                    @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
             elseif haskey(ENV, "CI")
                 error("python3 not found on PATH; required on CI to validate the emitted wrapper")
             end
@@ -3226,7 +3342,7 @@ end
         @test plan_b.ret.kind === :carray_view
         # The emitted wrapper hands the view straight back: no copy, no
         # try/finally, no free.
-        @test sprint(JuliaLibWrapping._emit_facade_autowrapper, ret_b, plan_b) ==
+        @test sprint(JuliaLibWrapping._emit_facade_autowrapper, ret_b, plan_b, false) ==
             "def view_cmatrix():\n    _result = _lowlevel.view_cmatrix()\n" *
             "    return _result.as_numpy()\n\n"
 
@@ -3333,15 +3449,15 @@ end
             # Façade: raw-pointer arg is not auto-wrappable; the function
             # falls back to a mechanical re-export tagged with a TODO that
             # names the offending arg and its type.
-            facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
+            generated = read(joinpath(path, "rawptr_demo", "_generated.py"), String)
             @test occursin(
                 "from ._lowlevel import sum_doubles  # TODO: hand-wrap — " *
                     "`data`: argument has raw pointer type `Ptr{Float64}`",
-                facade
+                generated
             )
-            @test !occursin("def sum_doubles(", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_rawptr_facade.py"), String)
-            @test facade == golden_facade
+            @test !occursin("def sum_doubles(", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_rawptr_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if python3 !== nothing
@@ -3361,8 +3477,8 @@ end
     end
 
     @testset "a failed façade emission leaves no file" begin
-        # `_facade.py` is written once and then kept, so an empty one left
-        # behind by a failed emission would be shipped by every later build.
+        # A truncated `_generated.py` left behind by a failed emission would
+        # break the next `import` of the package.
         info = read_abi_info("bindinginfo_api_scale.json")
         bad = Dict{String, Any}(
             "mylib_scale" => Dict{String, Any}(
@@ -3377,15 +3493,15 @@ end
         mktempdir() do dir
             dest = PythonTarget(dir, "mylib_py", "mylib")
             @test_throws ErrorException write_wrapper(dest, info; api_metadata = bad)
-            @test !isfile(joinpath(dir, "mylib_py", "_facade.py"))
+            @test !isfile(joinpath(dir, "mylib_py", "_generated.py"))
             # Nor does the scratch file the emission wrote into survive.
             @test readdir(joinpath(dir, "mylib_py")) == ["_lowlevel.py"]
 
             # The next build still emits a complete façade.
             meta = JuliaLibWrapping.read_api_metadata(joinpath(@__DIR__, "api_scale.jlw.json")).exports
             write_wrapper(dest, info; api_metadata = meta)
-            @test read(joinpath(dir, "mylib_py", "_facade.py"), String) ==
-                read(joinpath(@__DIR__, "expected_api_scale_facade.py"), String)
+            @test read(joinpath(dir, "mylib_py", "_generated.py"), String) ==
+                read(joinpath(@__DIR__, "expected_api_scale_generated.py"), String)
         end
     end
 
@@ -3552,10 +3668,10 @@ end
         mktempdir() do path
             dest = PythonTarget(path, "rawptr_demo", "librawptr")
             write_wrapper(dest, abi; api_metadata = Dict{String, Any}("sum_doubles" => entry))
-            facade = read(joinpath(path, "rawptr_demo", "_facade.py"), String)
-            @test occursin("def sum_doubles(data, n):", facade)
-            @test occursin("\"\"\"Sum `n` doubles at `data`.\"\"\"", facade)
-            @test !occursin("# TODO: hand-wrap", facade)
+            generated = read(joinpath(path, "rawptr_demo", "_generated.py"), String)
+            @test occursin("def sum_doubles(data, n):", generated)
+            @test occursin("\"\"\"Sum `n` doubles at `data`.\"\"\"", generated)
+            @test !occursin("# TODO: hand-wrap", generated)
         end
 
         # A struct the emitter has no vocabulary for follows the same rule.
@@ -3586,7 +3702,7 @@ end
             write_wrapper(dest, abi_info)
 
             bindings = read(joinpath(path, "demo", "_lowlevel.py"), String)
-            facade = read(joinpath(path, "demo", "_facade.py"), String)
+            generated = read(joinpath(path, "demo", "_generated.py"), String)
             init = read(joinpath(path, "demo", "__init__.py"), String)
 
             # The JLWError exception class is defined once.
@@ -3621,8 +3737,8 @@ end
 
             # JLWError is re-exported from the package via the façade.
             @test occursin("from ._facade import *", init)
-            @test occursin("    JLWError,", facade)
-            @test occursin("\"JLWError\"", facade)
+            @test occursin("    JLWError,", generated)
+            @test occursin("\"JLWError\"", generated)
 
             # Façade generation policy for the three cases:
             #  - direct JLWStatus return → auto-wrap that discards the
@@ -3631,16 +3747,16 @@ end
             #    TODO (we don't know how to shape the other fields);
             #  - plain primitive-in/primitive-out → passthrough re-export
             #    without a TODO comment.
-            @test occursin("def do_thing(x):\n    _lowlevel.do_thing(x)", facade)
+            @test occursin("def do_thing(x):\n    _lowlevel.do_thing(x)", generated)
             @test occursin(
                 "from ._lowlevel import compute  # TODO: hand-wrap " *
                     "— returns struct `ResultStruct` with embedded JLWStatus",
-                facade
+                generated
             )
-            @test occursin("from ._lowlevel import plain_add\n", facade)
-            @test !occursin("plain_add  # TODO", facade)
-            golden_facade = read(joinpath(@__DIR__, "expected_jlwstatus_facade.py"), String)
-            @test facade == golden_facade
+            @test occursin("from ._lowlevel import plain_add\n", generated)
+            @test !occursin("plain_add  # TODO", generated)
+            golden_generated = read(joinpath(@__DIR__, "expected_jlwstatus_generated.py"), String)
+            @test generated == golden_generated
 
             python3 = Sys.which("python3")
             if python3 !== nothing

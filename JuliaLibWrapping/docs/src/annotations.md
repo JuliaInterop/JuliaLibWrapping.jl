@@ -214,11 +214,11 @@ return. See [Ownership and release](@ref) for the complete contract.
 
 ## Updating a generated façade
 
-The API metadata sidecar is regenerated during a build, as is the Python
-low-level module. The public `_facade.py` is deliberately created only once so
-author edits survive. After changing a declaration, generate a fresh façade
-and merge the relevant update into the maintained file. See [Author-editable
-façade](@ref).
+The API metadata sidecar is regenerated during a build, as are the Python
+low-level module and the generated façade in `_generated.py`, so a changed
+declaration reaches the package by rebuilding. The public `_facade.py` is
+created only once so author edits survive; it imports whatever
+`_generated.py` defines. See [Author-editable façade](@ref).
 
 The public declarations and conversion functions are collected in the
 [JLWInterop API reference](@ref "JLWInterop").

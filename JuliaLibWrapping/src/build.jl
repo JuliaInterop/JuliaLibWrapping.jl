@@ -226,7 +226,7 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
     return PythonTarget(
         t.dir, t.package_name, t.library_basename;
         bundle_subdir = t.bundle_subdir, version = t.version,
-        privatized = true
+        privatized = true, coerce_arrays = t.coerce_arrays
     )
 end
 
@@ -265,14 +265,15 @@ build_library(joinpath(dir, "src", libname*".jl"),
     bundle = true, kwargs...)
 ```
 
-The kwargs `out`, `entry`, `python_package`, `project`, `bundle`, and
-`version` override the defaults above; anything else is forwarded to
-`build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
-defaults to `dir`, but can be pointed at a separate location when the
-on-disk source layout and the entry `Project.toml` live in different
-directories. `version` sets the version in the generated Python
-package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
-outside this convention, call `build_library` directly.
+The kwargs `out`, `entry`, `python_package`, `project`, `bundle`,
+`version`, and `coerce_arrays` configure the targets above; anything else is
+forwarded to `build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
+defaults to `dir`, but can be pointed at a separate location when the on-disk
+source layout and the entry `Project.toml` live in different directories.
+`version` sets the version in the generated Python package's `pyproject.toml`
+and `coerce_arrays` selects how its wrappers prepare array arguments; both are
+[`PythonTarget`](@ref) options. For layouts outside this convention, call
+`build_library` directly.
 """
 function standard_build(
         dir::AbstractString = pwd();
@@ -283,6 +284,7 @@ function standard_build(
         python_package::AbstractString = libname * "_py",
         bundle::Bool = true,
         version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+        coerce_arrays::Bool = false,
         kwargs...
     )
     targets = AbstractTarget[
@@ -290,7 +292,7 @@ function standard_build(
         PythonTarget(
             out, python_package, libname;
             bundle_subdir = bundle ? "bundle" : nothing,
-            version
+            version, coerce_arrays
         ),
     ]
     return build_library(
