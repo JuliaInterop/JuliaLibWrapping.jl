@@ -1738,6 +1738,32 @@ end
         end
     end
 
+    @testset "standard_build target list" begin
+        # A C header and a Python package by default, as before.
+        default = JuliaLibWrapping._standard_targets(
+            "out", "demo", "demo_py", nothing, true, "0.0.0", false
+        )
+        @test map(typeof, default) == [CTarget, PythonTarget]
+
+        # MATLAB is opt-in: its sources need `mex` run against them before
+        # they can be called, which a build does not do.
+        with_matlab = JuliaLibWrapping._standard_targets(
+            "out", "demo", "demo_py", "demo", true, "0.0.0", false
+        )
+        @test map(typeof, with_matlab) == [CTarget, PythonTarget, MatlabTarget]
+        matlab = last(with_matlab)
+        @test matlab.package_name == "demo"
+        @test matlab.library_basename == "demo"
+        @test matlab.duplicate_arguments === false
+
+        copied = last(
+            JuliaLibWrapping._standard_targets(
+                "out", "demo", "demo_py", "demo", true, "0.0.0", true
+            )
+        )
+        @test copied.duplicate_arguments === true
+    end
+
     @testset "targets that read the sidecar" begin
         # `build_library` asks this before deciding what to hand a target. A
         # target that reads the sidecar but answers `false` is given the ABI
