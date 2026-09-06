@@ -237,24 +237,27 @@ to_carrier_as(::Type{T}, x) where {T} = to_carrier(_api_as(T, x))
 # calls resolve statically.
 @generated function to_carrier_as(::Type{T}, t::Tuple) where {T <: Tuple}
     n = fieldcount(T)
-    if fieldcount(t) != n
-        # Too few would be a `BoundsError` below; too many would be dropped.
-        message = "declared $n return values, got $(fieldcount(t))"
-        return :(error($message))
-    end
     types = fieldtypes(T)
+    whole = gensym(:converted)
     names = [gensym(:element) for _ in 1:n]
-    # Convert every element before building any carrier. Conversion is the
-    # step that throws, and a carrier already built when a later element
-    # throws would be unreachable to the caller and never freed.
-    conversions = [:($(names[i]) = _api_as($(types[i]), t[$i])) for i in 1:n]
+    # The generated code must not depend on the type of `t`: an optional
+    # element makes the returned tuple's type non-concrete, and a generated
+    # function whose body reads a non-concrete argument type is not expanded,
+    # leaving a dynamic call that `--trim=safe` rejects.
+    #
+    # So convert the whole tuple in one step. That enforces the declared arity
+    # and element types, and it is the only step that throws — a carrier built
+    # before a later element failed would be unreachable to the caller and
+    # never freed.
+    bindings = [:($(names[i]) = $whole[$i]) for i in 1:n]
     values = map(1:n) do i
         inner = _api_opt_inner(types[i])
         return isnothing(inner) ? :(to_carrier($(names[i]))) :
             :(to_carrier_opt($inner, $(names[i])))
     end
     return quote
-        $(conversions...)
+        $whole = _api_as($T, t)
+        $(bindings...)
         CNTuple(($(values...),))
     end
 end

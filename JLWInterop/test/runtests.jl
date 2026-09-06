@@ -2224,13 +2224,21 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test JLWInterop.to_carrier_as(D, (1, 2)) === C((1.0, COpt(2.0)))
 
         # A count that disagrees with the declaration is an error either way:
-        # extra values would otherwise be dropped without a word.
-        @test_throws "declared 2 return values, got 3" JLWInterop.to_carrier_as(
+        # extra values would otherwise be dropped without a word. Converting
+        # the whole tuple at once is what reports it.
+        @test_throws MethodError JLWInterop.to_carrier_as(
             Tuple{Float64, Int64}, (1.0, 2, 3)
         )
-        @test_throws "declared 2 return values, got 1" JLWInterop.to_carrier_as(
+        @test_throws MethodError JLWInterop.to_carrier_as(
             Tuple{Float64, Int64}, (1.0,)
         )
+
+        # A tuple with an optional element has a non-concrete type. The
+        # conversion must still resolve statically, or `--trim=safe` rejects
+        # the entry point that returns it.
+        @test Base.return_types(
+            JLWInterop.to_carrier_as, Tuple{Type{D}, D}
+        ) == [C]
 
         # Every element is converted before any carrier is built, so an
         # element that fails to convert strands no earlier element's buffer.
