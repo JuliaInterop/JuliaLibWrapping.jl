@@ -57,13 +57,6 @@ because the sidecar records argument names but not result names.
 A tuple return maps onto MATLAB's multiple assignment, so `[x, n] = stats(a)`
 works, and asking for fewer outputs is fine. MATLAB rejects asking for more.
 
-## Integers
-
-An integer argument is declared `double` and converted after validation. An
-`arguments` block converts to the declared class *before* its validators run,
-and `int64(2.5)` rounds to 3, so declaring the integer class directly would
-accept a fraction silently. The cost is a ceiling of 2^53 on magnitude.
-
 ## Enums
 
 An enum argument takes a member name or the underlying integer:
@@ -130,6 +123,8 @@ status code, so `ME.identifier` dispatch works:
 - **`clear mex` is safe.** Nothing releases the gateway's reference to the
   library, so unloading the MEX file leaves it mapped and the next load
   reuses it rather than initializing a second runtime.
+- **An integer argument is exact below 2^53.** It crosses as a `double` and
+  the façade converts it, which asks nothing of the declaration.
 - An entry point this target cannot map gets no façade, rather than one that
   raises when called.
 
