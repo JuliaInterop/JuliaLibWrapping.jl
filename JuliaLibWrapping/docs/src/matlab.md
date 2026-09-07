@@ -120,8 +120,10 @@ status code, so `ME.identifier` dispatch works:
 
 - **Each library must be a privatized bundle**, which `standard_build` gives
   you. Two of them load together, each with its own Julia runtime; two
-  unprivatized ones share a `libjulia` and the second aborts. See
-  [Multiple wrapped libraries in one process](@ref).
+  unprivatized ones share a `libjulia` and the second aborts on its first
+  call, without a message. See
+  [Multiple wrapped libraries in one process](@ref). Measured on Linux by
+  loading the libraries directly, not yet from a MATLAB session.
 - **One call at a time.** Two threads calling a generated library segfault, so
   `parfeval` on a thread pool is unsupported. A gateway on MATLAB's main thread
   is single-threaded and safe.
