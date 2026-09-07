@@ -122,6 +122,7 @@ out/
 └── mylib_py/
     ├── __init__.py
     ├── _lowlevel.py
+    ├── _generated.py
     ├── _facade.py
     └── bundle/
 ```
@@ -160,11 +161,11 @@ conversion fails.
 
 ## 5. Continue developing
 
-`_lowlevel.py`, `__init__.py`, and `pyproject.toml` are regenerated on every
-build. `_facade.py` is created only when absent, because it is the place for
-author-written Python policy. After changing an `@api` signature, regenerate a
-fresh façade on a branch and merge the relevant changes into the version you
-keep under source control. See [Generated Python bindings](@ref).
+`_lowlevel.py`, `_generated.py`, `__init__.py`, and `pyproject.toml` are
+regenerated on every build, so an `@api` signature change reaches the package
+by rebuilding. `_facade.py` is created only when absent, because it is the
+place for author-written Python policy; keep it under source control. See
+[Generated Python bindings](@ref).
 
 Next, use [Declaring an API with `@api`](@ref) for the full declaration syntax
 or [Supported Julia types](@ref) to choose another foreign-facing type.
