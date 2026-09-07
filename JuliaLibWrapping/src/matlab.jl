@@ -862,10 +862,12 @@ const MATLAB_ERROR_IDENTIFIERS = Dict{Int, String}(
 
 Write the gateway's includes, its library loader and its status check.
 
-The library is opened here rather than linked, and never closed: `clear mex`
-unloads the MEX file, and the next load would run `jl_init` twice in one
-process, which aborts. `RTLD_NODELETE` keeps the runtime mapped even if the
-handle is closed.
+The library is opened here rather than linked, and never closed. Nothing
+releases that reference, so `clear mex` unloading the MEX file leaves the
+library mapped and the next load finds it rather than running `jl_init` a
+second time; `RTLD_NODELETE` guards the same invariant against anything else
+closing it. Opening it locally keeps its names out of the global namespace,
+which is where a second wrapped library would otherwise meet them.
 """
 function _write_matlab_gateway_prologue(
         io::IO, dest::MatlabTarget, header::AbstractString,
@@ -933,7 +935,13 @@ function _write_matlab_gateway_prologue(
         #else
                 snprintf(path, sizeof path, "%s.so", base);
         #endif
-                jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+                /* Local: every entry point is reached through this handle, and
+           the runtime finds its own image from the address of the
+           caller, so nothing here needs the global scope. Loading it
+           globally would publish this library's unversioned names --
+           the entry points, `jlw_free`, the image symbols -- where a
+           second wrapped library would find them. */
+        jlw_library = dlopen(path, RTLD_LAZY | RTLD_NODELETE);
                 const char *message = dlerror();
                 snprintf(reason, sizeof reason, "%s", message ? message : "");
                 if (jlw_library == NULL) {

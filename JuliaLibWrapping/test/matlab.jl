@@ -445,6 +445,12 @@ end
         # from a wrong path.
         @test occursin("dlerror()", gateway)
 
+        # Local: entry points come through the handle, so the global
+        # namespace buys nothing and would carry this library's
+        # unversioned names into a second one's reach.
+        @test occursin("dlopen(path, RTLD_LAZY | RTLD_NODELETE)", gateway)
+        @test !occursin("RTLD_GLOBAL", gateway)
+
     end
 
     # A sparse struct field passes a class check and has no dense buffer

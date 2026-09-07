@@ -57,7 +57,13 @@ static void *jlw_symbol(const char *name)
 #else
         snprintf(path, sizeof path, "%s.so", base);
 #endif
-        jlw_library = dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+        /* Local: every entry point is reached through this handle, and
+   the runtime finds its own image from the address of the
+   caller, so nothing here needs the global scope. Loading it
+   globally would publish this library's unversioned names --
+   the entry points, `jlw_free`, the image symbols -- where a
+   second wrapped library would find them. */
+jlw_library = dlopen(path, RTLD_LAZY | RTLD_NODELETE);
         const char *message = dlerror();
         snprintf(reason, sizeof reason, "%s", message ? message : "");
         if (jlw_library == NULL) {

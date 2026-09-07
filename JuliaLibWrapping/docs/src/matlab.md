@@ -118,13 +118,16 @@ status code, so `ME.identifier` dispatch works:
 
 ## Limits
 
-- **One wrapped library per MATLAB session.** Two would embed two Julia
-  runtimes, which aborts. Put the functions in one library.
+- **Each library must be a privatized bundle**, which `standard_build` gives
+  you. Two of them load together, each with its own Julia runtime; two
+  unprivatized ones share a `libjulia` and the second aborts. See
+  [Multiple wrapped libraries in one process](@ref).
 - **One call at a time.** Two threads calling a generated library segfault, so
   `parfeval` on a thread pool is unsupported. A gateway on MATLAB's main thread
   is single-threaded and safe.
-- **`clear mex` is safe.** The gateway opens the library once and keeps it
-  open, so a reload leaves `jl_init` alone.
+- **`clear mex` is safe.** Nothing releases the gateway's reference to the
+  library, so unloading the MEX file leaves it mapped and the next load
+  reuses it rather than initializing a second runtime.
 - An entry point this target cannot map gets no façade, rather than one that
   raises when called.
 
