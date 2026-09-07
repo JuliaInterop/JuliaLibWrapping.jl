@@ -13,7 +13,7 @@ standard_build(@__DIR__; libname = "boundary", matlab_package = "boundary")
 
 Two kinds of file come out. A `.m` façade per declaration, in a `+package`
 directory, so a wrapped function is called as `boundary.stats(a)`. And one C
-gateway that converts `mxArray`s to and from the carriers, calls the entry
+[gateway](https://www.mathworks.com/help/matlab/matlab_external/gateway-routine.html) that converts `mxArray`s to and from the carriers, calls the entry
 point, and releases what Julia allocated.
 
 ```
