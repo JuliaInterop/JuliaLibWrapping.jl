@@ -59,15 +59,15 @@ works, and asking for fewer outputs is fine. MATLAB rejects asking for more.
 
 ## Enums
 
-An enum argument takes a member name or the underlying integer:
+An enum argument takes a member name, and an enum return comes back as one,
+so a result passes straight into the next call:
 
 ```matlab
-boundary.round_value(3.2, mode = "round_up")
-boundary.round_value(3.2, mode = 2)
+mode = boundary.sign_mode(-2.5);        % "round_down"
+y = boundary.round_value(x, mode = mode);
 ```
 
-An enum return comes back as its member name, which the façades accept, so a
-result passes straight into another call.
+The underlying integer is accepted too, for a caller that already has one.
 
 ## Arrays the function writes to
 
