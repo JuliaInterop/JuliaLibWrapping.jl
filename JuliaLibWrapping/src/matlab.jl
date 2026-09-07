@@ -394,18 +394,20 @@ function _matlab_arg_validation(kind, name::AbstractString)
 end
 
 """
-    _matlab_arg_forward(name, kind) -> String
+    _matlab_arg_forward(name, kind, mutated) -> String
 
 The expression a façade passes to the gateway for one argument.
 """
-function _matlab_arg_forward(name::AbstractString, kind)
+function _matlab_arg_forward(name::AbstractString, kind, mutated::Bool = false)
     # The gateway reads `char`; the C API reads char arrays only.
     kind.kind === :string && return "convertStringsToChars(" * name * ")"
     kind.kind === :strarray && return "cellstr(" * name * ")"
     # A MATLAB vector arrives 1×N or N×1; `(:)` yields the column the carrier
-    # expects, without a copy.
+    # expects, without a copy. A mutated argument comes back, so it is passed
+    # as it stands: the carrier counts elements, and reshaping it here would
+    # return a column to a caller who passed a row.
     if kind.kind === :array
-        flat = kind.ndim == 1 ? name * "(:)" : name
+        flat = kind.ndim == 1 && !mutated ? name * "(:)" : name
         # Declared `double`, so convert once the block has validated it.
         return kind.integer ? kind.class * "(" * flat * ")" : flat
     end
@@ -629,7 +631,7 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
             )
             println(io, "    end")
         end
-        push!(forwarded, _matlab_arg_forward(expression, kind))
+        push!(forwarded, _matlab_arg_forward(expression, kind, i in plan.mutates))
     end
 
     # The dispatch name is passed as `char`: the gateway reads it with
@@ -702,6 +704,20 @@ function write_wrapper(
         end
         push!(written, plan.name)
         push!(wrapped, (method, plan))
+        # A caller who does not assign the result loses the write, so this is
+        # worth saying once per declaration rather than leaving it to the
+        # façade's help text.
+        isempty(plan.mutates) || @warn(
+            "MATLAB has no way to write through an argument, so " *
+                "$(dest.package_name).$(plan.name) copies " *
+                join(
+                [vcat(plan.positional, plan.keywords)[i] for i in plan.mutates],
+                ", "
+            ) *
+                " and returns the copy. Call it as " *
+                "`[$(join(_matlab_outputs(plan), ", "))] = " *
+                "$(dest.package_name).$(plan.name)(...)`."
+        )
     end
 
     # The gateway needs the carrier typedefs. Emitting them here, instead of

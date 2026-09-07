@@ -92,7 +92,16 @@ MATLAB then copies `a` for the call and returns the copy, so the façade is
 write would reach every variable sharing that buffer: `b = a` shares one until
 MATLAB sees a write, and a write from Julia is one it misses.
 
-A declaration whose name ends in `!` and lists nothing warns at build time.
+The build says so for each such declaration, because a caller who does not
+assign the result loses the write:
+
+```
+┌ Warning: MATLAB has no way to write through an argument, so
+│ boundary.scale copies y and returns the copy. Call it as
+│ `[y] = boundary.scale(...)`.
+```
+
+A declaration whose name ends in `!` and lists nothing warns too.
 
 ## Errors
 

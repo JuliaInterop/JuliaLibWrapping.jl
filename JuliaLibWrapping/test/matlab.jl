@@ -378,6 +378,23 @@ end
         @test occursin("Writes to A and returns it.", facade)
     end
 
+    # A vector is passed as it stands rather than through `(:)`, so a caller
+    # who passes a row gets a row back.
+    vabi = read_abi_info("bindinginfo_api_scale.json")
+    ventry = Dict{String, Any}(
+        "name" => "scale!", "args" => ["y", "k", "label"], "kwargs" => [],
+        "mutates" => ["y"], "doc" => "",
+    )
+    mktempdir() do path
+        @test_logs (:warn, r"copies y and returns the copy") write_wrapper(
+            MatlabTarget(path, "demo", "libdemo"), vabi;
+            api_metadata = Dict{String, Any}("mylib_scale" => ventry)
+        )
+        facade = read(joinpath(path, "+demo", "scale.m"), String)
+        @test occursin("libdemo_mex('mylib_scale', y, k,", facade)
+        @test !occursin("y(:)", facade)
+    end
+
     # Without the declaration the argument is passed by reference and
     # nothing is copied.
     mktempdir() do path
