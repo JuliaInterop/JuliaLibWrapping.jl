@@ -1828,21 +1828,76 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
                 JLWInterop.@api narrowing(x::Float64; k::Float64 = 2)::Float64
             )
         )
-        # A second @api method of the same function would claim the same C symbol.
-        @test_throws "'ApiTestD_scale' is already an API entry point" Core.eval(
+        # A second declaration of the same positional arity is rejected: the
+        # differing keyword set does not distinguish the two for a caller.
+        @test_throws "a 1-argument signature of `scale` is already an API entry point" Core.eval(
             m, :(
                 JLWInterop.@api scale(x::Float64)::Float64
             )
         )
+
+        # A second arity of one name is accepted, and takes the arity-suffixed
+        # symbol.
+        Core.eval(
+            m, quote
+                function scale(x::Float64, y::Float64)
+                    x * y
+                end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api scale(x::Float64, y::Float64)::Float64
+            )
+        )
+        entries = JLWInterop.api_entries(m)
+        @test [e.symbol for e in entries] == ["ApiTestD_scale", "ApiTestD_scale_2"]
+        @test all(e -> e.name === :scale, entries)
+        r = Core.eval(m, :(ApiTestD_scale_2(1.0, 2.0)))
+        @test r isa JLWResult{Float64}
+        @test iszero(r.status.code)
+        @test r.value == 2.0
+
+        # A distinct function whose own symbol is the suffixed one collides.
+        Core.eval(
+            m, quote
+                scale_2(x::Float64) = x
+            end
+        )
+        @test_throws "'ApiTestD_scale_2' is already an API entry point" Core.eval(
+            m, :(
+                JLWInterop.@api scale_2(x::Float64)::Float64
+            )
+        )
+
         mktempdir() do dir
             p = joinpath(dir, "m.jlw.json")
             JLWInterop.write_metadata(p, m)
             txt = read(p, String)
             @test occursin("\"jlw_metadata_version\": 1", txt)
             @test occursin("ApiTestD_scale", txt)
+            @test occursin("ApiTestD_scale_2", txt)
+            # Both entries record the same Julia name.
+            @test count(==("\"name\": \"scale\""), [strip(l, [' ', ',']) for l in split(txt, '\n')]) == 2
             @test occursin("\"factor\"", txt) && occursin("2.0", txt)
             @test occursin("Scale.", txt)
         end
+
+        # `_register!` repeats both checks for a registry filled some other way.
+        reg = JLWInterop.ApiEntry[]
+        mk_entry(sym, nargs) = JLWInterop.ApiEntry(
+            :f, sym, [(Symbol(:a, i), Float64) for i in 1:nargs],
+            Tuple{Symbol, Type, Bool, Any}[], Float64, ""
+        )
+        JLWInterop._register!(reg, mk_entry("M_f", 1))
+        @test_throws "a 1-argument signature of `f` is already an API entry point" JLWInterop._register!(
+            reg, mk_entry("M_g", 1)
+        )
+        @test_throws "'M_f' is already an API entry point" JLWInterop._register!(
+            reg, mk_entry("M_f", 2)
+        )
+        JLWInterop._register!(reg, mk_entry("M_f_2", 2))
+        @test length(reg) == 2
     end
 
     @testset "@api kwargs: empty-string default vs required" begin
