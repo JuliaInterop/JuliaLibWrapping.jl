@@ -449,6 +449,10 @@ into positional `args` and keyword-only `kwargs` with translated defaults, and
 the docstring, escaped by [`_python_docstring`](@ref). A symbol absent from `api_metadata` (the
 default is an empty `Dict`) gets the mechanical, ABI-derived shape.
 
+Several symbols may share a sidecar `name`, one per positional arity. The
+façade defines that name once, as a function dispatching on the number of
+positional arguments it is given.
+
 `api_enums` is the sidecar's `enums` table. Each entry becomes a re-exported
 Python `enum.IntEnum`. Enum arguments accept members, names, or integers;
 enum returns are members.
@@ -1904,18 +1908,24 @@ _python_enum_member_ref(classname::AbstractString, member::AbstractString) =
     classname * "[" * JSON.json(String(member)) * "]"
 
 """
-    _emit_facade_api_autowrapper(f, method, plan)
+    _emit_facade_api_autowrapper(f, method, plan; defname)
 
 Emit an `@api`-sourced façade wrapper (`plan.category === :api_auto`): the
-Python name from `plan.api_entry["name"]`, positional parameters for its
-`"args"`, keyword-only parameters for its `"kwargs"` (with a translated
-default, or bare when the entry has no `"default"` key), and its `"doc"` as
-the docstring, escaped by [`_python_docstring`](@ref). Enum defaults are
-rendered as member references. Argument conversion and the return body match
+Python name `defname`, which defaults to `plan.api_entry["name"]`, positional
+parameters for its `"args"`, keyword-only parameters for its `"kwargs"` (with a
+translated default, or bare when the entry has no `"default"` key), and its
+`"doc"` as the docstring, escaped by [`_python_docstring`](@ref). Enum defaults
+are rendered as member references. Argument conversion and the return body match
 [`_emit_facade_autowrapper`](@ref); only the `def` line's name and parameter
 shape differ.
+
+A member of an arity group is emitted under a private `defname` and reached
+through the dispatcher [`_emit_facade_api_dispatcher`](@ref) writes.
 """
-function _emit_facade_api_autowrapper(f::IO, method::MethodDesc, plan)
+function _emit_facade_api_autowrapper(
+        f::IO, method::MethodDesc, plan;
+        defname::AbstractString = String(plan.api_entry["name"])
+    )
     entry = plan.api_entry
     pos_names = String[String(n) for n in entry["args"]]
     kw_specs = entry["kwargs"]
@@ -1950,7 +1960,7 @@ function _emit_facade_api_autowrapper(f::IO, method::MethodDesc, plan)
             push!(sig_parts, name * "=" * default_str)
         end
     end
-    println(f, "def ", entry["name"], "(", join(sig_parts, ", "), "):")
+    println(f, "def ", defname, "(", join(sig_parts, ", "), "):")
     doc = get(entry, "doc", "")
     isempty(doc) || println(f, "    \"\"\"", _python_docstring(doc), "\"\"\"")
 
@@ -1960,6 +1970,112 @@ function _emit_facade_api_autowrapper(f::IO, method::MethodDesc, plan)
     return println(f)
 end
 
+"""
+    _api_facade_groups(entrypoints, plans) -> Dict{String, Vector{Int}}
+
+Index the `:api_auto` entrypoints by the sidecar `name` they are defined
+under, as positions in `entrypoints` sorted by ascending positional arity.
+Several `@api` declarations of one Julia name reach the façade as separate C
+symbols sharing that name.
+
+Throws an `ErrorException` when two entries share a name and a positional
+arity, since a call site could not choose between them.
+"""
+function _api_facade_groups(entrypoints::AbstractVector, plans::AbstractVector)
+    groups = Dict{String, Vector{Int}}()
+    for (i, plan) in pairs(plans)
+        plan.category === :api_auto || continue
+        push!(get!(Vector{Int}, groups, String(plan.api_entry["name"])), i)
+    end
+    for (name, members) in groups
+        sort!(members; by = i -> length(plans[i].api_entry["args"]))
+        for k in 2:length(members)
+            prev, cur = members[k - 1], members[k]
+            arity = length(plans[cur].api_entry["args"])
+            length(plans[prev].api_entry["args"]) == arity && error(
+                "the façade name `", name, "` is declared for both '",
+                entrypoints[prev].symbol, "' and '", entrypoints[cur].symbol,
+                "' with ", arity, " positional argument(s); `@api` declarations ",
+                "sharing a name must differ in positional arity",
+            )
+        end
+    end
+    return groups
+end
+
+# The private façade name a member of an arity group is defined under.
+_api_facade_private_name(name::AbstractString, arity::Integer) =
+    string("_", name, "_", arity)
+
+# "1", "1 or 2", "1, 2 or 3": the arities a dispatcher accepts, as they read
+# in its TypeError.
+function _api_arity_list(arities::AbstractVector{Int})
+    length(arities) == 1 && return string(arities[1])
+    return join(string.(arities[1:(end - 1)]), ", ") * " or " * string(arities[end])
+end
+
+"""
+    _emit_facade_api_dispatcher(f, name, plans, members)
+
+Emit the public façade function for the arity group `members` (positions in
+`plans`, in ascending arity) defined under `name`. It forwards to the group's
+private wrappers by positional count and raises a `TypeError` for any other
+count. Its docstring is the members' docstrings in the same order, one
+paragraph each, empty ones skipped.
+"""
+function _emit_facade_api_dispatcher(
+        f::IO, name::AbstractString, plans::AbstractVector,
+        members::AbstractVector{Int}
+    )
+    arities = [length(plans[i].api_entry["args"]) for i in members]
+    println(f, "def ", name, "(*args, **kwargs):")
+
+    docs = String[
+        _python_docstring(String(get(plans[i].api_entry, "doc", ""))) for i in members
+    ]
+    filter!(!isempty, docs)
+    if !isempty(docs)
+        lines = String[]
+        for (k, doc) in pairs(docs)
+            k == 1 || push!(lines, "")
+            append!(lines, split(doc, '\n'))
+        end
+        body = lines[1]
+        for line in lines[2:end]
+            body *= "\n" * (isempty(line) ? "" : "    " * line)
+        end
+        println(f, "    \"\"\"", body, "\"\"\"")
+    end
+
+    for arity in arities
+        println(f, "    if len(args) == ", arity, ":")
+        println(
+            f, "        return ", _api_facade_private_name(name, arity),
+            "(*args, **kwargs)"
+        )
+    end
+    println(f, "    raise TypeError(")
+    println(
+        f, "        f\"", name, "() takes ", _api_arity_list(arities),
+        " positional arguments but {len(args)} were given\""
+    )
+    println(f, "    )")
+    return println(f)
+end
+
+"""
+    _write_facade_stub(f, dest, abi_info, typedict, needs_jlwerror, api_metadata, api_enums)
+
+Write the starter `_facade.py`: the struct, enum and `JLWError` re-exports,
+then one wrapper per entrypoint, then `__all__`. An `@api` entry is wrapped
+under its sidecar name, an automatically classified signature under its C
+symbol, and anything else is re-exported.
+
+Several symbols may share a sidecar `name`, one per positional arity. Their
+wrappers are emitted under private `_<name>_<arity>` names, followed by a
+public `name` that dispatches on the number of positional arguments. `__all__`
+carries that name once.
+"""
 function _write_facade_stub(
         f::IO, dest::PythonTarget, abi_info::ABIInfo,
         typedict::Dict{Int, String}, needs_jlwerror::Bool,
@@ -1985,6 +2101,8 @@ function _write_facade_stub(
     needs_enum_coerce = any(p -> any(c -> c.kind === :enum, p.args), plans)
     has_struct_exports = !isempty(struct_names) || !isempty(enum_names) || needs_jlwerror
 
+    api_groups = _api_facade_groups(entrypoints, plans)
+
     # Each `@api` function is defined on the façade under its sidecar name,
     # so that name has to be a Python identifier and has to be free. The
     # struct classes and the mechanical/passthrough re-exports are emitted
@@ -2004,9 +2122,13 @@ function _write_facade_stub(
         method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         claimed[method.symbol] = "the entrypoint '$(method.symbol)'"
     end
-    for (method, plan) in zip(entrypoints, plans)
+    # An arity group claims its shared sidecar name once, plus the private
+    # name each member is defined under.
+    for (i, (method, plan)) in enumerate(zip(entrypoints, plans))
         plan.category === :api_auto || continue
         pyname = String(plan.api_entry["name"])
+        members = api_groups[pyname]
+        i == minimum(members) || continue
         _is_python_identifier(pyname) || error(
             "`$pyname` (the Python name for '$(method.symbol)') is not a Python identifier; " *
                 "rename the function in Julia"
@@ -2016,7 +2138,21 @@ function _write_facade_stub(
             "the façade name `$pyname` for '$(method.symbol)' is already taken by $owner; " *
                 "rename the function in Julia"
         )
-        claimed[pyname] = "the `@api` entrypoint '$(method.symbol)'"
+        symbols = join(("'$(entrypoints[j].symbol)'" for j in members), ", ")
+        claimed[pyname] = length(members) == 1 ?
+            "the `@api` entrypoint $symbols" : "the `@api` entrypoints $symbols"
+        length(members) == 1 && continue
+        for j in members
+            private = _api_facade_private_name(
+                pyname, length(plans[j].api_entry["args"])
+            )
+            owner = get(claimed, private, nothing)
+            isnothing(owner) || error(
+                "the façade name `$private` for '$(entrypoints[j].symbol)' is already " *
+                    "taken by $owner; rename the function in Julia"
+            )
+            claimed[private] = "the `@api` entrypoint '$(entrypoints[j].symbol)'"
+        end
     end
 
     println(f, "\"\"\"", dest.package_name, " idiomatic façade.")
@@ -2081,11 +2217,27 @@ function _write_facade_stub(
     end
     any_reexport && println(f)
 
-    for (method, plan) in zip(entrypoints, plans)
+    for (i, (method, plan)) in enumerate(zip(entrypoints, plans))
         if plan.category === :auto
             _emit_facade_autowrapper(f, method, plan)
         elseif plan.category === :api_auto
-            _emit_facade_api_autowrapper(f, method, plan)
+            pyname = String(plan.api_entry["name"])
+            members = api_groups[pyname]
+            # The whole group is emitted where its first member appears.
+            i == minimum(members) || continue
+            if length(members) == 1
+                _emit_facade_api_autowrapper(f, method, plan)
+            else
+                for j in members
+                    private = _api_facade_private_name(
+                        pyname, length(plans[j].api_entry["args"])
+                    )
+                    _emit_facade_api_autowrapper(
+                        f, entrypoints[j], plans[j]; defname = private
+                    )
+                end
+                _emit_facade_api_dispatcher(f, pyname, plans, members)
+            end
         end
     end
 
@@ -2106,14 +2258,19 @@ function _write_facade_stub(
         print(f, "\"JLWError\"")
         isfirst = false
     end
-    for (method, plan) in zip(entrypoints, plans)
+    for (i, (method, plan)) in enumerate(zip(entrypoints, plans))
         # The release entrypoints are internal plumbing (bound on `_lib`
         # only in `_lowlevel.py`, see `_write_bindings`) — never public.
         method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
+        # An `:api_auto` façade function is defined under its sidecar name
+        # rather than the ABI symbol, so that is the name `__all__` exports,
+        # once for the whole arity group.
+        public_name = method.symbol
+        if plan.category === :api_auto
+            public_name = String(plan.api_entry["name"])
+            i == minimum(api_groups[public_name]) || continue
+        end
         isfirst || print(f, ", ")
-        # An `:api_auto` façade function is defined under its sidecar name,
-        # not the ABI symbol, so that is the name `__all__` exports.
-        public_name = plan.category === :api_auto ? plan.api_entry["name"] : method.symbol
         print(f, "\"", public_name, "\"")
         isfirst = false
     end

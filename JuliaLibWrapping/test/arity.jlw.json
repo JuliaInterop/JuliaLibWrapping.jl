@@ -1,0 +1,17 @@
+{
+  "jlw_metadata_version": 1,
+  "exports": {
+    "mylib_scale": {
+      "name": "scale",
+      "args": ["x"],
+      "kwargs": [{"name": "factor", "default": 2.0}, {"name": "label"}],
+      "doc": "Scale every entry."
+    },
+    "mylib_scale_2": {
+      "name": "scale",
+      "args": ["x", "y"],
+      "kwargs": [],
+      "doc": "Scale `x` by the entries of `y`."
+    }
+  }
+}

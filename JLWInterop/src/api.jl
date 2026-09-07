@@ -27,18 +27,30 @@ const _REGISTRY_NAME = :_JLW_API_REGISTRY_
 """
     _register!(registry::Vector{ApiEntry}, e::ApiEntry)
 
-Append `e`, rejecting duplicate symbols.
+Append `e`, rejecting a duplicate C symbol and a second declaration of `e.name`
+with the same positional arity.
 """
 function _register!(registry::Vector{ApiEntry}, e::ApiEntry)
     for existing in registry
+        (existing.name === e.name && length(existing.args) == length(e.args)) && error(
+            _api_same_arity_message(e.name, length(e.args))
+        )
         existing.symbol == e.symbol && error(
-            "@api: '$(e.symbol)' is already an API entry point. A function " *
-                "carries `@api` on one signature only; give the second one its own name."
+            "@api: '$(e.symbol)' is already an API entry point. Each declaration " *
+                "claims one C symbol; give this one its own name."
         )
     end
     push!(registry, e)
     return nothing
 end
+
+# Shared by the macro and `_register!`. Keywords are positional in the C ABI,
+# so two declarations of one name with the same positional arity are
+# indistinguishable to a foreign caller.
+_api_same_arity_message(name::Symbol, arity::Integer) =
+    "a $arity-argument signature of `$name` is already an API entry point; the " *
+    "declarations of one name must differ in positional arity (a different set of " *
+    "keywords is not enough). Give this one its own name."
 
 """
     api_entries(root::Module = Main) -> Vector{ApiEntry}
@@ -79,6 +91,23 @@ function _api_symbol(mod::Module, name::Symbol)
     parts = String.(collect(fullname(mod)))
     isempty(parts) || parts[1] != "Main" || popfirst!(parts)
     return join([parts..., String(name)], "_")
+end
+
+"""
+    _api_entry_symbol(mod::Module, name::Symbol, arity::Integer,
+                      existing::Vector{ApiEntry}) -> String
+
+The C symbol for a declaration of `name` in `mod` taking `arity` positional
+arguments, given the entries `existing` in that module's registry. The first
+declaration of a name takes the bare [`_api_symbol`](@ref); each later one
+appends its positional arity, `Mod_name_<arity>`.
+"""
+function _api_entry_symbol(
+        mod::Module, name::Symbol, arity::Integer, existing::Vector{ApiEntry}
+    )
+    base = _api_symbol(mod, name)
+    any(e -> e.name === name, existing) || return base
+    return string(base, "_", arity)
 end
 
 # --- Carrier mapping: String is argument-only ------------------------------
@@ -520,7 +549,7 @@ Declare one call signature of `name` as a JuliaLibWrapping API entry point.
 `name` must already be callable with those types — defined in this module, or
 brought in from the package this binding layer wraps. The macro defines
 nothing itself: it generates a `Base.@ccallable` C-ABI wrapper (named by the
-private `_api_symbol` helper) that converts arguments and return value through
+private `_api_entry_symbol` helper) that converts arguments and return value through
 [`carrier_type`](@ref)/[`carrier_return_type`](@ref)/[`to_carrier`](@ref)/[`from_carrier`](@ref)
 and reports errors via [`JLWResult`](@ref)/[`JLWStatus`](@ref), and records an
 [`ApiEntry`](@ref) in the declaring module's registry (see
@@ -549,6 +578,14 @@ arguments, in declaration order, and every one is passed on every call: a
 default is applied by the calling side, which reads it from the metadata
 sidecar, not by the wrapper. The wrapper therefore has one arity, and a
 keyword's default is a property of the binding rather than of the entry point.
+
+A name may carry several declarations as long as they differ in the number of
+positional arguments. The first one in a module takes the bare symbol
+`Mod_name`; each later one appends its positional arity, `Mod_name_<arity>`.
+Two declarations of one name with the same positional arity are rejected: a
+differing set of keywords does not distinguish them, since keywords are
+positional in the C ABI. A declaration whose symbol another entry point
+already claims is rejected as well.
 """
 macro api(args...)
     if length(args) == 2
@@ -616,20 +653,26 @@ macro api(args...)
     is_void = ret_type === Nothing
     ret_opt_inner = is_void ? nothing : _api_opt_inner(ret_type)
     ret_carrier = is_void ? Nothing : last(_api_carrier_or_error(__module__, name, "return", ret_type))
-    symbol = _api_symbol(__module__, name)
 
-    # Two declarations of one name would claim one C symbol, and the second
-    # `Base.@ccallable` would replace the first entry point. Caught here, on
-    # the module's own registry, so the message is the same on every Julia
-    # version; `_register!` repeats the check for a registry filled some other
-    # way.
+    # The module's own registry decides the symbol and validates the
+    # declaration here, so the message is the same on every Julia version.
+    # `_register!` repeats both checks for a registry filled some other way.
+    existing = ApiEntry[]
     if isdefined(__module__, _REGISTRY_NAME)
-        existing = getglobal(__module__, _REGISTRY_NAME)
-        existing isa Vector{ApiEntry} && any(e -> e.symbol == symbol, existing) && error(
-            "@api $__module__.$name: '$symbol' is already an API entry point. " *
-                "A function carries `@api` on one signature only; give the second one its own name."
-        )
+        reg = getglobal(__module__, _REGISTRY_NAME)
+        reg isa Vector{ApiEntry} && (existing = reg)
     end
+    arity = length(arg_names)
+    any(e -> e.name === name && length(e.args) == arity, existing) &&
+        error("@api $__module__.$name: " * _api_same_arity_message(name, arity))
+    symbol = _api_entry_symbol(__module__, name, arity, existing)
+    # A name whose arity-suffixed symbol collides with a separately declared
+    # function of that literal name: the second `Base.@ccallable` would
+    # replace the first entry point.
+    any(e -> e.symbol == symbol, existing) && error(
+        "@api $__module__.$name: '$symbol' is already an API entry point. " *
+            "Each declaration claims one C symbol; give this one its own name."
+    )
 
     # The declaration names an existing function, so a typo or a signature it
     # cannot serve is an error here rather than a missing method at compile
@@ -816,7 +859,9 @@ Files with enums use version 2 and add an `enums` table:
      "exports": {symbol: {"name", "args", "kwargs", "arg_enums"?, "return_enum"?, "doc"}}}
 
 `exports` entries are sorted by symbol for stable output. `args` is the
-positional argument names, in declaration order. `kwargs` is a list of
+positional argument names, in declaration order. Several entries may share a
+`name`, one per positional arity (see [`@api`](@ref)); each is keyed by its own
+symbol. `kwargs` is a list of
 `{"name": ...}` for a required keyword-only argument (see [`ApiEntry`](@ref))
 or `{"name": ..., "default": ...}` for one with a default. Enum defaults are
 stored by member name; other defaults retain their JSON type. ABI types remain

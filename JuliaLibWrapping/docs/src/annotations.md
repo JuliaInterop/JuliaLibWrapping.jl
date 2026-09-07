@@ -96,6 +96,32 @@ accepted. Enum defaults may be bare or dotted member names resolved in the
 declaring module. Arbitrary expressions are rejected because they cannot be
 represented reliably in target metadata.
 
+## Several arities under one name
+
+One Julia name may carry several `@api` declarations, provided they differ in
+the number of positional arguments:
+
+```julia
+iscover(a::Vector{Int64}, A::Matrix{Int64}) = true
+iscover(a::Vector{Int64}, b::Vector{Int64}, A::Matrix{Int64}) = true
+
+@api iscover(a::Vector{Int64}, A::Matrix{Int64})::Bool
+@api iscover(a::Vector{Int64}, b::Vector{Int64}, A::Matrix{Int64})::Bool
+```
+
+The first declaration of a name in a module takes the bare C symbol
+`Mod_iscover`. Each later one appends its positional arity, so the second
+becomes `Mod_iscover_3`. Metadata records the Julia name on every entry, which
+is how a target knows the two belong together. A declaration is rejected when
+its symbol is already claimed, as happens when a function named `iscover_3` is
+separately declared.
+
+Two declarations of one name with the same positional arity are rejected. A
+differing set of keywords does not distinguish them: keywords are positional in
+the C ABI, so both entry points would take the same number of C arguments and
+nothing at a call site could choose between them. Dispatch on argument types
+at one arity is also unavailable. Give those signatures separate names.
+
 ## Enums
 
 Arguments and returns may use a concrete `Base.Enum` whose base is a supported
