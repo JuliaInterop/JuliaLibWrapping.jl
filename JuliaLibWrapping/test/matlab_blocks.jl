@@ -24,8 +24,8 @@ end
 """
     matlab_emitted_blocks(dir) -> String
 
-Every distinct helper and handler the fixtures in `dir` produce, with and
-without `duplicate_arguments`, in name order.
+Every distinct helper and handler the fixtures in `dir` produce, in name
+order.
 """
 function matlab_emitted_blocks(dir::AbstractString)
     fixtures = sort(filter(endswith(".json"), readdir(dir)))
@@ -33,15 +33,10 @@ function matlab_emitted_blocks(dir::AbstractString)
     for fixture in fixtures
         startswith(fixture, "bindinginfo_") || continue
         abi = cd(() -> JuliaLibWrapping.read_abi_info(fixture), dir)
-        for duplicate in (false, true)
-            path = mktempdir()
-            target = MatlabTarget(
-                path, "demo", "libdemo"; duplicate_arguments = duplicate
-            )
-            write_wrapper(target, abi)
-            gateway = joinpath(path, "libdemo_mex.c")
-            append!(found, matlab_function_blocks(read(gateway, String)))
-        end
+        path = mktempdir()
+        write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+        gateway = joinpath(path, "libdemo_mex.c")
+        append!(found, matlab_function_blocks(read(gateway, String)))
     end
     return join(last.(sort!(unique!(found))), "\n\n") * "\n"
 end

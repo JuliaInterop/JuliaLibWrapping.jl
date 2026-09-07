@@ -76,33 +76,23 @@ boundary.round_value(3.2, mode = 2)
 An enum return comes back as its member name, which the façades accept, so a
 result passes straight into another call.
 
-## Arrays are borrowed
+## Arrays the function writes to
 
 An array argument crosses without a copy: the gateway hands Julia a pointer
-into MATLAB's own buffer.
+into MATLAB's own buffer. That is right for a function that only reads it.
 
-MATLAB gives assignment value semantics and implements them by copying on
-write, so `b = a` shares one buffer until MATLAB sees a write. A write from
-Julia is one it misses. **A wrapped function that writes to an array argument
-changes every variable sharing that buffer**, and the MATLAB source gives no
-sign of it.
-
-Build with `duplicate_arguments = true` when the wrapped library writes to its
-arguments:
+Say so in the declaration when the function writes to one:
 
 ```julia
-standard_build(
-    @__DIR__; libname = "boundary", matlab_package = "boundary",
-    duplicate_arguments = true,
-)
+@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,)
 ```
 
-Each array argument is then copied for the call. The flag covers the whole
-build, so a library with one such function pays the copy everywhere. Arrays are
-the only case: other carriers already copy or cross by value.
+MATLAB then copies `a` for the call and returns the copy, so the façade is
+`a = boundary.scale(a, k)` and its help text says so. Without the copy the
+write would reach every variable sharing that buffer: `b = a` shares one until
+MATLAB sees a write, and a write from Julia is one it misses.
 
-Façades taking arrays carry this warning in their help text until the flag is
-set.
+A declaration whose name ends in `!` and lists nothing warns at build time.
 
 ## Errors
 

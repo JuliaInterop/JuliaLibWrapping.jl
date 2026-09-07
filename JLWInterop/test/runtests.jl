@@ -1078,6 +1078,47 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws "the docstring argument must be a string literal" Core.eval(m, interp)
     end
 
+    @testset "@api mutates" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(scale!(a::Vector{Float64}, k::Float64) = (a .*= k; nothing)))
+        Core.eval(
+            m,
+            :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,))
+        )
+        entry = only(Core.eval(m, :(JLWInterop.api_entries($m))))
+        @test entry.mutates == [:a]
+
+        # The sidecar records it; an entry that writes to nothing omits the
+        # key, so a reader without it sees the same thing.
+        path = joinpath(mktempdir(), "meta.json")
+        Core.eval(m, :(JLWInterop.write_metadata($path, $m)))
+        @test occursin("\"mutates\": [\"a\"]", read(path, String))
+
+        # A name it does not take, and a name that cannot be written to.
+        @test_throws "which this declaration does not take" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (b,))
+        )
+        @test_throws "Only an array argument" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (k,))
+        )
+        @test_throws "names 'a' twice" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a, a))
+        )
+        @test_throws "an argument name or a tuple of them" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = 1)
+        )
+    end
+
+    @testset "@api warns on `!` without mutates" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(bump!(a::Vector{Float64}) = (a .+= 1; nothing)))
+        @test_logs (:warn, r"ends in `!` but `mutates` names no argument") Core.eval(
+            m, :(JLWInterop.@api bump!(a::Vector{Float64})::Nothing)
+        )
+    end
+
     @testset "@api helper predicates" begin
         # These are reached through macro expansion elsewhere, but they are
         # small enough to pin directly.

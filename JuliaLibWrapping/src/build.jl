@@ -284,12 +284,10 @@ build_library(joinpath(dir, "src", libname*".jl"),
 `+<matlab_package>` directory. It is opt-in: the emitted MATLAB sources need
 `mex` run against them before they can be called, and `standard_build`
 leaves that to the user.
-`duplicate_arguments` is passed to it; see [`MatlabTarget`](@ref) for when a
-library needs it.
 
-The kwargs `out`, `entry`, `python_package`, `matlab_package`,
-`duplicate_arguments`, `project`, `bundle`, and `version` override the defaults
-above; anything else is forwarded to
+The kwargs `out`, `entry`, `python_package`, `matlab_package`, `project`,
+`bundle`, and `version` override the defaults above; anything else is
+forwarded to
 `build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
 defaults to `dir`, but can be pointed at a separate location when the
 on-disk source layout and the entry `Project.toml` live in different
@@ -305,14 +303,12 @@ function standard_build(
         entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
         python_package::AbstractString = libname * "_py",
         matlab_package::Union{AbstractString, Nothing} = nothing,
-        duplicate_arguments::Bool = false,
         bundle::Bool = true,
         version::AbstractString = _DEFAULT_PACKAGE_VERSION,
         kwargs...
     )
     targets = _standard_targets(
-        out, libname, python_package, matlab_package, bundle, version,
-        duplicate_arguments
+        out, libname, python_package, matlab_package, bundle, version
     )
     return build_library(
         entry, targets;
@@ -322,7 +318,7 @@ function standard_build(
 end
 
 """
-    _standard_targets(out, libname, python_package, matlab_package, bundle, version, duplicate_arguments)
+    _standard_targets(out, libname, python_package, matlab_package, bundle, version)
 
 The target list [`standard_build`](@ref) assembles. Separate from the build so
 that what it emits can be checked without compiling a library.
@@ -331,7 +327,7 @@ function _standard_targets(
         out::AbstractString, libname::AbstractString,
         python_package::AbstractString,
         matlab_package::Union{AbstractString, Nothing},
-        bundle::Bool, version::AbstractString, duplicate_arguments::Bool
+        bundle::Bool, version::AbstractString
     )
     targets = AbstractTarget[
         CTarget(out, libname),
@@ -344,7 +340,7 @@ function _standard_targets(
     isnothing(matlab_package) || push!(
         targets,
         MatlabTarget(
-            out, matlab_package, libname; duplicate_arguments,
+            out, matlab_package, libname;
             library_subdir = bundle ? joinpath(libname * "-bundle", "lib") : ""
         )
     )

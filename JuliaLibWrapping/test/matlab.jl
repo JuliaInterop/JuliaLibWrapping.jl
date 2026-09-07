@@ -31,13 +31,7 @@ end
     @test JuliaLibWrapping._matlab_gateway_name(t) == "boundary_mex"
     @test sprint(show, t) == "MatlabTarget(\"out\", \"boundary\", \"boundary\")"
     @test t isa AbstractTarget
-    @test t.duplicate_arguments === false
     @test t.library_subdir == ""
-
-    copied = MatlabTarget("out", "boundary", "boundary"; duplicate_arguments = true)
-    @test copied.duplicate_arguments === true
-    @test sprint(show, copied) ==
-        "MatlabTarget(\"out\", \"boundary\", \"boundary\"; duplicate_arguments = true)"
 end
 
 @testset "matlab argument classification" begin
@@ -224,8 +218,7 @@ end
 @testset "matlab helper golden" begin
     # `ctuple`'s entry points take no arguments, so the gateway golden
     # pins none of the conversions that read an `mxArray`. This one holds
-    # every helper and handler the fixtures produce between them, with and
-    # without `duplicate_arguments`.
+    # every helper and handler the fixtures produce between them.
     @test matlab_emitted_blocks(@__DIR__) ==
         read(joinpath(@__DIR__, "expected_matlab_helpers.c"), String)
 end
@@ -327,27 +320,20 @@ end
 @testset "standard_build target list" begin
     # A C header and a Python package by default, as before.
     default = JuliaLibWrapping._standard_targets(
-        "out", "demo", "demo_py", nothing, true, "0.0.0", false
+        "out", "demo", "demo_py", nothing, true, "0.0.0"
     )
     @test map(typeof, default) == [CTarget, PythonTarget]
 
     # MATLAB is opt-in: its sources need `mex` run against them before
     # they can be called, which a build does not do.
     with_matlab = JuliaLibWrapping._standard_targets(
-        "out", "demo", "demo_py", "demo", true, "0.0.0", false
+        "out", "demo", "demo_py", "demo", true, "0.0.0"
     )
     @test map(typeof, with_matlab) == [CTarget, PythonTarget, MatlabTarget]
     matlab = last(with_matlab)
     @test matlab.package_name == "demo"
     @test matlab.library_basename == "demo"
-    @test matlab.duplicate_arguments === false
-
-    copied = last(
-        JuliaLibWrapping._standard_targets(
-            "out", "demo", "demo_py", "demo", true, "0.0.0", true
-        )
-    )
-    @test copied.duplicate_arguments === true
+    @test matlab.library_subdir == joinpath("demo-bundle", "lib")
 end
 
 @testset "targets that read the sidecar" begin
@@ -364,18 +350,40 @@ end
     @test !JuliaLibWrapping.accepts_api_metadata(CTarget("out", "demo"))
 end
 
-@testset "matlab duplicated arguments" begin
-    # Opt-in copies, for a library whose functions write to their
-    # arguments. Only arrays borrow, so only they change: strings,
-    # string arrays and dictionaries already copy, and scalars and
-    # optionals cross by value.
+@testset "matlab mutated arguments" begin
+    # An argument the declaration writes to is copied for the call and
+    # returned, because MATLAB's value semantics do not let a write reach
+    # the caller. Everything else is passed by reference.
     abi = read_abi_info("bindinginfo_carray3.json")
+    entry = Dict{String, Any}(
+        "name" => "sum3d", "args" => ["a"], "kwargs" => [],
+        "mutates" => ["a"], "doc" => "",
+    )
+    meta = Dict{String, Any}("sum3d" => entry)
     mktempdir() do path
         write_wrapper(
-            MatlabTarget(path, "demo", "libdemo"; duplicate_arguments = true), abi
+            MatlabTarget(path, "demo", "libdemo"), abi; api_metadata = meta
         )
         gateway = read(joinpath(path, "libdemo_mex.c"), String)
-        @test occursin("value = mxDuplicateArray(value);", gateway)
+        @test occursin("mxArray *copy1 = mxDuplicateArray(prhs[1]);", gateway)
+        @test occursin("jlw_in_CArray_borrowed_Float64_3(copy1)", gateway)
+
+        # Two outputs now: the copy, then what the function returns.
+        @test occursin("int wanted = nlhs < 1 ? 1 : nlhs;", gateway)
+        @test occursin("at most 2 outputs", gateway)
+        @test occursin("plhs[0] = copy1;", gateway)
+
+        facade = read(joinpath(path, "+demo", "sum3d.m"), String)
+        @test occursin("function [a, out] = sum3d(a)", facade)
+        @test occursin("Writes to A and returns it.", facade)
+    end
+
+    # Without the declaration the argument is passed by reference and
+    # nothing is copied.
+    mktempdir() do path
+        write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+        gateway = read(joinpath(path, "libdemo_mex.c"), String)
+        @test !occursin("mxDuplicateArray", gateway)
     end
 end
 

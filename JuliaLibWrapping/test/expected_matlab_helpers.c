@@ -540,25 +540,6 @@ static void jlw_call_trace_cmatrix
 
 static CArray_borrowed_Float64_3 jlw_in_CArray_borrowed_Float64_3(const mxArray *value)
 {
-    /* The caller asked for copies: a wrapped function that
-       writes to its argument would otherwise corrupt every
-       MATLAB variable sharing this buffer. The duplicate is
-       reclaimed when `mexFunction` exits. */
-    value = mxDuplicateArray(value);
-    CArray_borrowed_Float64_3 carrier;
-    const mwSize *shape = mxGetDimensions(value);
-    mwSize rank = mxGetNumberOfDimensions(value);
-    for (int i = 0; i < 3; i++) {
-        /* MATLAB drops trailing singletons, so a missing
-           dimension is 1 rather than an error. */
-        carrier.dims[i] = (int64_t)(i < (int)rank ? shape[i] : 1);
-    }
-    carrier.data = (double *)mxGetDoubles(value);
-    return carrier;
-}
-
-static CArray_borrowed_Float64_3 jlw_in_CArray_borrowed_Float64_3(const mxArray *value)
-{
     CArray_borrowed_Float64_3 carrier;
     const mwSize *shape = mxGetDimensions(value);
     mwSize rank = mxGetNumberOfDimensions(value);
@@ -633,25 +614,6 @@ static CDict_borrowed_Int32 jlw_in_CDict_borrowed_Int32(const mxArray *value)
 
 static CMatrix_borrowed_Float64 jlw_in_CMatrix_borrowed_Float64(const mxArray *value)
 {
-    /* The caller asked for copies: a wrapped function that
-       writes to its argument would otherwise corrupt every
-       MATLAB variable sharing this buffer. The duplicate is
-       reclaimed when `mexFunction` exits. */
-    value = mxDuplicateArray(value);
-    CMatrix_borrowed_Float64 carrier;
-    const mwSize *shape = mxGetDimensions(value);
-    mwSize rank = mxGetNumberOfDimensions(value);
-    for (int i = 0; i < 2; i++) {
-        /* MATLAB drops trailing singletons, so a missing
-           dimension is 1 rather than an error. */
-        carrier.dims[i] = (int64_t)(i < (int)rank ? shape[i] : 1);
-    }
-    carrier.data = (double *)mxGetDoubles(value);
-    return carrier;
-}
-
-static CMatrix_borrowed_Float64 jlw_in_CMatrix_borrowed_Float64(const mxArray *value)
-{
     CMatrix_borrowed_Float64 carrier;
     const mwSize *shape = mxGetDimensions(value);
     mwSize rank = mxGetNumberOfDimensions(value);
@@ -717,41 +679,12 @@ static CString_borrowed jlw_in_CString_borrowed(const mxArray *value)
 
 static CVector_borrowed_Bool jlw_in_CVector_borrowed_Bool(const mxArray *value)
 {
-    /* The caller asked for copies: a wrapped function that
-       writes to its argument would otherwise corrupt every
-       MATLAB variable sharing this buffer. The duplicate is
-       reclaimed when `mexFunction` exits. */
-    value = mxDuplicateArray(value);
     CVector_borrowed_Bool carrier;
     if (mxGetNumberOfElements(value) > INT32_MAX) {
         mexErrMsgIdAndTxt("jlw:dimension", "the vector's length exceeds this library's 32-bit length field");
     }
     carrier.dims[0] = (int32_t)mxGetNumberOfElements(value);
     carrier.data = (bool *)mxGetLogicals(value);
-    return carrier;
-}
-
-static CVector_borrowed_Bool jlw_in_CVector_borrowed_Bool(const mxArray *value)
-{
-    CVector_borrowed_Bool carrier;
-    if (mxGetNumberOfElements(value) > INT32_MAX) {
-        mexErrMsgIdAndTxt("jlw:dimension", "the vector's length exceeds this library's 32-bit length field");
-    }
-    carrier.dims[0] = (int32_t)mxGetNumberOfElements(value);
-    carrier.data = (bool *)mxGetLogicals(value);
-    return carrier;
-}
-
-static CVector_borrowed_Float64 jlw_in_CVector_borrowed_Float64(const mxArray *value)
-{
-    /* The caller asked for copies: a wrapped function that
-       writes to its argument would otherwise corrupt every
-       MATLAB variable sharing this buffer. The duplicate is
-       reclaimed when `mexFunction` exits. */
-    value = mxDuplicateArray(value);
-    CVector_borrowed_Float64 carrier;
-    carrier.dims[0] = (int64_t)mxGetNumberOfElements(value);
-    carrier.data = (double *)mxGetDoubles(value);
     return carrier;
 }
 

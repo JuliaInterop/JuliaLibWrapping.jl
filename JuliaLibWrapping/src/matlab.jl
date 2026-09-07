@@ -13,36 +13,32 @@ MATLAB compiles the emitted sources; emitting them is pure Julia.
 `build_mex.m` takes as its default. A bundled build puts it under
 `<libname>-bundle/lib`.
 
-`duplicate_arguments` copies each array argument for the call. Use it when the
-wrapped library writes to its arguments. By default the gateway hands Julia a
-pointer into MATLAB's own buffer, and a write there changes every variable
-sharing it, because MATLAB copies on write only for writes it sees. Arrays are
-the only case: other carriers already copy or cross by value.
+An array argument is passed by reference, so the wrapped function reads
+MATLAB's own buffer. An argument a `@api` declaration lists in `mutates` is
+copied for the call instead, and the copy comes back as an output: MATLAB
+gives assignment value semantics, so a write must not reach the caller's other
+variables.
 """
 struct MatlabTarget <: AbstractTarget
     dir::String
     package_name::String
     library_basename::String
-    duplicate_arguments::Bool
     library_subdir::String
 end
 
 MatlabTarget(
     dir::AbstractString, package_name::AbstractString,
-    library_basename::AbstractString; duplicate_arguments::Bool = false,
-    library_subdir::AbstractString = ""
+    library_basename::AbstractString; library_subdir::AbstractString = ""
 ) = MatlabTarget(
     String(dir), String(package_name), String(library_basename),
-    duplicate_arguments, String(library_subdir)
+    String(library_subdir)
 )
 
 function Base.show(io::IO, t::MatlabTarget)
     print(
         io, "MatlabTarget(", repr(t.dir), ", ", repr(t.package_name),
-        ", ", repr(t.library_basename)
+        ", ", repr(t.library_basename), ")"
     )
-    t.duplicate_arguments && print(io, "; duplicate_arguments = true")
-    print(io, ")")
     return nothing
 end
 
@@ -468,8 +464,27 @@ function _matlab_facade_plan(
     return_enum = isnothing(api_entry) ? nothing : get(api_entry, "return_enum", nothing)
     isnothing(return_enum) || haskey(api_enums, return_enum) ||
         return (kind = :skip, reason = "return enum `$return_enum` is missing from the sidecar")
+
+    # A declaration says which arguments it writes to; those are copied for
+    # the call and returned. The names are the sidecar's own spelling.
+    raw = _matlab_declared_names(method, api_entry)
+    mutates = Int[]
+    for name in (isnothing(api_entry) ? String[] : get(api_entry, "mutates", String[]))
+        i = findfirst(==(String(name)), raw)
+        isnothing(i) && return (
+            kind = :skip,
+            reason = "`mutates` names `$name`, which is not an argument here",
+        )
+        args[i].kind === :array || return (
+            kind = :skip,
+            reason = "`mutates` names `$name`, which is not an array argument",
+        )
+        push!(mutates, i)
+    end
+    sort!(mutates)
+
     return (;
-        kind = :auto, args, ret, positional, keywords, defaults, enums,
+        kind = :auto, args, ret, positional, keywords, defaults, enums, mutates,
         return_enum, api_enums, declared,
         name = _matlab_entry_name(method, api_entry),
         doc = isnothing(api_entry) ? "" : String(get(api_entry, "doc", "")),
@@ -492,13 +507,29 @@ end
 
 
 """
-    _matlab_outputs(ret) -> Vector{String}
+    _matlab_outputs(plan) -> Vector{String}
 
-The façade's output names. A tuple return becomes one output per element, in
-declaration order; anything else is a single output, and a `Nothing` return
-yields zero.
+The façade's output names: each argument the function writes to, in
+declaration order, then the results. A tuple return becomes one output per
+element; anything else is a single output, and a `Nothing` return yields
+zero.
+
+A written argument comes back because MATLAB gives arguments value semantics,
+so `a = f(a)` is how a caller sees the write.
 """
-function _matlab_outputs(ret)
+function _matlab_outputs(plan)
+    names = String[vcat(plan.positional, plan.keywords)[i] for i in plan.mutates]
+    append!(names, _matlab_result_outputs(plan.ret))
+    return names
+end
+
+"""
+    _matlab_result_outputs(ret) -> Vector{String}
+
+The output names for what the entry point returns, without the arguments it
+writes to.
+"""
+function _matlab_result_outputs(ret)
     inner = ret.kind === :result ? ret.inner : ret
     inner.kind in (:void, :none) && return String[]
     inner.kind === :tuple && return String["out" * string(i) for i in 1:length(inner.elements)]
@@ -512,7 +543,7 @@ Write one `.m` façade: an `arguments` block, the body conversions the block
 cannot express, and the gateway call.
 """
 function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, plan)
-    outputs = _matlab_outputs(plan.ret)
+    outputs = _matlab_outputs(plan)
     signature = if isempty(outputs)
         plan.name
     elseif length(outputs) == 1
@@ -525,23 +556,22 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
     parameters = isempty(plan.keywords) ? plan.positional : vcat(plan.positional, "opts")
     println(io, "function ", signature, "(", join(parameters, ", "), ")")
 
-    # A borrowed array is MATLAB's own buffer, and nothing in the MATLAB
-    # source says a copy was due, so a caller cannot learn this from the code.
-    borrows = !dest.duplicate_arguments && any(a -> a.kind === :array, plan.args)
+    written = String[vcat(plan.positional, plan.keywords)[i] for i in plan.mutates]
     # `help` reads the first comment line as the summary, so it is written
     # even when the sidecar records no docstring: a bare `%` leaves it empty.
-    if !isempty(plan.doc) || borrows
+    if !isempty(plan.doc) || !isempty(written)
         lines = isempty(plan.doc) ? [""] : split(plan.doc, '\n')
         for (i, line) in pairs(lines)
             prefix = i == 1 ? "%" * uppercase(plan.name) * "  " : "%   "
             println(io, rstrip(prefix * line))
         end
     end
-    if borrows
+    if !isempty(written)
         println(io, "%")
-        println(io, "%   Array arguments are passed without copying. If this function")
-        println(io, "%   writes to one, every variable sharing that data changes with")
-        println(io, "%   it. Rebuild with duplicate_arguments = true if it does.")
+        println(
+            io, "%   Writes to ", join(uppercase.(written), ", "),
+            " and returns ", length(written) == 1 ? "it" : "them", "."
+        )
     end
 
     # Emit the `arguments` block only when it declares something.
@@ -614,8 +644,9 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
     else
         println(io, "    [", join(outputs, ", "), "] = ", call, ";")
     end
-    if !isnothing(plan.return_enum) && length(outputs) == 1
-        _write_matlab_enum_out(io, only(outputs), plan.api_enums[plan.return_enum])
+    results = _matlab_result_outputs(plan.ret)
+    if !isnothing(plan.return_enum) && length(results) == 1
+        _write_matlab_enum_out(io, only(results), plan.api_enums[plan.return_enum])
     end
     println(io, "end")
     return nothing
@@ -985,15 +1016,14 @@ known before the call, so the output count is checked here too.
 """
 function _matlab_check(plan, symbol::AbstractString)
     parts = String[]
-    inner = plan.ret.kind === :result ? plan.ret.inner : plan.ret
-    if inner.kind === :tuple
-        count = length(inner.elements)
+    total = length(plan.mutates) + length(_matlab_result_outputs(plan.ret))
+    if total > 1
         push!(
             parts, """
                 int wanted = nlhs < 1 ? 1 : nlhs;
             """
         )
-        push!(parts, _matlab_raise_if("wanted > $count", "jlw:argument", "at most $count outputs"))
+        push!(parts, _matlab_raise_if("wanted > $total", "jlw:argument", "at most $total outputs"))
     end
     push!(
         parts, _matlab_raise_if(
@@ -1145,24 +1175,14 @@ function _matlab_length_guard(
 end
 
 """
-    _matlab_in_body(name, kind, duplicate) -> String
+    _matlab_in_body(name, kind) -> String
 
 The body of the helper that converts an `mxArray` into carrier `name`, or
 `nothing` for a kind that has no conversion.
 """
-function _matlab_in_body(name::AbstractString, kind, duplicate::Bool)
+function _matlab_in_body(name::AbstractString, kind)
     if kind.kind === :array
         length_type = _matlab_length_type(kind.dims_bits)
-        duplicated = ""
-        if duplicate
-            duplicated = """
-                /* The caller asked for copies: a wrapped function that
-                   writes to its argument would otherwise corrupt every
-                   MATLAB variable sharing this buffer. The duplicate is
-                   reclaimed when `mexFunction` exits. */
-                value = mxDuplicateArray(value);
-            """
-        end
         if kind.ndim == 1
             dims = _matlab_length_guard(
                 "    ", "mxGetNumberOfElements(value)", kind.dims_bits,
@@ -1191,7 +1211,7 @@ function _matlab_in_body(name::AbstractString, kind, duplicate::Bool)
             carrier.data = ($(_matlab_ctype(kind.class)) *)$(_matlab_accessor(kind.class))(value);
             return carrier;
         """
-        return duplicated * "    $name carrier;\n" * dims * tail
+        return "    $name carrier;\n" * dims * tail
     elseif kind.kind === :string
         head = """
             /* From `mxMalloc`, so it is reclaimed even if an error unwinds past here. */
@@ -1291,7 +1311,7 @@ function _matlab_in_body(name::AbstractString, kind, duplicate::Bool)
 end
 
 """
-    _write_matlab_in_helpers(io, carriers, duplicate)
+    _write_matlab_in_helpers(io, carriers)
 
 Write one conversion helper per borrowed carrier an argument uses.
 
@@ -1299,9 +1319,9 @@ Each takes an already-validated `mxArray` and returns a carrier over MATLAB's
 storage. What they allocate comes from `mxMalloc`, which MATLAB reclaims when
 `mexFunction` exits, so an unwind past them is safe.
 """
-function _write_matlab_in_helpers(io::IO, carriers, duplicate::Bool)
+function _write_matlab_in_helpers(io::IO, carriers)
     for (name, kind) in carriers
-        body = _matlab_in_body(name, kind, duplicate)
+        body = _matlab_in_body(name, kind)
         isnothing(body) && continue
         print(
             io, """
@@ -1527,15 +1547,24 @@ the status, then convert and assign the results.
 function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
     # Handlers share one signature, so a void or single-output one leaves
     # parameters unused; a MEX build with warnings on would say so.
-    inner = plan.ret.kind === :result ? plan.ret.inner : plan.ret
+    copies = String["copy$i" for i in plan.mutates]
+    total = length(copies) + length(_matlab_result_outputs(plan.ret))
     unused = String[]
-    inner.kind === :tuple || push!(unused, "    (void)nlhs;\n")
-    inner.kind in (:void, :none) && push!(unused, "    (void)plhs;\n")
+    total > 1 || push!(unused, "    (void)nlhs;\n")
+    total == 0 && push!(unused, "    (void)plhs;\n")
     isempty(plan.args) && push!(unused, "    (void)prhs;\n")
 
     conversions = map(eachindex(plan.args)) do i
         kind = plan.args[i]
         source = "prhs[$i]"
+        if i in plan.mutates
+            # The wrapped function writes here, and MATLAB's own buffer may
+            # be shared with variables the caller never passed. The copy is
+            # what comes back.
+            source = "copy$i"
+            text = "    mxArray *copy$i = mxDuplicateArray(prhs[$i]);\n"
+            return text * "    $(names.args[i]) arg$i = jlw_in_$(names.args[i])($source);\n"
+        end
         kind.kind === :scalar || return "    $(names.args[i]) arg$i = jlw_in_$(names.args[i])($source);\n"
         ctype = _matlab_ctype(kind.class)
         return "    $ctype arg$i = ($ctype)mxGetScalar($source);\n"
@@ -1554,18 +1583,18 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
 
     ret = plan.ret
     if ret.kind === :none
-        # Nothing comes back, so there is nothing to name or check.
-        tail = "    $call\n"
+        # Nothing is returned, so there is nothing to name or check.
+        tail = "    $call\n" * _matlab_assign("", copies)
     else
         # On a failure the value is zero-filled, so the check raises while
         # holding nothing; that is what lets it run before any conversion.
         results = if ret.kind === :result
             "    jlw_check(result.status);\n" *
-                _matlab_results(ret.inner, "result.value", names)
+                _matlab_results(ret.inner, "result.value", names, copies)
         elseif ret.kind === :void
-            "    jlw_check(result);\n"
+            "    jlw_check(result);\n" * _matlab_assign("", copies)
         else
-            _matlab_results(ret, "result", names)
+            _matlab_results(ret, "result", names, copies)
         end
         tail = """
                 $(names.result) result =
@@ -1593,9 +1622,18 @@ A caller may request fewer outputs than a declaration produces; every element
 is converted regardless, because conversion is what releases Julia's storage
 for it. An unrequested element's `mxArray` is destroyed instead of assigned.
 """
-function _matlab_results(ret, expression::AbstractString, names)
-    ret.kind in (:void, :none) && return ""
-    ret.kind === :tuple || return "    plhs[0] = jlw_out_$(names.value)($expression);\n"
+function _matlab_results(ret, expression::AbstractString, names, copies::Vector{String})
+    values = copy(copies)
+    ret.kind in (:void, :none) && return _matlab_assign("", values)
+    if ret.kind !== :tuple
+        # One output and nothing else to place: assign it where it is made.
+        isempty(values) &&
+            return "    plhs[0] = jlw_out_$(names.value)($expression);\n"
+        push!(values, "out1")
+        return _matlab_assign(
+            "    mxArray *out1 = jlw_out_$(names.value)($expression);\n", values
+        )
+    end
     accesses = [
         expression * ".values" * _matlab_element_access(ret.fields, i)
             for i in eachindex(ret.elements)
@@ -1605,16 +1643,30 @@ function _matlab_results(ret, expression::AbstractString, names)
         "    mxArray *out$i = jlw_out_$(names.elements[i])($(accesses[i]));\n"
             for i in eachindex(ret.elements)
     )
-    for i in eachindex(ret.elements)
+    append!(values, "out$i" for i in eachindex(ret.elements))
+    return _matlab_assign(text, values)
+end
+
+"""
+    _matlab_assign(text, values) -> String
+
+Put each output in `plhs`, after `text` has made it. One output goes straight
+there. Two or more are placed only as far as the caller asked, and the rest
+destroyed, since an `mxArray` nobody takes is the gateway's to release.
+"""
+function _matlab_assign(text::AbstractString, values::Vector{String})
+    isempty(values) && return String(text)
+    length(values) == 1 && return text * "    plhs[0] = $(only(values));\n"
+    for (k, value) in pairs(values)
         text *= """
-            if (wanted >= $i) {
-                plhs[$(i - 1)] = out$i;
+            if (wanted >= $k) {
+                plhs[$(k - 1)] = $value;
             } else {
-                mxDestroyArray(out$i);
+                mxDestroyArray($value);
             }
         """
     end
-    return text
+    return String(text)
 end
 
 """
@@ -1686,7 +1738,7 @@ function _write_matlab_gateway(io::IO, dest::MatlabTarget, abi_info::ABIInfo, pl
             outgoing[names.value] = ret
         end
     end
-    _write_matlab_in_helpers(io, incoming, dest.duplicate_arguments)
+    _write_matlab_in_helpers(io, incoming)
     _write_matlab_out_helpers(io, outgoing)
 
     for (method, plan, names) in named
