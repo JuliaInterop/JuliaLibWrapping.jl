@@ -653,6 +653,22 @@ end
     end
 end
 
+@testset "matlab text returns" begin
+    # `mxCreateString` builds a char row, so a string and a list of them
+    # agree: char, and a cell array of char rows. Both are forms a façade
+    # accepts, so a result feeds back into the next call.
+    helpers = read(joinpath(@__DIR__, "expected_matlab_helpers.c"), String)
+    for name in ("jlw_out_CString_owned", "jlw_out_CString_borrowed")
+        body = helpers[findfirst("static mxArray *" * name, helpers)[1]:end]
+        body = body[1:first(findfirst("\n}", body))]
+        @test occursin("mxCreateString(text)", body)
+    end
+    strarray = helpers[findfirst("static mxArray *jlw_out_CStrArray_owned", helpers)[1]:end]
+    strarray = strarray[1:first(findfirst("\n}", strarray))]
+    @test occursin("mxCreateCellMatrix", strarray)
+    @test occursin("mxSetCell(out, (mwSize)i, mxCreateString(text));", strarray)
+end
+
 @testset "matlab skipped entry points" begin
     # Python re-exports what it cannot wrap, so nothing is lost silently
     # there. Here the entry point is absent from the package, so the

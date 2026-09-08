@@ -42,14 +42,18 @@ build_mex('/path/to/lib') % it is somewhere else
 | Declared Julia type | MATLAB |
 |---|---|
 | scalar | numeric scalar, `logical` for `Bool` |
-| `String` | `char` or `string` in, `string` out |
-| `Vector{String}` | `cellstr` |
+| `String` | `char` or `string` in, `char` out |
+| `Vector{String}` | whatever `cellstr` takes in, `cellstr` out |
 | `Dict{String,V}` | `struct`, its fields the keys |
 | `Array{T,N}` | numeric array |
 | `Union{T,Nothing}` | the value, or `[]` |
 | `Tuple{…}` | multiple outputs |
 | `Base.Enum` | a member name, or the underlying integer |
 | `Nothing` | no output |
+
+Text comes back as `char`, and a list of it as a cell array of `char` rows,
+which is what `cellstr` builds. Both forms are what a façade accepts, so a
+result feeds straight into the next call.
 
 Keyword arguments become name-value arguments. Outputs are named `out1`…`outN`,
 because the sidecar records argument names but not result names.
