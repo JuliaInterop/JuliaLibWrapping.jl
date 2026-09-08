@@ -109,6 +109,11 @@ status code, so `ME.identifier` dispatch works:
 | 4 | `jlw:inexact` |
 | 5 | `jlw:bounds` |
 
+A façade and the gateway check some of the same things, and both raise
+`jlw:argument` or `jlw:dimension` when they do, so one `catch` covers a
+failure wherever it was found. A library that cannot be loaded raises
+`jlw:library`.
+
 ## Limits
 
 - **Each library must be a privatized bundle**, which `standard_build` gives

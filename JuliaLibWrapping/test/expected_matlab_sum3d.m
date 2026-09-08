@@ -3,7 +3,7 @@ function out = sum3d(a)
         a double
     end
     if ndims(a) > 3
-        error("demo:sum3d", "a must have at most 3 dimensions.");
+        error("jlw:dimension", "a must have at most 3 dimensions.");
     end
     out = libdemo_mex('sum3d', a);
 end

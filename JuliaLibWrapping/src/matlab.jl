@@ -623,15 +623,15 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
                 io, "    if ~isempty(", expression, ") && ~isscalar(", expression, ")"
             )
             println(
-                io, "        error(\"", dest.package_name, ":", plan.name,
-                "\", \"", name, " must be a scalar or [].\");"
+                io, "        error(\"jlw:argument\", \"",
+                name, " must be a scalar or [].\");"
             )
             println(io, "    end")
         elseif kind.kind === :array && kind.ndim > 1
             println(io, "    if ndims(", expression, ") > ", kind.ndim)
             println(
-                io, "        error(\"", dest.package_name, ":", plan.name,
-                "\", \"", name, " must have at most ", kind.ndim, " dimensions.\");"
+                io, "        error(\"jlw:dimension\", \"",
+                name, " must have at most ", kind.ndim, " dimensions.\");"
             )
             println(io, "    end")
         end
@@ -815,8 +815,8 @@ function _write_matlab_enum_in(
     println(io, "            else")
     names = join(["\"" * String(m["name"]) * "\"" for m in edesc["members"]], ", ")
     println(
-        io, "                error(\"", dest.package_name, ":", plan.name,
-        "\", \"", name, " must be one of ", replace(names, "\"" => "'"),
+        io, "                error(\"jlw:argument\", \"",
+        name, " must be one of ", replace(names, "\"" => "'"),
         ", or the underlying integer.\");"
     )
     println(io, "            end")
