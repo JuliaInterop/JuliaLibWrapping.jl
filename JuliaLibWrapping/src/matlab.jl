@@ -778,9 +778,10 @@ function _write_matlab_build_script(io::IO, dest::MatlabTarget, gateway::Abstrac
             if ~isfolder(target)
                 mkdir(target);
             end
-            % The library stays where it was built, next to the runtime its
-            % RUNPATH points at, so the path is compiled in instead of
-            % copying the library beside the MEX file.
+            % The library is not copied next to the MEX file: it has to stay
+            % beside the runtime its RUNPATH names. So its path is compiled
+            % in, and a MEX file built here expects to find it here. Set
+            % $environment to point a built one somewhere else.
             stem = fullfile(library_dir, '$(dest.library_basename)');
             % -R2018a selects the typed accessors the gateway uses.
             mex('-R2018a', ...

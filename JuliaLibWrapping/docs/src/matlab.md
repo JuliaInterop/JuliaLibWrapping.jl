@@ -34,8 +34,20 @@ build_mex                 % the library is in this directory
 build_mex('/path/to/lib') % it is somewhere else
 ```
 
-`build_mex` compiles the library's location into the gateway. Set
-`<LIBNAME>_MEX_LIBRARY` to point a built MEX file at a library that has moved.
+`build_mex` compiles the library's location into the gateway, as an absolute
+path. The library cannot be copied next to the MEX file, because it has to
+stay beside the Julia runtime its RUNPATH names.
+
+So a MEX file is tied to the directory it was built against. Moving the
+bundle afterwards, or building it on one machine and unpacking it on another,
+needs one of:
+
+```matlab
+build_mex('/new/path/to/lib')     % compile the new location in
+setenv('BOUNDARY_MEX_LIBRARY', '/new/path/to/lib/boundary')   % or override it
+```
+
+The environment variable takes the library's path without its extension.
 
 ## Type mapping
 
