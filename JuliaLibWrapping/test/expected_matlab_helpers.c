@@ -11,7 +11,7 @@ static void jlw_call_EnumFixture_pick
     if (!mxIsDouble(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 1) {
         mexErrMsgIdAndTxt("jlw:argument", "x must be a double scalar");
     }
-    double arg1 = (double)mxGetScalar(prhs[1]);
+    double arg1 = *mxGetDoubles(prhs[1]);
     JLWResult_Int32 result =
         ((JLWResult_Int32 (*)(double))jlw_symbol("EnumFixture_pick"))(arg1);
     jlw_check(result.status);
@@ -37,8 +37,8 @@ static void jlw_call_EnumFixture_scale_by
     if (!mxIsInt32(prhs[2]) || mxGetNumberOfElements(prhs[2]) != 1) {
         mexErrMsgIdAndTxt("jlw:argument", "penalty must be a int32 scalar");
     }
-    double arg1 = (double)mxGetScalar(prhs[1]);
-    int32_t arg2 = (int32_t)mxGetScalar(prhs[2]);
+    double arg1 = *mxGetDoubles(prhs[1]);
+    int32_t arg2 = *mxGetInt32s(prhs[2]);
     JLWResult_Float64 result =
         ((JLWResult_Float64 (*)(double, int32_t))jlw_symbol("EnumFixture_scale_by"))(arg1, arg2);
     jlw_check(result.status);
@@ -109,7 +109,7 @@ static void jlw_call_do_thing
     if (!mxIsInt32(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 1) {
         mexErrMsgIdAndTxt("jlw:argument", "x must be a int32 scalar");
     }
-    int32_t arg1 = (int32_t)mxGetScalar(prhs[1]);
+    int32_t arg1 = *mxGetInt32s(prhs[1]);
     JLWStatus result =
         ((JLWStatus (*)(int32_t))jlw_symbol("do_thing"))(arg1);
     jlw_check(result);
@@ -271,7 +271,7 @@ static void jlw_call_mylib_mask
     if (!mxIsInt64(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 1) {
         mexErrMsgIdAndTxt("jlw:argument", "n must be a int64 scalar");
     }
-    int64_t arg1 = (int64_t)mxGetScalar(prhs[1]);
+    int64_t arg1 = *mxGetInt64s(prhs[1]);
     CVector_owned_Bool result =
         ((CVector_owned_Bool (*)(int64_t))jlw_symbol("mylib_mask"))(arg1);
     plhs[0] = jlw_out_CVector_owned_Bool(result);
@@ -317,7 +317,7 @@ static void jlw_call_mylib_scale
         mexErrMsgIdAndTxt("jlw:argument", "label must be char");
     }
     CVector_borrowed_Float64 arg1 = jlw_in_CVector_borrowed_Float64(prhs[1]);
-    double arg2 = (double)mxGetScalar(prhs[2]);
+    double arg2 = *mxGetDoubles(prhs[2]);
     CString_borrowed arg3 = jlw_in_CString_borrowed(prhs[3]);
     JLWResult_CVector_owned_Float64 result =
         ((JLWResult_CVector_owned_Float64 (*)(CVector_borrowed_Float64, double, CString_borrowed))jlw_symbol("mylib_scale"))(arg1, arg2, arg3);
@@ -372,8 +372,8 @@ static void jlw_call_plain_add
     if (!mxIsInt32(prhs[2]) || mxGetNumberOfElements(prhs[2]) != 1) {
         mexErrMsgIdAndTxt("jlw:argument", "b must be a int32 scalar");
     }
-    int32_t arg1 = (int32_t)mxGetScalar(prhs[1]);
-    int32_t arg2 = (int32_t)mxGetScalar(prhs[2]);
+    int32_t arg1 = *mxGetInt32s(prhs[1]);
+    int32_t arg2 = *mxGetInt32s(prhs[2]);
     int32_t result =
         ((int32_t (*)(int32_t, int32_t))jlw_symbol("plain_add"))(arg1, arg2);
     plhs[0] = jlw_out_int32_t(result);
@@ -477,8 +477,8 @@ static void jlw_call_take_opt
     if (mxIsSparse(prhs[1])) {
         mexErrMsgIdAndTxt("jlw:argument", "o must not be sparse");
     }
-    if (!mxIsEmpty(prhs[1]) && mxGetNumberOfElements(prhs[1]) != 1) {
-        mexErrMsgIdAndTxt("jlw:argument", "o must be a scalar or []");
+    if (!mxIsEmpty(prhs[1]) && (!mxIsDouble(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 1)) {
+        mexErrMsgIdAndTxt("jlw:argument", "o must be a double scalar or []");
     }
     COpt_Float64 arg1 = jlw_in_COpt_Float64(prhs[1]);
     double result =
@@ -561,8 +561,10 @@ static CDict_borrowed_Float64 jlw_in_CDict_borrowed_Float64(const mxArray *value
         (double *)mxMalloc((count ? count : 1) * sizeof(double));
     for (int i = 0; i < count; i++) {
         const char *key = mxGetFieldNameByNumber(value, i);
+        /* A MATLAB field name is at most `mxMAXNAM` bytes, so the
+           length needs no width guard and fits the narrowest field
+           a `CString` can carry. */
         keys[i].length = (int32_t)strlen(key);
-        /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */
         keys[i].data = (uint8_t *)key;
         const mxArray *field = mxGetFieldByNumber(value, 0, i);
         /* A sparse field passes a class check and has no
@@ -591,8 +593,10 @@ static CDict_borrowed_Int32 jlw_in_CDict_borrowed_Int32(const mxArray *value)
         (int32_t *)mxMalloc((count ? count : 1) * sizeof(int32_t));
     for (int i = 0; i < count; i++) {
         const char *key = mxGetFieldNameByNumber(value, i);
+        /* A MATLAB field name is at most `mxMAXNAM` bytes, so the
+           length needs no width guard and fits the narrowest field
+           a `CString` can carry. */
         keys[i].length = (int32_t)strlen(key);
-        /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */
         keys[i].data = (uint8_t *)key;
         const mxArray *field = mxGetFieldByNumber(value, 0, i);
         /* A sparse field passes a class check and has no
@@ -634,7 +638,7 @@ static COpt_Float64 jlw_in_COpt_Float64(const mxArray *value)
         carrier.value = (double)0;
     } else {
         carrier.has_value = 1;
-        carrier.value = (double)mxGetScalar(value);
+        carrier.value = *mxGetDoubles(value);
     }
     return carrier;
 }

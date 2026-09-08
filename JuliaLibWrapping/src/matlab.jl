@@ -416,6 +416,8 @@ function _matlab_arg_forward(name::AbstractString, kind, mutated::Bool = false)
         return kind.integer ? kind.class * "(" * flat * ")" : flat
     end
     kind.kind === :scalar && kind.integer && return kind.class * "(" * name * ")"
+    # `int64([])` is an empty `int64`, so the absent form survives.
+    kind.kind === :opt && kind.integer && return kind.class * "(" * name * ")"
     return String(name)
 end
 
@@ -1169,10 +1171,13 @@ function _matlab_check(plan, symbol::AbstractString)
                 )
             )
         elseif kind.kind === :opt
+            # The class is checked as it is for a scalar: the value is read
+            # through the accessor for it, which needs the class to match.
             push!(
                 parts, _matlab_raise_if(
-                    "!mxIsEmpty($argument) && mxGetNumberOfElements($argument) != 1",
-                    "jlw:argument", "$name must be a scalar or []"
+                    "!mxIsEmpty($argument) && (!mxIs$class($argument) || " *
+                        "mxGetNumberOfElements($argument) != 1)",
+                    "jlw:argument", "$name must be a $(kind.class) scalar or []"
                 )
             )
         end
@@ -1357,8 +1362,10 @@ function _matlab_in_body(name::AbstractString, kind)
                 ($ctype *)mxMalloc((count ? count : 1) * sizeof($ctype));
             for (int i = 0; i < count; i++) {
                 const char *key = mxGetFieldNameByNumber(value, i);
+                /* A MATLAB field name is at most `mxMAXNAM` bytes, so the
+                   length needs no width guard and fits the narrowest field
+                   a `CString` can carry. */
                 keys[i].length = (int32_t)strlen(key);
-                /* A MATLAB field name is at most `mxMAXNAM`, so it fits. */
                 keys[i].data = (uint8_t *)key;
                 const mxArray *field = mxGetFieldByNumber(value, 0, i);
                 /* A sparse field passes a class check and has no
@@ -1386,7 +1393,7 @@ function _matlab_in_body(name::AbstractString, kind)
                 carrier.value = ($ctype)0;
             } else {
                 carrier.has_value = 1;
-                carrier.value = ($ctype)mxGetScalar(value);
+                carrier.value = *$(_matlab_accessor(kind.class))(value);
             }
             return carrier;
         """
@@ -1651,7 +1658,7 @@ function _write_matlab_handler(io::IO, plan, symbol::AbstractString, names)
         end
         kind.kind === :scalar || return "    $(names.args[i]) arg$i = jlw_in_$(names.args[i])($source);\n"
         ctype = _matlab_ctype(kind.class)
-        return "    $ctype arg$i = ($ctype)mxGetScalar($source);\n"
+        return "    $ctype arg$i = *$(_matlab_accessor(kind.class))($source);\n"
     end
 
     signature = isempty(plan.args) ? "void" :

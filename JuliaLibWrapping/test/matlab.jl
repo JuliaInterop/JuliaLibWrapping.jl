@@ -1,5 +1,22 @@
 # Tests for `MatlabTarget`: the `.m` façades and the MEX gateway.
 
+"""
+    _matlab_compiler() -> Union{String, Nothing}
+
+The C compiler the gateway compile checks use, or `nothing` when there is
+none. CI must run them, so a missing compiler is an error there; locally it
+is a skip, so the suite still runs for a contributor without one.
+"""
+function _matlab_compiler()
+    compiler = Sys.which("cc")
+    if isnothing(compiler)
+        haskey(ENV, "CI") &&
+            error("cc not found on PATH; required on CI to compile the MEX gateways")
+        @info "Skipping MATLAB gateway compile checks (no cc)"
+    end
+    return compiler
+end
+
 using JuliaLibWrapping
 using Test
 
@@ -621,7 +638,7 @@ end
     @test JuliaLibWrapping._matlab_classify_return(nothing, typeinfo, true).kind ===
         :none
 
-    compiler = Sys.which("cc")
+    compiler = _matlab_compiler()
     mktempdir() do path
         write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
         gateway = read(joinpath(path, "libdemo_mex.c"), String)
@@ -651,6 +668,23 @@ end
         @test occursin("if (!(j == 0 ? alpha : (alpha || rest))) {", gateway)
         @test occursin("jlw_valid_field_name(carrier.keys[i].data", gateway)
     end
+end
+
+@testset "matlab reads a scalar through its own accessor" begin
+    # `mxGetScalar` returns a double, so an `int64` above 2^53 would not
+    # survive it. The class is checked first, so the accessor for it can be
+    # used instead.
+    helpers = read(joinpath(@__DIR__, "expected_matlab_helpers.c"), String)
+    @test !occursin("mxGetScalar", helpers)
+    @test occursin("int64_t arg1 = *mxGetInt64s(prhs[1]);", helpers)
+    @test occursin("double arg1 = *mxGetDoubles(prhs[1]);", helpers)
+
+    # An optional argument names its class too, which a typed read needs.
+    @test occursin(
+        "!mxIsEmpty(prhs[1]) && (!mxIsDouble(prhs[1]) || " *
+            "mxGetNumberOfElements(prhs[1]) != 1)", helpers
+    )
+    @test occursin("carrier.value = *mxGetDoubles(value);", helpers)
 end
 
 @testset "matlab finds a moved library" begin
@@ -778,10 +812,8 @@ end
     # carriers an ABI happens to contain, so checking a single one
     # leaves whole branches of the emitter uncompiled. A stand-in for
     # `mex.h` is what makes this possible without MATLAB installed.
-    compiler = Sys.which("cc")
-    if isnothing(compiler)
-        @info "Skipping MATLAB gateway compile check (no cc)"
-    else
+    compiler = _matlab_compiler()
+    if !isnothing(compiler)
         fixtures = filter(
             name -> startswith(name, "bindinginfo_") && endswith(name, ".json"),
             readdir(@__DIR__)

@@ -27,6 +27,11 @@ out/
     build_mex.m
 ```
 
+`boundary_mex_types.h` holds the carrier typedefs. A build that also emits a
+[`CTarget`](@ref) writes the same declarations to `boundary.h`: both come
+from the ABI, so the two agree, and this target emits its own so it can be
+used alone.
+
 Emitting is pure Julia. Compiling the gateway needs MATLAB:
 
 ```matlab
