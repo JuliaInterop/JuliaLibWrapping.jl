@@ -98,8 +98,15 @@ A declaration whose name ends in `!` and lists nothing warns too.
 
 ## Errors
 
-A non-zero `JLWStatus` becomes a MATLAB error whose identifier comes from the
-status code, so `ME.identifier` dispatch works:
+Errors carry an identifier, so `ME.identifier` dispatch works. They come from
+two places.
+
+An argument the façade or the gateway rejects raises `jlw:argument`, or
+`jlw:dimension` for a shape. The two check some of the same things, and name
+them the same way, so one `catch` covers a failure wherever it was found.
+
+A call the library itself fails raises the identifier its `JLWStatus` code
+names:
 
 | code | identifier |
 |---|---|
@@ -109,10 +116,7 @@ status code, so `ME.identifier` dispatch works:
 | 4 | `jlw:inexact` |
 | 5 | `jlw:bounds` |
 
-A façade and the gateway check some of the same things, and both raise
-`jlw:argument` or `jlw:dimension` when they do, so one `catch` covers a
-failure wherever it was found. A library that cannot be loaded raises
-`jlw:library`.
+A library that cannot be loaded raises `jlw:library`.
 
 ## Limits
 
