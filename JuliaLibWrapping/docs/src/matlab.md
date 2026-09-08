@@ -92,30 +92,53 @@ The underlying integer is accepted too, for a caller that already has one.
 
 ## Arrays the function writes to
 
-An array argument crosses without a copy: the gateway hands Julia a pointer
-into MATLAB's own buffer. That is right for a function that only reads it.
+Most functions only read their array arguments, and those need nothing from
+you. They are passed by reference: Julia reads MATLAB's own memory, and no
+copy is made.
 
-Say so in the declaration when the function writes to one:
+One case does need something from you. If the Julia function writes into an
+array argument, name that argument in the declaration:
 
 ```julia
-@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,)
+scale!(a::Vector{Float64}, factor::Float64) = (a .*= factor; nothing)
+
+@api scale!(a::Vector{Float64}, factor::Float64)::Nothing mutates = (a,)
 ```
 
-MATLAB then copies `a` for the call and returns the copy, so the façade is
-`a = boundary.scale(a, k)` and its help text says so. Without the copy the
-write would reach every variable sharing that buffer: `b = a` shares one until
-MATLAB sees a write, and a write from Julia is one it misses.
+That is the whole change. Everything else follows from it.
 
-The build says so for each such declaration, because a caller who does not
-assign the result loses the write:
+### What a MATLAB caller then writes
+
+MATLAB does not let a function change a variable its caller passed in, so the
+argument is copied for the call and given back as an output:
+
+```matlab
+a = [1 2 3];
+a = boundary.scale(a, 2);     % a is now [2 4 6]
+```
+
+The `a =` is what applies the change. Leave it off and the result goes to
+`ans`, so the array keeps its old values. The generated help says which
+arguments behave this way, and the build says so once per declaration:
 
 ```
 ┌ Warning: MATLAB has no way to write through an argument, so
-│ boundary.scale copies y and returns the copy. Call it as
-│ `[y] = boundary.scale(...)`.
+│ boundary.scale copies a and returns the copy. Call it as
+│ `[a] = boundary.scale(...)`.
 ```
 
-A declaration whose name ends in `!` and lists nothing warns too.
+### Why it is copied
+
+MATLAB shares memory between variables until one of them is written to, and
+it only notices writes made by MATLAB itself. After `b = a`, both names point
+at the same array. A write from Julia goes straight to that shared memory, so
+`b` would change as well, with nothing in the MATLAB code to explain it.
+Copying first is what keeps `b` alone.
+
+### If you forget
+
+A declaration whose name ends in `!` but names no argument gets a warning,
+since a name like that usually writes to something.
 
 ## Errors
 
