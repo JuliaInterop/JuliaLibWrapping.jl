@@ -1135,6 +1135,19 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws "an argument name or a tuple of them" Core.eval(
             m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = 1)
         )
+
+        # Anything past the docstring, the signature and the clause.
+        @test_throws "[docstring] f(args...)::Ret" Core.eval(
+            m,
+            :(
+                JLWInterop.@api "doc" scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,) extra
+            )
+        )
+
+        # And no signature at all.
+        @test_throws "[docstring] f(args...)::Ret" Core.eval(
+            m, :(JLWInterop.@api "a docstring and nothing else")
+        )
     end
 
     @testset "@api warns on `!` without mutates" begin

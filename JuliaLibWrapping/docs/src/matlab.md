@@ -134,6 +134,10 @@ Copying the argument first leaves `b` unchanged.
 A declaration whose name ends in `!` but names no argument gets a warning,
 since a name like that usually writes to something.
 
+The C symbol drops the `!`, and so does the MATLAB façade: `scale!` is called
+as `boundary.scale`. The Python target has no name for it and stops the build,
+so a library built for both targets cannot declare one yet.
+
 ## Errors
 
 Errors carry an identifier, so `ME.identifier` dispatch works. They come from
