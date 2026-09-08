@@ -123,8 +123,9 @@ status code, so `ME.identifier` dispatch works:
 - **`clear mex` is safe.** Nothing releases the gateway's reference to the
   library, so unloading the MEX file leaves it mapped and the next load
   reuses it rather than initializing a second runtime.
-- **An integer argument is exact below 2^53.** It crosses as a `double` and
-  the façade converts it, which asks nothing of the declaration.
+- **An integer argument keeps the class you pass it.** `uint8` data stays
+  `uint8`, so an image is not silently widened, and the array crosses without
+  a copy. Whole-valued `double` is accepted too, and is exact below 2^53.
 - An entry point this target cannot map gets no façade, rather than one that
   raises when called.
 

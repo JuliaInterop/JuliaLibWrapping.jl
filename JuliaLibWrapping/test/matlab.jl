@@ -654,17 +654,36 @@ end
 end
 
 @testset "matlab integer arrays" begin
-    # An `arguments` block converts before validating, so an integer
-    # array must be declared `double` and converted in the body, as a
-    # scalar one is. `logical(2)` is `true`, so a logical array takes
-    # 0 and 1 only.
+    # An integer or logical array carries no class, so MATLAB hands over
+    # the array the caller built rather than converting it at the door.
+    # The body converts, which costs nothing when the class already
+    # matches. `logical(2)` is `true`, so a logical array takes 0 and 1
+    # only.
     abi = read_abi_info("bindinginfo_carray_bool.json")
     mktempdir() do path
         write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
         src = read(joinpath(path, "+demo", "mylib_count_true.m"), String)
-        @test occursin("v double {mustBeMember(v, [0 1])", src)
+        @test occursin("v {mustBeNumericOrLogical, mustBeMember(v, [0 1])", src)
+        @test !occursin("v double", src)
         @test occursin("logical(v(:))", src)
     end
+
+    # No fixture takes an integer scalar or an optional integer, so the
+    # declarations are checked here directly.
+    validation(kind) = JuliaLibWrapping._matlab_arg_validation(kind, "a")
+    @test validation((kind = :scalar, class = "int64", integer = true)) ==
+        "(1,1) {mustBeNumericOrLogical, mustBeInteger}"
+    @test validation((kind = :opt, class = "int32", integer = true)) ==
+        "(:,:) {mustBeNumericOrLogical, mustBeInteger}"
+    @test validation(
+        (kind = :array, class = "uint8", ndim = 2, integer = true, dims_bits = 64)
+    ) == "{mustBeNumericOrLogical, mustBeInteger}"
+
+    # A float argument still names its class: the carrier wants doubles,
+    # and converting an integer array to one is the caller's cost either
+    # way.
+    @test validation((kind = :scalar, class = "double", integer = false)) ==
+        "(1,1) double"
 end
 
 @testset "matlab keyword default of nothing" begin

@@ -151,9 +151,9 @@ const MATLAB_CLASSES = Dict{String, String}(
     "UInt64" => "uint64", "Bool" => "logical",
 )
 
-# The integer classes. An `arguments` block converts before validators run,
-# and `int64(2.5)` rounds, so they cross as `double` with a `mustBeInteger`
-# validator.
+# The integer classes. These are declared with no class at all and converted
+# in the façade body, so an argument that already has the class it needs
+# crosses without a copy.
 const _MATLAB_INTEGER_CLASSES = Set{String}(
     ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
 )
@@ -356,15 +356,16 @@ end
 
 The `arguments`-block declaration following one argument's name.
 
-Integers are declared `double` on purpose: an `arguments` block converts
-before its validators run, and `int64(2.5)` rounds rather than failing, so a
-later integrality check would always pass. The façade validates as a double
-and converts in its body.
+An integer argument carries no class. A block converts before its validators
+run, so declaring the class would round `2.5` to `3` and pass the integrality
+check; declaring `double` would convert the caller's array and lose both its
+class and the borrow. `mustBeInteger` takes the integer classes and
+whole-valued doubles alike, and the body converts what is left.
 """
 function _matlab_arg_validation(kind, name::AbstractString)
-    # The cost of the `double` declaration: magnitudes above 2^53 lose precision.
     kind.kind === :scalar &&
-        return kind.integer ? "(1,1) double {mustBeInteger}" : "(1,1) " * kind.class
+        return kind.integer ? "(1,1) {mustBeNumericOrLogical, mustBeInteger}" :
+        "(1,1) " * kind.class
     # `string` accepts a char row vector too: the block converts it.
     kind.kind === :string && return "(1,1) string"
     # No class: `cellstr` in the body takes a cell, a string array or a char
@@ -372,24 +373,27 @@ function _matlab_arg_validation(kind, name::AbstractString)
     kind.kind === :strarray && return ""
     kind.kind === :dict && return "(1,1) struct"
     # A vector argument takes either orientation; the body normalizes it.
-    # Integer arrays are declared `double` for the reason scalars are: the
-    # block converts before validating, and `int64(2.5)` rounds to 3.
-    # `mustBeVector` needs the flag to accept `[]`, which is 0x0.
+    # An integer or logical array carries no class, so MATLAB hands over the
+    # array the caller built: an image stays `uint8` rather than arriving as
+    # `double`. `mustBeVector` needs the flag to accept `[]`, which is 0x0.
     if kind.kind === :array
-        class = kind.integer ? "double" : kind.class
-        # `logical(2)` is `true`, so integrality alone would pass 2.
-        checks = kind.class == "logical" ? String["mustBeMember(" * name * ", [0 1])"] :
-            kind.integer ? String["mustBeInteger"] : String[]
+        class = kind.integer ? "" : kind.class
+        checks = String[]
+        if kind.class == "logical"
+            # `logical(2)` is `true`, so 0 and 1 are the whole domain.
+            push!(checks, "mustBeNumericOrLogical", "mustBeMember(" * name * ", [0 1])")
+        elseif kind.integer
+            push!(checks, "mustBeNumericOrLogical", "mustBeInteger")
+        end
         kind.ndim == 1 &&
             push!(checks, "mustBeVector(" * name * ", \"allow-all-empties\")")
         isempty(checks) && return class
-        return class * " {" * join(checks, ", ") * "}"
+        return strip(class * " {" * join(checks, ", ") * "}")
     end
     # Absent is `[]`, present is a scalar; the body tells them apart. An
-    # integer payload is declared `double` for the reason a scalar one is:
-    # the block would coerce before validating, and `int64(2.5)` rounds.
+    # integer payload carries no class, for the reason a scalar one does not.
     kind.kind === :opt && return kind.integer ?
-        "(:,:) double {mustBeInteger}" : "(:,:) " * kind.class
+        "(:,:) {mustBeNumericOrLogical, mustBeInteger}" : "(:,:) " * kind.class
     return error("no MATLAB validation for argument kind $(kind.kind)")
 end
 
