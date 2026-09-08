@@ -693,7 +693,12 @@ function write_wrapper(
             method, typeinfo, release_present,
             get(api_metadata, method.symbol, nothing), api_enums
         )
-        plan.kind === :auto || continue
+        if plan.kind !== :auto
+            # Python re-exports what it cannot wrap; there is no such form
+            # here, so the entry point is simply absent from the package.
+            @warn "no MATLAB façade for $(method.symbol): $(plan.reason)"
+            continue
+        end
         # Two symbols can sanitize to one name. The second would overwrite
         # the first's file, leaving one of them callable.
         if haskey(taken, plan.name)

@@ -135,8 +135,15 @@ A library that cannot be loaded raises `jlw:library`.
 - **An integer argument keeps the class you pass it.** `uint8` data stays
   `uint8`, so an image is not silently widened, and the array crosses without
   a copy. Whole-valued `double` is accepted too, and is exact below 2^53.
-- An entry point this target cannot map gets no façade, rather than one that
-  raises when called.
+- **An entry point this target cannot map gets no façade**, rather than one
+  that raises when called. The build says which, and why:
+
+  ```
+  ┌ Warning: no MATLAB façade for next_chunk: argument 1: unrecognized
+  │ argument carrier `Handle`
+  ```
+
+  The entry point is still in the library, so C callers keep it.
 
 ```@docs
 MatlabTarget

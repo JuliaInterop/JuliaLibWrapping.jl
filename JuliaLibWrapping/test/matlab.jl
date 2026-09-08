@@ -653,6 +653,19 @@ end
     end
 end
 
+@testset "matlab skipped entry points" begin
+    # Python re-exports what it cannot wrap, so nothing is lost silently
+    # there. Here the entry point is absent from the package, so the
+    # build says which one and why.
+    abi = read_abi_info("bindinginfo_rawptr.json")
+    mktempdir() do path
+        @test_logs (:warn, r"no MATLAB façade for sum_doubles: argument 1") match_mode = :any write_wrapper(
+            MatlabTarget(path, "demo", "libdemo"), abi
+        )
+        @test !isfile(joinpath(path, "+demo", "sum_doubles.m"))
+    end
+end
+
 @testset "matlab integer arrays" begin
     # An integer or logical array carries no class, so MATLAB hands over
     # the array the caller built rather than converting it at the door.
