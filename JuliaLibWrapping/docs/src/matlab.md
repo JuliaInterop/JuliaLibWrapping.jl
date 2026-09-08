@@ -13,8 +13,9 @@ standard_build(@__DIR__; libname = "boundary", matlab_package = "boundary")
 
 Two kinds of file come out. A `.m` façade per declaration, in a `+package`
 directory, so a wrapped function is called as `boundary.stats(a)`. And one C
-[gateway](https://www.mathworks.com/help/matlab/matlab_external/gateway-routine.html) that converts `mxArray`s to and from the carriers, calls the entry
-point, and releases what Julia allocated.
+[gateway](https://www.mathworks.com/help/matlab/matlab_external/gateway-routine.html)
+that converts `mxArray`s to and from the carriers, calls the entry point, and
+releases what Julia allocated.
 
 ```
 out/
@@ -28,31 +29,26 @@ out/
 ```
 
 `boundary_mex_types.h` holds the carrier typedefs. A build that also emits a
-[`CTarget`](@ref) writes the same declarations to `boundary.h`: both come
-from the ABI, so the two agree, and this target emits its own so it can be
-used alone.
+[`CTarget`](@ref) writes the same declarations to `boundary.h`. Both come from
+the ABI, so they agree; this target emits its own so it can be used without a
+`CTarget`.
 
-Emitting is pure Julia. Compiling the gateway needs MATLAB:
+Emitting the sources needs no MATLAB. Compiling the gateway does:
 
 ```matlab
 build_mex                 % the library is in this directory
 build_mex('/path/to/lib') % it is somewhere else
 ```
 
-`build_mex` compiles the library's location into the gateway, as an absolute
-path. The library cannot be copied next to the MEX file, because it has to
-stay beside the Julia runtime its RUNPATH names.
+The gateway looks for the library in three places, in this order: the
+`<LIBNAME>_MEX_LIBRARY` environment variable, the place relative to the MEX
+file that this layout puts it in, and the absolute path `build_mex` compiled
+in. The second is why the directory above can be moved, or built on one
+machine and unpacked on another, and still work.
 
-So a MEX file is tied to the directory it was built against. Moving the
-bundle afterwards, or building it on one machine and unpacking it on another,
-needs one of:
-
-```matlab
-build_mex('/new/path/to/lib')     % compile the new location in
-setenv('BOUNDARY_MEX_LIBRARY', '/new/path/to/lib/boundary')   % or override it
-```
-
-The environment variable takes the library's path without its extension.
+The library is not copied next to the MEX file: it has to stay beside the
+Julia runtime its RUNPATH names. Set `<LIBNAME>_MEX_LIBRARY` to the library's
+path without its extension if it moves on its own.
 
 ## Type mapping
 
@@ -105,9 +101,7 @@ scale!(a::Vector{Float64}, factor::Float64) = (a .*= factor; nothing)
 @api scale!(a::Vector{Float64}, factor::Float64)::Nothing mutates = (a,)
 ```
 
-That is the whole change. Everything else follows from it.
-
-### What a MATLAB caller then writes
+### Calling it from MATLAB
 
 MATLAB does not let a function change a variable its caller passed in, so the
 argument is copied for the call and given back as an output:
@@ -117,9 +111,9 @@ a = [1 2 3];
 a = boundary.scale(a, 2);     % a is now [2 4 6]
 ```
 
-The `a =` is what applies the change. Leave it off and the result goes to
-`ans`, so the array keeps its old values. The generated help says which
-arguments behave this way, and the build says so once per declaration:
+Without the `a =` the result goes to `ans` and the array keeps its old
+values. The generated help says which arguments behave this way, and the
+build says so once per declaration:
 
 ```
 ┌ Warning: MATLAB has no way to write through an argument, so
@@ -133,9 +127,9 @@ MATLAB shares memory between variables until one of them is written to, and
 it only notices writes made by MATLAB itself. After `b = a`, both names point
 at the same array. A write from Julia goes straight to that shared memory, so
 `b` would change as well, with nothing in the MATLAB code to explain it.
-Copying first is what keeps `b` alone.
+Copying the argument first leaves `b` unchanged.
 
-### If you forget
+### Names ending in `!`
 
 A declaration whose name ends in `!` but names no argument gets a warning,
 since a name like that usually writes to something.
