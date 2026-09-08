@@ -75,15 +75,35 @@ function _collect_api!(out::Vector{ApiEntry}, m::Module, seen::Set{Module})
 end
 
 """
+    _api_c_identifier(str) -> String
+
+`str` as a C identifier: anything else becomes `_`, runs of those collapse,
+and a leading digit gains one. A Julia name can hold characters C cannot, `!`
+above all, and this is the C symbol a header has to declare.
+"""
+function _api_c_identifier(str::AbstractString)
+    kept = map(c -> (isascii(c) && (isletter(c) || isdigit(c) || c == '_')) ? c : '_', str)
+    kept = replace(String(kept), r"_+" => "_")
+    kept = strip(kept, '_')
+    isempty(kept) && return "_"
+    return isdigit(first(kept)) ? "_" * kept : kept
+end
+
+"""
     _api_symbol(mod::Module, name::Symbol) -> String
 
 The C symbol for `name` defined in `mod`: `join(fullname(mod), "_") * "_" *
-name`, with a leading `Main` component stripped.
+name`, with a leading `Main` component stripped, as a C identifier.
+
+The module part is a namespace: these symbols are global to the process, and
+two wrapped libraries can be loaded into one. `scale!` becomes `scale`, so a
+name only Julia can spell still has a symbol C can declare; two names that
+collide once spelled this way are rejected where the entry point is recorded.
 """
 function _api_symbol(mod::Module, name::Symbol)
     parts = String.(collect(fullname(mod)))
     isempty(parts) || parts[1] != "Main" || popfirst!(parts)
-    return join([parts..., String(name)], "_")
+    return _api_c_identifier(join([parts..., String(name)], "_"))
 end
 
 # --- Carrier mapping: String is argument-only ------------------------------

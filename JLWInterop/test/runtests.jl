@@ -1078,6 +1078,33 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws "the docstring argument must be a string literal" Core.eval(m, interp)
     end
 
+    @testset "@api symbol is a C identifier" begin
+        @test JLWInterop._api_c_identifier("scale!") == "scale"
+        @test JLWInterop._api_c_identifier("2x") == "_2x"
+        @test JLWInterop._api_c_identifier("a__b") == "a_b"
+        @test JLWInterop._api_c_identifier("!") == "_"
+
+        # A `!` is how Julia spells "this writes to something", and C has no
+        # such name. The entry point is declared under one C can take.
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(grow!(a::Vector{Float64}) = (a .+= 1; nothing)))
+        Core.eval(
+            m, :(JLWInterop.@api grow!(a::Vector{Float64})::Nothing mutates = (a,))
+        )
+        entry = only(Core.eval(m, :(JLWInterop.api_entries($m))))
+        @test entry.name === :grow!
+        @test endswith(entry.symbol, "_grow")
+        @test !occursin("!", entry.symbol)
+
+        # Two names that differ only by the `!` claim one symbol, which is
+        # caught where a repeated entry point is.
+        Core.eval(m, :(grow(a::Vector{Float64}) = a))
+        @test_throws "already an API entry point" Core.eval(
+            m, :(JLWInterop.@api grow(a::Vector{Float64})::Vector{Float64})
+        )
+    end
+
     @testset "@api mutates" begin
         m = Module()
         Core.eval(m, :(using JLWInterop))

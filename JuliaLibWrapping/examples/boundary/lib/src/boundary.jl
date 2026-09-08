@@ -14,8 +14,8 @@ module boundary
 using JLWInterop
 using Boundary: Boundary, Extent, RoundMode, round_down, round_nearest, round_up,
     boom, bundle, check_positive, count_strs, make_dict, maximum_marginals, maybe_sqrt,
-    round_value, scale_vec, shout, sign_mode, stats, str_len, sum_at, sum_dict,
-    upcase_strs, widen
+    round_value, scale!, scale_vec, shout, sign_mode, stats, str_len, sum_at,
+    sum_dict, upcase_strs, widen
 
 @export_release_entrypoints
 
@@ -30,6 +30,11 @@ using Boundary: Boundary, Extent, RoundMode, round_down, round_nearest, round_up
 @api make_dict(n::Int64)::Dict{String, Float64}
 @api maybe_sqrt(o::Union{Float64, Nothing})::Union{Float64, Nothing}
 @api scale_vec(a::Vector{Float64}; factor::Float64 = 2.0)::Vector{Float64}
+# `a` is written to, so each binding layer is told: MATLAB copies it and
+# returns the copy, since a MATLAB caller cannot see a write to an argument.
+# The C symbol drops the `!`, which C cannot spell, and the MATLAB façade is
+# `boundary.scale`. Python binds the entry point but publishes no name for it.
+@api scale!(a::Vector{Float64}, factor::Float64)::Nothing mutates = (a,)
 @api boom(x::Int64)::Int64
 @api str_len(s::String)::Int64
 @api shout(s::String)::String

@@ -45,6 +45,16 @@ end
 "Double the vector and report how many elements it had."
 stats(a::Vector{Float64}) = (2 .* a, Int64(length(a)))
 
+"""
+    scale!(a, factor)
+
+Multiply every element of `a` by `factor`, in place.
+"""
+function scale!(a::Vector{Float64}, factor::Float64)
+    a .*= factor
+    return nothing
+end
+
 "Upper-case `s`, split it into words, and return each word's length and their mean."
 function bundle(s::String)
     words = String.(split(s))
