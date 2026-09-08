@@ -653,6 +653,41 @@ end
     end
 end
 
+@testset "matlab finds a moved library" begin
+    # The MEX file lands in `+<package>/private`, so the library is two
+    # levels up plus the subdirectory the bundle uses. Resolving that
+    # against the MEX file's own directory is what lets a built package be
+    # copied elsewhere, or downloaded, without rebuilding.
+    abi = read_abi_info("bindinginfo_ctuple.json")
+    mktempdir() do path
+        write_wrapper(
+            MatlabTarget(
+                path, "demo", "boundary";
+                library_subdir = joinpath("boundary-bundle", "lib")
+            ), abi
+        )
+        gateway = read(joinpath(path, "boundary_mex.c"), String)
+        @test occursin(
+            "#define JLW_LIBRARY_RELATIVE \"../../boundary-bundle/lib/boundary\"",
+            gateway
+        )
+        # The three candidates, in order.
+        @test occursin("jlw_open(override)", gateway)
+        @test occursin("jlw_open(beside)", gateway)
+        @test occursin("jlw_open(JLW_LIBRARY_PATH)", gateway)
+        @test occursin("dladdr((void *)jlw_own_directory, &info)", gateway)
+    end
+
+    # No subdirectory: the library sits beside the package directory.
+    mktempdir() do path
+        write_wrapper(MatlabTarget(path, "demo", "libdemo"), abi)
+        @test occursin(
+            "#define JLW_LIBRARY_RELATIVE \"../../libdemo\"",
+            read(joinpath(path, "libdemo_mex.c"), String)
+        )
+    end
+end
+
 @testset "matlab text returns" begin
     # `mxCreateString` builds a char row, so a string and a list of them
     # agree: char, and a cell array of char rows. Both are forms a façade
