@@ -670,6 +670,19 @@ end
     end
 end
 
+@testset "matlab C templates" begin
+    # The fixed parts of the gateway are C files, so they can be read as C.
+    # A placeholder with no substitution would otherwise reach the compiler.
+    @test occursin(
+        "@TYPES_HEADER@",
+        read(joinpath(pkgdir(JuliaLibWrapping), "src", "matlab_prologue.c.in"), String)
+    )
+    @test_throws "no substitution for @TYPES_HEADER@" JuliaLibWrapping._matlab_c_template(
+        "matlab_prologue.c.in"; library_basename = "x", library_relative = "y",
+        library_env = "Z"
+    )
+end
+
 @testset "matlab reads a scalar through its own accessor" begin
     # `mxGetScalar` returns a double, so an `int64` above 2^53 would not
     # survive it. The class is checked first, so the accessor for it can be

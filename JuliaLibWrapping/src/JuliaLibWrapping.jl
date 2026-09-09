@@ -31,6 +31,7 @@ const _DEFAULT_PACKAGE_VERSION = "0.0.0"
 include("c.jl")
 include("python.jl")
 include("matlab.jl")
+include("matlab_gateway.jl")
 include("metadata.jl")
 include("build.jl")
 
