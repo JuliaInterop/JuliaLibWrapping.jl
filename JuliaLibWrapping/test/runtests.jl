@@ -1464,6 +1464,8 @@ end
         @test JuliaLibWrapping.sanitize_for_c("") == ""
     end
 
+    include("matlab.jl")
+
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
         # tuple. Elements of differing types make that a struct with the

@@ -19,7 +19,7 @@ intentional parts of the API. See [Hand-written ABI entrypoints](@ref).
 The accepted form is:
 
 ```julia
-@api [docstring] name(a::T1, …; k::K = default, …)::Ret
+@api [docstring] name(a::T1, …; k::K = default, …)::Ret [mutates = (a, …)]
 ```
 
 Define or import the function first. The declaration contains no body and does
@@ -40,6 +40,25 @@ the declared arguments and that every type has a carrier mapping. Bodies and
 The public name is the Julia function name. Target-language identifier rules
 still apply: for example, the Python target rejects a trailing `!` because it
 cannot emit that spelling as a Python function.
+
+## Arguments the function writes to
+
+An array argument is passed by reference, so the wrapped function reads
+MATLAB's or NumPy's own buffer. `mutates` says which arrays it writes to:
+
+```julia
+scale!(a::Vector{Float64}, k::Float64) = (a .*= k; nothing)
+
+@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,)
+```
+
+Each target answers this in its own terms. MATLAB gives arguments value
+semantics, so it copies `a` for the call and returns the copy: the façade is
+`a = pkg.scale(a, k)`. See [MATLAB package and gateway](@ref).
+
+Naming an argument the declaration does not take, or one that is not an array,
+is an error. A name ending in `!` with no `mutates` clause warns, since a
+binding layer would otherwise treat every argument as read-only.
 
 ## Generated boundary
 

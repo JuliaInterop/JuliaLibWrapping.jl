@@ -2,7 +2,8 @@
     ApiEntry
 
 Metadata for an `@api` declaration: its Julia `name`, C `symbol`, positional
-`args`, keyword `kwargs`, return type `ret`, and `doc`string.
+`args`, keyword `kwargs`, return type `ret`, `doc`string, and `mutates`, the
+arguments the function writes to.
 
 A keyword's `default` is the literal value itself, already of type `type`;
 `has_default` is `false` for a required keyword, and its `default` is then
@@ -15,7 +16,11 @@ struct ApiEntry
     kwargs::Vector{Tuple{Symbol, Type, Bool, Any}}
     ret::Type
     doc::String
+    mutates::Vector{Symbol}
 end
+
+ApiEntry(name, symbol, args, kwargs, ret, doc) =
+    ApiEntry(name, symbol, args, kwargs, ret, doc, Symbol[])
 
 """
     JLWInterop._JLW_API_REGISTRY_
@@ -70,15 +75,35 @@ function _collect_api!(out::Vector{ApiEntry}, m::Module, seen::Set{Module})
 end
 
 """
+    _api_c_identifier(str) -> String
+
+`str` as a C identifier: anything else becomes `_`, runs of those collapse,
+and a leading digit gains one. A Julia name can hold characters C cannot, `!`
+above all, and this is the C symbol a header has to declare.
+"""
+function _api_c_identifier(str::AbstractString)
+    kept = map(c -> (isascii(c) && (isletter(c) || isdigit(c) || c == '_')) ? c : '_', str)
+    kept = replace(String(kept), r"_+" => "_")
+    kept = strip(kept, '_')
+    isempty(kept) && return "_"
+    return isdigit(first(kept)) ? "_" * kept : kept
+end
+
+"""
     _api_symbol(mod::Module, name::Symbol) -> String
 
 The C symbol for `name` defined in `mod`: `join(fullname(mod), "_") * "_" *
-name`, with a leading `Main` component stripped.
+name`, with a leading `Main` component stripped, as a C identifier.
+
+The module part is a namespace: these symbols are global to the process, and
+two wrapped libraries can be loaded into one. `scale!` becomes `scale`, so a
+name only Julia can spell still has a symbol C can declare; two names that
+collide once spelled this way are rejected where the entry point is recorded.
 """
 function _api_symbol(mod::Module, name::Symbol)
     parts = String.(collect(fullname(mod)))
     isempty(parts) || parts[1] != "Main" || popfirst!(parts)
-    return join([parts..., String(name)], "_")
+    return _api_c_identifier(join([parts..., String(name)], "_"))
 end
 
 # --- Carrier mapping: String is argument-only ------------------------------
@@ -514,7 +539,19 @@ function _julia_docstring(mod::Module, name::Symbol, sig::Type)
 end
 
 """
-    @api [docstring] name(a::T1, ...; k::K = default, ...)::Ret
+    _api_mutates_names(expr) -> Vector{Symbol}
+
+The argument names in a `mutates = (a, b)` clause. A bare name is one name.
+"""
+function _api_mutates_names(expr)
+    expr isa Symbol && return Symbol[expr]
+    expr isa Expr && expr.head === :tuple && all(x -> x isa Symbol, expr.args) &&
+        return Symbol[expr.args...]
+    return error("@api: `mutates` takes an argument name or a tuple of them, got `$expr`")
+end
+
+"""
+    @api [docstring] name(a::T1, ...; k::K = default, ...)::Ret [mutates = (a, ...)]
 
 Declare one call signature of `name` as a JuliaLibWrapping API entry point.
 `name` must already be callable with those types — defined in this module, or
@@ -544,6 +581,13 @@ or `nothing`) of the keyword's declared type: `k::Float64 = 2` is rejected,
 `k::Float64 = 2.0` is accepted. An enum keyword default must be a bare member
 name or dotted member path, resolved in the declaring module.
 
+`mutates` names the array arguments the function writes to, and every binding
+layer needs it: an argument not named there is passed by reference, and one
+that is named is copied first, since a language with value semantics must not
+let a write reach the caller's other variables. Naming an argument the
+declaration does not take, or one that is not an array, is an error. A name
+ending in `!` with no `mutates` clause warns.
+
 Keyword arguments are positional in the C ABI. They follow the positional
 arguments, in declaration order, and every one is passed on every call: a
 default is applied by the calling side, which reads it from the metadata
@@ -551,14 +595,27 @@ sidecar, not by the wrapper. The wrapper therefore has one arity, and a
 keyword's default is a property of the binding rather than of the entry point.
 """
 macro api(args...)
-    if length(args) == 2
-        doc, sig = args
-        doc isa String || error("@api: the docstring argument must be a string literal")
-    elseif length(args) == 1
-        doc, sig = "", args[1]
-    else
-        error("@api expects `[docstring] f(args...)::Ret`")
+    doc = ""
+    sig = nothing
+    mutates = Symbol[]
+    for a in args
+        if a isa String
+            isempty(doc) ||
+                error("@api expects `[docstring] f(args...)::Ret [mutates = (a,)]`")
+            doc = a
+        elseif a isa Expr && a.head === :string
+            # An interpolated docstring arrives as an `Expr`, and would
+            # otherwise be read as the signature.
+            error("@api: the docstring argument must be a string literal")
+        elseif a isa Expr && a.head === :(=) && a.args[1] === :mutates
+            mutates = _api_mutates_names(a.args[2])
+        elseif isnothing(sig)
+            sig = a
+        else
+            error("@api expects `[docstring] f(args...)::Ret [mutates = (a,)]`")
+        end
     end
+    isnothing(sig) && error("@api expects `[docstring] f(args...)::Ret [mutates = (a,)]`")
     sig isa Expr || error("@api expects a call signature, got `$sig`")
     (sig.head === :function || sig.head === :(=)) && error(
         "@api declares a call signature, it does not define a function. Drop the " *
@@ -610,6 +667,30 @@ macro api(args...)
         push!(kw_carriers, C)
         push!(kwargs_meta.args, :(($(QuoteNode(kname)), $T, $has_default, $(QuoteNode(default_value)))))
     end
+
+    for m in mutates
+        count(==(m), mutates) == 1 ||
+            error("@api $__module__.$name: `mutates` names '$m' twice")
+        i = findfirst(==(m), arg_names)
+        j = findfirst(==(m), kw_names)
+        T = isnothing(i) ? (isnothing(j) ? nothing : kw_types[j]) : arg_types[i]
+        isnothing(T) && error(
+            "@api $__module__.$name: `mutates` names '$m', which this declaration " *
+                "does not take"
+        )
+        T <: AbstractArray || error(
+            "@api $__module__.$name: `mutates` names '$m'::$T. Only an array argument " *
+                "can be written through; everything else crosses by value."
+        )
+    end
+
+    # A `!` says the function writes to something. Saying which argument is
+    # what a binding layer needs, and MATLAB's value semantics make the
+    # difference visible to its callers.
+    endswith(String(name), "!") && isempty(mutates) && @warn(
+        "@api $__module__.$name: the name ends in `!` but `mutates` names no " *
+            "argument, so bindings treat every argument as read-only."
+    )
 
     ret_type = Core.eval(__module__, ret_expr)
     ret_type isa Type || error("@api $__module__.$name: `return` is not a type")
@@ -716,6 +797,7 @@ macro api(args...)
             $M.ApiEntry(
                 $(QuoteNode(name)), $symbol,
                 $args_meta, $kwargs_meta, $ret_type, $doc,
+                $(Expr(:vect, QuoteNode.(mutates)...)),
             ),
         )
     end
@@ -866,6 +948,11 @@ function write_metadata(path::AbstractString, root::Module = Main)
                 "{\"name\": $(_json_str(String(kname)))}"
         end
         write(io, "      \"kwargs\": [", join(kw_strs, ", "), "],\n")
+        # Absent means "writes to nothing", so an older sidecar reads correctly.
+        isempty(e.mutates) || write(
+            io, "      \"mutates\": [",
+            join([_json_str(String(m)) for m in e.mutates], ", "), "],\n"
+        )
         if !isempty(enums)
             arg_enum_strs = String[]
             for (aname, T) in e.args

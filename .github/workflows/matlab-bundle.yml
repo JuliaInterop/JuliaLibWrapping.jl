@@ -1,0 +1,48 @@
+# Build the boundary example, compile its MEX gateway, and upload the result
+# so it can be downloaded and used without Julia or a compiler.
+#
+# The gateway resolves the library relative to the MEX file, so the bundle
+# works wherever it is unpacked. It is platform-specific: a `.mexa64` runs on
+# Linux only, and the runner's glibc must be no newer than the user's.
+name: MATLAB bundle
+on:
+  workflow_dispatch:
+  push:
+    tags: ['*']
+jobs:
+  bundle:
+    name: MATLAB bundle - ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: 'pre'
+          arch: x64
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the example build environment
+        run: |
+          julia --project=JuliaLibWrapping/examples/boundary/build-env \
+                -e 'using Pkg; Pkg.instantiate()'
+      - name: Build the library, the bundle and the MATLAB sources
+        run: julia JuliaLibWrapping/examples/boundary/build.jl
+      # R2018a or later, for the typed accessors the gateway uses. Building
+      # against an early release keeps the result loadable in later ones.
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2021a
+      - name: Compile the gateway
+        uses: matlab-actions/run-command@v2
+        with:
+          command: cd('JuliaLibWrapping/examples/boundary/out'); build_mex
+      - name: Collect what a caller needs
+        run: |
+          cd JuliaLibWrapping/examples/boundary/out
+          tar czf "$GITHUB_WORKSPACE/boundary-matlab-glnxa64.tar.gz" \
+              +boundary boundary-bundle build_mex.m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boundary-matlab-glnxa64
+          path: boundary-matlab-glnxa64.tar.gz
+          if-no-files-found: error
