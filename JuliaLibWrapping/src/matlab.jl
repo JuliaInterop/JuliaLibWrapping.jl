@@ -532,6 +532,18 @@ function _matlab_outputs(plan)
 end
 
 """
+    _matlab_required_outputs(plan) -> Int
+
+The fewest outputs a caller may request: every written argument, and the
+first result when there is one. Fewer would put a copy where a result
+belongs. `0` for a function that writes to nothing.
+"""
+function _matlab_required_outputs(plan)
+    isempty(plan.mutates) && return 0
+    return length(plan.mutates) + (isempty(_matlab_result_outputs(plan.ret)) ? 0 : 1)
+end
+
+"""
     _matlab_result_outputs(ret) -> Vector{String}
 
 The output names for what the entry point returns, without the arguments it
@@ -547,11 +559,13 @@ end
 """
     _write_matlab_facade(io, dest, method, plan)
 
-Write one `.m` façade: an `arguments` block, the body conversions the block
-cannot express, and the gateway call.
+Write one `.m` façade: an `arguments` block, the check on the number of
+outputs a function with written arguments needs, the body conversions the
+block cannot express, and the gateway call.
 """
 function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, plan)
     outputs = _matlab_outputs(plan)
+    results = _matlab_result_outputs(plan.ret)
     signature = if isempty(outputs)
         plan.name
     elseif length(outputs) == 1
@@ -605,6 +619,23 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
         println(io, "    end")
     end
 
+    # A written argument comes back ahead of the results, so a caller asking
+    # for fewer outputs would receive a copy where a result was expected.
+    needed = _matlab_required_outputs(plan)
+    if needed > 0
+        form = "[" * join(outputs[1:needed], ", ") * "] = " *
+            dest.package_name * "." * plan.name * "(...)"
+        # `~` for a copy is only advice when there is a result to keep; with
+        # none, discarding the copy discards the write.
+        tilde = isempty(results) ? "" : ", with ~ for a copy you do not need"
+        println(io, "    if nargout < ", needed)
+        println(
+            io, "        error(\"jlw:argument\", \"", plan.name, " writes to ",
+            join(written, ", "), ": call it as ", form, tilde, ".\");"
+        )
+        println(io, "    end")
+    end
+
     forwarded = String[]
     for (i, name) in pairs(names)
         kind = plan.args[i]
@@ -652,7 +683,6 @@ function _write_matlab_facade(io::IO, dest::MatlabTarget, method::MethodDesc, pl
     else
         println(io, "    [", join(outputs, ", "), "] = ", call, ";")
     end
-    results = _matlab_result_outputs(plan.ret)
     if !isnothing(plan.return_enum) && length(results) == 1
         _write_matlab_enum_out(io, only(results), plan.api_enums[plan.return_enum])
     end

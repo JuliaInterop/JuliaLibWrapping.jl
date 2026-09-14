@@ -72,7 +72,9 @@ Keyword arguments become name-value arguments. Outputs are named `out1`…`outN`
 because the sidecar records argument names but not result names.
 
 A tuple return maps onto MATLAB's multiple assignment, so `[x, n] = stats(a)`
-works, and asking for fewer outputs is fine. MATLAB rejects asking for more.
+works, and asking for fewer outputs is fine. MATLAB rejects asking for more. A
+function that writes to an argument needs a minimum; see
+[Arrays the function writes to](@ref).
 
 ## Enums
 
@@ -111,15 +113,22 @@ a = [1 2 3];
 a = boundary.scale(a, 2);     % a is now [2 4 6]
 ```
 
-Without the `a =` the result goes to `ans` and the array keeps its old
-values. The generated help says which arguments behave this way, and the
-build says so once per declaration:
+A caller must collect every written argument, and the first result when the
+function returns one. Anything less raises `jlw:argument` naming the form to
+use. That catches `out = boundary.f(a)` on a function that also returns a
+value, which would otherwise put the copy of `a` in `out`; write
+`[~, out] = boundary.f(a)` to discard the copy instead. The generated help says
+which arguments behave this way, and the build says so once per declaration:
 
 ```
 ┌ Warning: MATLAB has no way to write through an argument, so
 │ boundary.scale copies a and returns the copy. Call it as
 │ `[a] = boundary.scale(...)`.
 ```
+
+A function that returns the argument it wrote to, as `sort!` does, would come
+back as two copies of the same array. Declare it as returning `::Nothing`;
+the written argument is already an output.
 
 ### Why it is copied
 

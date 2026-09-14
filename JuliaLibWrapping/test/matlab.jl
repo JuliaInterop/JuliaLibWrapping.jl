@@ -393,6 +393,14 @@ end
         facade = read(joinpath(path, "+demo", "sum3d.m"), String)
         @test occursin("function [a, out] = sum3d(a)", facade)
         @test occursin("Writes to A and returns it.", facade)
+
+        # `out = sum3d(a)` would put the copy of `a` in `out`, so a call
+        # collecting fewer than the copy and one result is refused.
+        @test occursin("if nargout < 2", facade)
+        @test occursin(
+            "sum3d writes to a: call it as [a, out] = demo.sum3d(...), " *
+                "with ~ for a copy you do not need.", facade
+        )
     end
 
     # A vector is passed as it stands rather than through `(:)`, so a caller
@@ -761,6 +769,27 @@ end
             MatlabTarget(path, "demo", "libdemo"), abi
         )
         @test !isfile(joinpath(path, "+demo", "sum_doubles.m"))
+    end
+end
+
+@testset "matlab outputs a written argument requires" begin
+    # Every written argument, plus the first result when there is one: fewer
+    # would put a copy where a result belongs. A tuple's later elements may
+    # still be left off.
+    required(mutates, ret) = JuliaLibWrapping._matlab_required_outputs((; mutates, ret))
+    @test required(Int[], (kind = :scalar,)) == 0
+    @test required([1], (kind = :none,)) == 1
+    @test required([1], (kind = :void,)) == 1
+    @test required([1], (kind = :scalar,)) == 2
+    @test required([1], (kind = :tuple, elements = [1, 2, 3])) == 2
+    @test required([1, 2], (kind = :scalar,)) == 3
+    @test required([1], (kind = :result, inner = (kind = :none,))) == 1
+
+    # A façade that writes to nothing has no such check.
+    for golden in filter(
+            f -> startswith(f, "expected_matlab_") && endswith(f, ".m"), readdir(@__DIR__)
+        )
+        @test !occursin("nargout", read(joinpath(@__DIR__, golden), String))
     end
 end
 
