@@ -241,7 +241,7 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
     return PythonTarget(
         t.dir, t.package_name, t.library_basename;
         bundle_subdir = t.bundle_subdir, version = t.version,
-        privatized = true
+        privatized = true, coerce_arrays = t.coerce_arrays
     )
 end
 
@@ -286,14 +286,14 @@ build_library(joinpath(dir, "src", libname*".jl"),
 leaves that to the user.
 
 The kwargs `out`, `entry`, `python_package`, `matlab_package`, `project`,
-`bundle`, and `version` override the defaults above; anything else is
-forwarded to
-`build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
-defaults to `dir`, but can be pointed at a separate location when the
+`bundle`, `version`, and `coerce_arrays` configure the targets above; anything
+else is forwarded to `build_library` (e.g. `verbose`, `trim`, `privatize`).
+`project` defaults to `dir`, but can be pointed at a separate location when the
 on-disk source layout and the entry `Project.toml` live in different
-directories. `version` sets the version in the generated Python
-package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
-outside this convention, call `build_library` directly.
+directories. `version` sets the version in the generated Python package's
+`pyproject.toml` and `coerce_arrays` selects how its wrappers prepare array
+arguments; both are [`PythonTarget`](@ref) options. For layouts outside this
+convention, call `build_library` directly.
 """
 function standard_build(
         dir::AbstractString = pwd();
@@ -305,10 +305,12 @@ function standard_build(
         matlab_package::Union{AbstractString, Nothing} = nothing,
         bundle::Bool = true,
         version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+        coerce_arrays::Bool = false,
         kwargs...
     )
     targets = _standard_targets(
-        out, libname, python_package, matlab_package, bundle, version
+        out, libname, python_package, matlab_package, bundle, version;
+        coerce_arrays
     )
     return build_library(
         entry, targets;
@@ -318,7 +320,8 @@ function standard_build(
 end
 
 """
-    _standard_targets(out, libname, python_package, matlab_package, bundle, version)
+    _standard_targets(out, libname, python_package, matlab_package, bundle, version;
+                      coerce_arrays = false)
 
 The target list [`standard_build`](@ref) assembles. Separate from the build so
 that what it emits can be checked without compiling a library.
@@ -327,14 +330,15 @@ function _standard_targets(
         out::AbstractString, libname::AbstractString,
         python_package::AbstractString,
         matlab_package::Union{AbstractString, Nothing},
-        bundle::Bool, version::AbstractString
+        bundle::Bool, version::AbstractString;
+        coerce_arrays::Bool = false
     )
     targets = AbstractTarget[
         CTarget(out, libname),
         PythonTarget(
             out, python_package, libname;
             bundle_subdir = bundle ? "bundle" : nothing,
-            version
+            version, coerce_arrays
         ),
     ]
     isnothing(matlab_package) || push!(
