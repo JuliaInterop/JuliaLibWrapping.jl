@@ -5,7 +5,7 @@ using Graphs: SimpleDiGraph, add_edge!, strongly_connected_components, topologic
 using JSON: JSON
 
 export parse_abi_info, read_abi_info, write_wrapper, build_library, standard_build
-export AbstractTarget, CTarget, PythonTarget, ABIInfo
+export AbstractTarget, CTarget, PythonTarget, MatlabTarget, ABIInfo
 
 include("abi_import.jl")
 include("recognizers.jl")
@@ -30,6 +30,8 @@ const _DEFAULT_PACKAGE_VERSION = "0.0.0"
 
 include("c.jl")
 include("python.jl")
+include("matlab.jl")
+include("matlab_gateway.jl")
 include("metadata.jl")
 include("build.jl")
 

@@ -28,6 +28,7 @@ using JuliaLibWrapping, JuliaC
 result = standard_build(
     joinpath(HERE, "lib");
     libname = "boundary",
+    matlab_package = "boundary",
     out = joinpath(HERE, "out"),
     verbose = true,
 )

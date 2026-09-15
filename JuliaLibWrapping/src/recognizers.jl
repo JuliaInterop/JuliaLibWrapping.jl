@@ -122,7 +122,10 @@ function cstrarray_struct_info(desc::StructDesc, typeinfo::OrderedDict{Int, Type
     element = cstring_struct_info(pointee, typeinfo)
     isnothing(element) && return nothing
     element.ownership === ownership || return nothing
-    return (; ownership, length_type = len.name, length_bits = len.bits)
+    return (;
+        ownership, length_type = len.name, length_bits = len.bits,
+        element_length_bits = element.length_bits,
+    )
 end
 
 """

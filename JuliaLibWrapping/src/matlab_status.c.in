@@ -1,0 +1,18 @@
+
+/* Raises, so every caller must release what it holds before calling:
+   `mexErrMsgIdAndTxt` leaves by `longjmp`, which runs no cleanup. */
+static void jlw_check(JLWStatus status)
+{
+    if (status.code == 0) {
+        return;
+    }
+    char message[@MESSAGE_BYTES@ + 1];
+    memcpy(message, status.message, @MESSAGE_BYTES@);
+    message[@MESSAGE_BYTES@] = '\0';
+    const char *identifier;
+    switch (status.code) {
+@STATUS_CASES@
+        default: identifier = "jlw:error"; break;
+    }
+    mexErrMsgIdAndTxt(identifier, "%s", message);
+}

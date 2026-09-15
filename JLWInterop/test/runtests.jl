@@ -1078,6 +1078,87 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws "the docstring argument must be a string literal" Core.eval(m, interp)
     end
 
+    @testset "@api symbol is a C identifier" begin
+        @test JLWInterop._api_c_identifier("scale!") == "scale"
+        @test JLWInterop._api_c_identifier("2x") == "_2x"
+        @test JLWInterop._api_c_identifier("a__b") == "a_b"
+        @test JLWInterop._api_c_identifier("!") == "_"
+
+        # A `!` is how Julia spells "this writes to something", and C has no
+        # such name. The entry point is declared under one C can take.
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(grow!(a::Vector{Float64}) = (a .+= 1; nothing)))
+        Core.eval(
+            m, :(JLWInterop.@api grow!(a::Vector{Float64})::Nothing mutates = (a,))
+        )
+        entry = only(Core.eval(m, :(JLWInterop.api_entries($m))))
+        @test entry.name === :grow!
+        @test endswith(entry.symbol, "_grow")
+        @test !occursin("!", entry.symbol)
+
+        # Two names that differ only by the `!` claim one symbol, which is
+        # caught where a repeated entry point is.
+        Core.eval(m, :(grow(a::Vector{Float64}) = a))
+        @test_throws "already an API entry point" Core.eval(
+            m, :(JLWInterop.@api grow(a::Vector{Float64})::Vector{Float64})
+        )
+    end
+
+    @testset "@api mutates" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(scale!(a::Vector{Float64}, k::Float64) = (a .*= k; nothing)))
+        Core.eval(
+            m,
+            :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,))
+        )
+        entry = only(Core.eval(m, :(JLWInterop.api_entries($m))))
+        @test entry.mutates == [:a]
+
+        # The sidecar records it; an entry that writes to nothing omits the
+        # key, so a reader without it sees the same thing.
+        path = joinpath(mktempdir(), "meta.json")
+        Core.eval(m, :(JLWInterop.write_metadata($path, $m)))
+        @test occursin("\"mutates\": [\"a\"]", read(path, String))
+
+        # A name it does not take, and a name that cannot be written to.
+        @test_throws "which this declaration does not take" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (b,))
+        )
+        @test_throws "Only an array argument" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (k,))
+        )
+        @test_throws "names 'a' twice" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a, a))
+        )
+        @test_throws "an argument name or a tuple of them" Core.eval(
+            m, :(JLWInterop.@api scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = 1)
+        )
+
+        # Anything past the docstring, the signature and the clause.
+        @test_throws "[docstring] f(args...)::Ret" Core.eval(
+            m,
+            :(
+                JLWInterop.@api "doc" scale!(a::Vector{Float64}, k::Float64)::Nothing mutates = (a,) extra
+            )
+        )
+
+        # And no signature at all.
+        @test_throws "[docstring] f(args...)::Ret" Core.eval(
+            m, :(JLWInterop.@api "a docstring and nothing else")
+        )
+    end
+
+    @testset "@api warns on `!` without mutates" begin
+        m = Module()
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(m, :(bump!(a::Vector{Float64}) = (a .+= 1; nothing)))
+        @test_logs (:warn, r"ends in `!` but `mutates` names no argument") Core.eval(
+            m, :(JLWInterop.@api bump!(a::Vector{Float64})::Nothing)
+        )
+    end
+
     @testset "@api helper predicates" begin
         # These are reached through macro expansion elsewhere, but they are
         # small enough to pin directly.
