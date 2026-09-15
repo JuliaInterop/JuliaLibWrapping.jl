@@ -9,7 +9,8 @@ Read the `<lib>.jlw.json` API metadata sidecar written by
 
 - `exports` — symbol => `{"name", "args", "kwargs", "arg_enums"?, "return_enum"?, "doc"}`,
   as `JSON.parsefile` returns it, a `JSON.Object{String,Any}` that behaves as
-  an `AbstractDict{String,Any}`.
+  an `AbstractDict{String,Any}`. Several entries may share a `name`, one per
+  positional arity.
 - `enums` — name => `{"basetype", "members"}` (see `JLWInterop.write_metadata`),
   or an empty `Dict{String,Any}` when the sidecar is version 1, which has no
   `enums` table.

@@ -46,6 +46,30 @@ arguments and results become the Python values listed in [Supported Julia
 types](@ref). A non-zero status raises `JLWError`, whose `.code` and `.message`
 attributes retain the library error.
 
+When several entry points share one Julia name (see [Several arities under one
+name](@ref)), each gets a private wrapper named `_<name>_<arity>`, and the
+public name becomes a function that forwards by the number of positional
+arguments:
+
+```python
+def scale(*args, **kwargs):
+    """Scale every entry.
+
+    Scale `x` by the entries of `y`."""
+    if len(args) == 1:
+        return _scale_1(*args, **kwargs)
+    if len(args) == 2:
+        return _scale_2(*args, **kwargs)
+    raise TypeError(
+        f"scale() takes 1 or 2 positional arguments but {len(args)} were given"
+    )
+```
+
+Keyword arguments pass through unchanged, so an arity that takes keywords and
+one that does not can share a name. The dispatcher's docstring is the members'
+docstrings in ascending arity order, one paragraph each. `__all__` carries the
+public name once, and not the private wrappers.
+
 Keep `_facade.py` under version control. When an API changes, a safe workflow
 is to generate a fresh façade on a branch and merge the relevant changes into
 the maintained file. Simply rebuilding does not overwrite it.
