@@ -41,7 +41,7 @@ jobs:
           cd JuliaLibWrapping/examples/boundary/out
           tar czf "$GITHUB_WORKSPACE/boundary-matlab-glnxa64.tar.gz" \
               +boundary boundary-bundle build_mex.m
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: boundary-matlab-glnxa64
           path: boundary-matlab-glnxa64.tar.gz
