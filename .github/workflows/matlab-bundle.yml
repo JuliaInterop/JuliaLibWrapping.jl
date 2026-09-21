@@ -33,7 +33,7 @@ jobs:
         with:
           release: R2021a
       - name: Compile the gateway
-        uses: matlab-actions/run-command@v2
+        uses: matlab-actions/run-command@v3
         with:
           command: cd('JuliaLibWrapping/examples/boundary/out'); build_mex
       - name: Collect what a caller needs
