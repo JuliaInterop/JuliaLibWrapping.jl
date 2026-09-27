@@ -6,5 +6,5 @@
 
 # Scale every entry.
 scale <- function(x, factor = 2.0, label) {
-  .jlr_mylib_scale(x, factor, label)
+  .jlr_CVector_owned_Float64_ret(.jlr_mylib_scale(.jlr_CVector_borrowed_Float64_arg(x), factor, .jlr_CString_borrowed_arg(label)))
 }

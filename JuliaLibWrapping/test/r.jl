@@ -419,7 +419,9 @@ end
 
     @test sig(method(1, 1, 5)) == "id)i"
     @test sig(method(nothing, 7)) == "p)v"
-    @test sig(method(13, 15)) == "*<Pair>)<Pair>"
+    # A typed struct pointer would accept only a `cdata` struct, so the call
+    # token is the untyped pointer with the same ABI.
+    @test sig(method(13, 15)) == "p)<Pair>"
     @test sig(method(1, 13)) == "<Pair>)i"
     @test sig(method(nothing)) == ")v"
 
@@ -559,6 +561,172 @@ end
     end
 end
 
+@testset "R shortcut expressions" begin
+    # A borrowed array whose R vector already has the right C representation
+    # is passed by reference; the rest are packed into a raw buffer.
+    @test JuliaLibWrapping._r_array_borrow_expr("Float64", "x") ==
+        "as.externalptr(as.double(x))"
+    @test JuliaLibWrapping._r_array_borrow_expr("Int32", "x") ==
+        "as.externalptr(as.integer(x))"
+    @test JuliaLibWrapping._r_array_borrow_expr("Float32", "x") ==
+        "as.externalptr(as.floatraw(as.double(x)))"
+    @test JuliaLibWrapping._r_array_borrow_expr("UInt8", "x") ==
+        "as.externalptr(as.raw(as.integer(x)))"
+    @test JuliaLibWrapping._r_array_borrow_expr("Int16", "x") === nothing
+
+    # A `Bool` is packed as the one-byte `C` token the field workaround uses.
+    @test JuliaLibWrapping._r_pack_value_expr("Bool", "x") == "as.integer(x[[.jlr_i]])"
+    @test JuliaLibWrapping._r_pack_value_expr("Int16", "x") == "x[[.jlr_i]]"
+end
+
+@testset "R carrier recognition" begin
+    findtype(descs, name) = (
+        k = collect(keys(descs));
+        k[findfirst(id -> descs[id].name === name, k)]
+    )
+    classify(typeinfo, typedict, name) = begin
+        id = findtype(typeinfo, name)
+        return (
+            id,
+            JuliaLibWrapping._r_carrier_info(id, typeinfo),
+            typedict,
+        )
+    end
+
+    # A borrowed CArray is a builder, and an owning argument is demoted: an R
+    # caller has no Julia allocation to hand over.
+    cmatrix = read_abi_info("bindinginfo_cmatrix.json")
+    td = JuliaLibWrapping._r_premangle_typeinfo(cmatrix.typeinfo)
+    id, info, _ = classify(cmatrix.typeinfo, td, "CMatrix{:borrowed, Float64}")
+    @test info.family === :array
+    @test info.ownership === :borrowed
+    @test info.eltype == "Float64"
+    @test info.ndim == 2
+    arg = JuliaLibWrapping._r_classify_arg(id, cmatrix.typeinfo, td)
+    @test arg.kind === :carrier
+    @test arg.builder == ".jlr_CMatrix_borrowed_Float64_arg"
+
+    owned = read_abi_info("bindinginfo_carray_owned.json")
+    td_o = JuliaLibWrapping._r_premangle_typeinfo(owned.typeinfo)
+    id_o, info_o, _ = classify(owned.typeinfo, td_o, "CVector{:owned, Float64}")
+    @test info_o.ownership === :owned
+    demoted_arg = JuliaLibWrapping._r_classify_arg(id_o, owned.typeinfo, td_o)
+    @test demoted_arg.kind === :opaque
+    @test occursin("owning array carrier", demoted_arg.reason)
+    ret = JuliaLibWrapping._r_classify_return(
+        id_o, owned.typeinfo, td_o; release_present = true
+    )
+    @test ret.kind === :carrier
+    @test ret.reader == ".jlr_CVector_owned_Float64_ret"
+    nofree = JuliaLibWrapping._r_classify_return(
+        id_o, owned.typeinfo, td_o; release_present = false
+    )
+    @test nofree.kind === :opaque
+    @test occursin("release entrypoints", nofree.reason)
+
+    # COpt has no ownership parameter, so it is a carrier on both sides.
+    copt = read_abi_info("bindinginfo_copt.json")
+    td_c = JuliaLibWrapping._r_premangle_typeinfo(copt.typeinfo)
+    id_c, info_c, _ = classify(copt.typeinfo, td_c, "COpt{Float64}")
+    @test info_c.family === :opt
+    @test info_c.value_type == "Float64"
+    @test JuliaLibWrapping._r_classify_arg(id_c, copt.typeinfo, td_c).kind === :carrier
+    @test JuliaLibWrapping._r_classify_return(
+        id_c, copt.typeinfo, td_c
+    ).kind === :carrier
+
+    # The remaining families are recognized off their shapes.
+    cstring = read_abi_info("bindinginfo_cstring_owned.json")
+    td_s = JuliaLibWrapping._r_premangle_typeinfo(cstring.typeinfo)
+    _, info_s, _ = classify(cstring.typeinfo, td_s, "CString{:owned}")
+    @test info_s.family === :string
+    @test info_s.ownership === :owned
+
+    cstrarray = read_abi_info("bindinginfo_cstrarray.json")
+    td_sa = JuliaLibWrapping._r_premangle_typeinfo(cstrarray.typeinfo)
+    _, info_sa, _ = classify(cstrarray.typeinfo, td_sa, "CStrArray{:owned}")
+    @test info_sa.family === :strarray
+    element = JuliaLibWrapping._r_pointee_struct(
+        cstrarray.typeinfo[findtype(cstrarray.typeinfo, "CStrArray{:owned}")],
+        "data", cstrarray.typeinfo
+    )
+    layout = JuliaLibWrapping._r_cstring_layout(element, cstrarray.typeinfo)
+    @test layout.size == 16
+    @test layout.length_offset == 0
+    @test layout.length_token == "l"
+    @test layout.data_offset == 8
+
+    cdict = read_abi_info("bindinginfo_cdict.json")
+    td_d = JuliaLibWrapping._r_premangle_typeinfo(cdict.typeinfo)
+    _, info_d, _ = classify(cdict.typeinfo, td_d, "CDict{:owned, Float64}")
+    @test info_d.family === :dict
+    @test info_d.value_type == "Float64"
+
+    # A tuple return classifies each element, which decides whether the whole
+    # tuple can be converted.
+    ctuple = read_abi_info("bindinginfo_ctuple.json")
+    td_t = JuliaLibWrapping._r_premangle_typeinfo(ctuple.typeinfo)
+    id_t = findtype(
+        ctuple.typeinfo, "CNTuple{2, Tuple{CVector{:owned, Float64}, Int64}}"
+    )
+    ret_t = JuliaLibWrapping._r_classify_return(
+        id_t, ctuple.typeinfo, td_t; release_present = true
+    )
+    @test ret_t.kind === :carrier
+    @test ret_t.carrier.family === :tuple
+    @test ret_t.carrier.elements[1].kind === :carrier
+    @test ret_t.carrier.elements[2].kind === :scalar
+    nofree_t = JuliaLibWrapping._r_classify_return(
+        id_t, ctuple.typeinfo, td_t; release_present = false
+    )
+    @test nofree_t.kind === :opaque
+
+    # An unrecognized buffer element type is not a carrier.
+    @test JuliaLibWrapping._r_carrier_info(1, cmatrix.typeinfo) === nothing
+end
+
+@testset "R carrier golden output" begin
+    for (fixture, prefix, pkg, lib) in (
+            ("bindinginfo_carray3.json", "carray3", "rcarray3", "libcarray3"),
+            (
+                "bindinginfo_carray_owned.json", "carrayowned", "rcarrayowned",
+                "libcarrayowned",
+            ),
+            (
+                "bindinginfo_cstring_owned.json", "cstringowned", "rcstringowned",
+                "libcstringowned",
+            ),
+            (
+                "bindinginfo_cstrarray.json", "cstrarray", "rcstrarray",
+                "libcstrarray",
+            ),
+            ("bindinginfo_cdict.json", "cdict", "rcdict", "libcdict"),
+            ("bindinginfo_copt.json", "copt", "rcopt", "libcopt"),
+            ("bindinginfo_ctuple.json", "ctuple", "rctuple", "libctuple"),
+            (
+                "bindinginfo_jlwresult_owned.json", "jlwresultowned",
+                "rjlwresultowned", "libjlwresultowned",
+            ),
+        )
+        abi = read_abi_info(fixture)
+        mktempdir() do path
+            write_wrapper(RTarget(path, pkg, lib; version = "1.2.3"), abi)
+            pkgdir = joinpath(path, pkg)
+            for (file, suffix) in (
+                    (joinpath("R", "lowlevel.R"), "lowlevel"),
+                    (joinpath("R", "facade.R"), "facade"),
+                )
+                actual = read(joinpath(pkgdir, file), String)
+                expected = read(
+                    joinpath(@__DIR__, "expected_r_" * prefix * "_" * suffix * ".R"),
+                    String,
+                )
+                @test actual == expected
+            end
+        end
+    end
+end
+
 @testset "R end-to-end" begin
     compiler = _r_compiler()
     rscript = _r_toolchain()
@@ -665,3 +833,5 @@ end
         end
     end
 end
+
+include("r_carriers.jl")
