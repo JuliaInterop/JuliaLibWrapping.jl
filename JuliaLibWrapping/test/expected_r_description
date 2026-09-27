@@ -1,0 +1,11 @@
+Package: rprimitives
+Type: Package
+Title: R Bindings for libprimitives
+Version: 1.2.3
+Authors@R: person("JuliaLibWrapping", role = c("aut", "cre"),
+    email = "noreply@example.com")
+Description: Generated bindings that load the libprimitives
+    shared library through rdyncall and expose its entry points.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports: rdyncall
