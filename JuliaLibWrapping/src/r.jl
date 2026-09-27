@@ -13,8 +13,12 @@ suffix (e.g. `"boundary"`, loaded from `boundary.so`, `boundary.dylib` or
 
 The emitted package keeps the same split as the Python target: `R/lowlevel.R`
 is rewritten on every build and holds the rdyncall type registrations, the
-layout checks, and the `.onLoad` loader, while `R/facade.R` is created only if
-it is absent, so the public API an author edits there survives a rebuild.
+layout checks, the `JLWStatus` condition helpers, one binding per entrypoint
+and the `.onLoad` loader, while `R/facade.R` is created only if it is absent,
+so the public API an author edits there survives a rebuild. The façade wraps
+scalar entrypoints — and, for an `@api` declaration, any entrypoint whose
+carrier values pass through unchanged — and gives an `@api` keyword its
+sidecar default.
 
 `package_name` must be a legal R package name: it starts with a letter, then
 takes letters, digits and periods, and does not end in a period. The
@@ -228,7 +232,16 @@ function r_type_signature(
         return "<" * mangle_r_type!(typedict, type_id, typeinfo) * ">"
     elseif type isa PointerDesc
         type.pointee_type === nothing && return "p"
-        return "*" * r_type_signature(typedict, type.pointee_type, typeinfo)
+        pointee = typeinfo[type.pointee_type]
+        if pointee isa PrimitiveTypeDesc
+            pointee.name == "Cvoid" && return "p"
+            return "*" * _r_primitive_token(pointee.name; field)
+        elseif pointee isa StructDesc
+            return "*<" * mangle_r_type!(typedict, type.pointee_type, typeinfo) * ">"
+        end
+        # rdyncall has no typed form for a pointer to a pointer or to an
+        # array; the untyped pointer token has the same ABI.
+        return "p"
     elseif type isa ArrayDesc
         return r_type_signature(typedict, type.element_type, typeinfo; field) *
             "[" * string(type.count) * "]"
@@ -236,6 +249,252 @@ function r_type_signature(
         @assert false "unknown descriptor type"
     end
 end
+
+"""
+    _r_call_token(typedict, type_id, typeinfo) -> Union{Nothing, String}
+
+The rdyncall type signature token for a function argument or return of type
+`type_id`: a primitive token, `<Name>` for a struct passed by value, `p` for
+an untyped pointer and `*<token>` for a typed one. A pointer to a pointer or
+to an array has no typed form in rdyncall, so it falls back to `p`, which has
+the same ABI.
+
+`nothing` means the type has no rdyncall token, so the entrypoint gets no
+low-level binding. A `Cvoid` argument is one such case: only a return may be
+`v`.
+"""
+function _r_call_token(
+        typedict::Dict{Int, String}, type_id::Int,
+        typeinfo::OrderedDict{Int, TypeDesc}
+    )
+    type = typeinfo[type_id]
+    if type isa PrimitiveTypeDesc
+        (type.name == "Cvoid" || !haskey(rtypes, type.name)) && return nothing
+        return rtypes[type.name]
+    elseif type isa StructDesc
+        return "<" * mangle_r_type!(typedict, type_id, typeinfo) * ">"
+    elseif type isa PointerDesc
+        type.pointee_type === nothing && return "p"
+        pointee = typeinfo[type.pointee_type]
+        if pointee isa PrimitiveTypeDesc
+            (pointee.name == "Cvoid" || !haskey(rtypes, pointee.name)) && return "p"
+            return "*" * rtypes[pointee.name]
+        elseif pointee isa StructDesc
+            return "*<" * mangle_r_type!(typedict, type.pointee_type, typeinfo) * ">"
+        end
+        return "p"
+    end
+    # A bare array is not a C parameter or return type, so a descriptor that
+    # reaches here cannot be called.
+    return nothing
+end
+
+"""
+    _r_call_signature(method, typeinfo, typedict) -> Union{Nothing, String}
+
+The rdyncall call signature for `method`, `"<argument tokens>)<return token>"`
+(for example `"ii)d"`), or `nothing` when a type has no rdyncall token.
+Variadic entrypoints get no binding: dyncall needs the call-site argument
+types, which the ABI does not record.
+
+The signature is safety-critical — a mismatch crashes the R process rather
+than raising an R error — so it is generated from the same tables as the
+field tokens and covered by tests.
+"""
+function _r_call_signature(
+        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
+        typedict::Dict{Int, String}
+    )
+    tokens = String[]
+    for arg in method.args
+        arg.isva && return nothing
+        token = _r_call_token(typedict, arg.type, typeinfo)
+        token === nothing && return nothing
+        push!(tokens, token)
+    end
+    ret = method.return_type === nothing ? "v" :
+        _r_call_token(typedict, method.return_type, typeinfo)
+    ret === nothing && return nothing
+    return join(tokens) * ")" * ret
+end
+
+"""
+    _r_classify_arg(type_id, typeinfo) -> NamedTuple
+
+Classify an entrypoint argument for the façade. The R target knows scalars
+only: a primitive classifies `:scalar`, and everything else — a carrier, a
+status, a raw pointer — is `:opaque`, which only an `@api` entry may pass
+through unchanged (see [`_r_facade_plan`](@ref)).
+
+A scalar argument is forwarded to dyncall as it stands: rdyncall accepts an R
+integer, double, logical or raw for a numeric token and a character for `Z`.
+"""
+function _r_classify_arg(type_id::Int, typeinfo::OrderedDict{Int, TypeDesc})
+    desc = typeinfo[type_id]
+    desc isa PrimitiveTypeDesc && return (kind = :scalar,)
+    return (; kind = :opaque, reason = "argument has type `$(desc.name)`")
+end
+
+"""
+    _r_classify_return(type_id, typeinfo; pass_opaque = false) -> NamedTuple
+
+Classify an entrypoint return for the façade. `kind` is one of:
+
+- `:void` — no return at all; the wrapper returns `invisible(NULL)`
+- `:status` — a bare `JLWStatus`; the same, after the status check
+- `:scalar` — a primitive
+- `:result` — a `JLWResult{C}`; `inner` is this classification applied to `C`
+- `:opaque` — anything else, which makes the entrypoint skip the façade
+- `:passthrough` — an opaque return for an `@api` entry, which the façade
+  forwards unchanged
+
+`pass_opaque` is `true` for an `@api` entry, whose raw carrier values the
+caller may pass and receive until the idiomatic conversions exist. The
+low-level binding always classifies with `pass_opaque = true`, since it must
+decide only whether to check a status.
+"""
+function _r_classify_return(
+        type_id::Union{Int, Nothing}, typeinfo::OrderedDict{Int, TypeDesc};
+        pass_opaque::Bool = false
+    )
+    type_id === nothing && return (kind = :void,)
+    desc = typeinfo[type_id]
+    if desc isa PrimitiveTypeDesc
+        (desc.name != "Cvoid" && haskey(rtypes, desc.name)) && return (kind = :scalar,)
+        return pass_opaque ? (kind = :passthrough,) : (
+            kind = :opaque,
+            reason = "return type `$(desc.name)` has no rdyncall token",
+        )
+    end
+    if desc isa StructDesc
+        result = jlwresult_struct_info(desc, typeinfo)
+        if !isnothing(result)
+            inner = _r_classify_return(result.value_type_id, typeinfo; pass_opaque)
+            return (kind = :result, inner = inner)
+        end
+        is_jlwstatus_struct(desc, typeinfo) && return (kind = :status,)
+    end
+    return pass_opaque ? (kind = :passthrough,) : (
+        kind = :opaque,
+        reason = "return type `$(desc.name)` is not a scalar",
+    )
+end
+
+"""
+    _r_entry_name(method, api_entry) -> String
+
+The public name a façade is written under: the sidecar's name, sanitized, or
+the exported symbol.
+"""
+function _r_entry_name(method::MethodDesc, api_entry)
+    isnothing(api_entry) && return sanitize_r_name(method.symbol)
+    return sanitize_r_name(String(get(api_entry, "name", method.symbol)))
+end
+
+"""
+    _r_arg_names(method, api_entry) -> (positional, keywords)
+
+The façade's argument names, sanitized for R: the sidecar's when it has them
+and the ABI's otherwise. Positional and keyword names share one namespace in
+an R signature, so a sanitizing collision is suffixed rather than silently
+shadowing.
+"""
+function _r_arg_names(method::MethodDesc, api_entry)
+    seen = Set{String}()
+    if isnothing(api_entry)
+        names = String[sanitize_r_name(a.name) for a in method.args]
+        return (_uniquify!(names, seen), String[])
+    end
+    positional = String[sanitize_r_name(n) for n in get(api_entry, "args", [])]
+    keywords = String[
+        sanitize_r_name(kw["name"]) for kw in get(api_entry, "kwargs", [])
+    ]
+    return (_uniquify!(positional, seen), _uniquify!(keywords, seen))
+end
+
+"""
+    _r_facade_plan(method, typeinfo, api_entry, api_enums) -> NamedTuple
+
+Decide whether an entrypoint gets an R façade wrapper, and gather what writing
+one needs. `kind` is `:auto` when every argument and the return are mapped — or
+pass through unchanged for an `@api` entry — and `:skip` otherwise, with a
+`reason`. A skipped entrypoint is still exposed, as a forwarder to its
+low-level binding.
+
+`pass_opaque` follows the Python target: an `@api` declaration may pass carriers
+and raw pointers through as the values the low-level binding expects, while an
+undeclared entrypoint is only wrapped when every type is a scalar. Enums are
+not converted yet, so an enum-annotated entry is skipped rather than emitted
+with a default that would not coerce.
+"""
+function _r_facade_plan(
+        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
+        api_entry = nothing, api_enums::AbstractDict = Dict{String, Any}()
+    )
+    pass_opaque = !isnothing(api_entry)
+    name = _r_entry_name(method, api_entry)
+    skip(reason) = (kind = :skip, reason = reason, name = name)
+    args = [_r_classify_arg(a.type, typeinfo) for a in method.args]
+    for (i, a) in pairs(args)
+        a.kind === :opaque && !pass_opaque &&
+            return skip("argument $i: " * a.reason)
+    end
+    ret = _r_classify_return(method.return_type, typeinfo; pass_opaque)
+    ret.kind === :result && ret.inner.kind === :opaque && !pass_opaque &&
+        return skip("return: " * ret.inner.reason)
+    ret.kind === :opaque && return skip("return: " * ret.reason)
+
+    positional, keywords = _r_arg_names(method, api_entry)
+    length(positional) + length(keywords) == length(args) || return skip(
+        "the sidecar names $(length(positional) + length(keywords)) " *
+            "arguments but the ABI has $(length(args))"
+    )
+    defaults = isnothing(api_entry) ? Any[] : Any[
+        haskey(kw, "default") ? Some(kw["default"]) : nothing
+        for kw in get(api_entry, "kwargs", [])
+    ]
+    if !isnothing(api_entry)
+        arg_enums = get(api_entry, "arg_enums", nothing)
+        if !isnothing(arg_enums) && !isempty(arg_enums)
+            return skip("enum arguments need the R target's enum support")
+        end
+        return_enum = get(api_entry, "return_enum", nothing)
+        isnothing(return_enum) ||
+            return skip("enum returns need the R target's enum support")
+    end
+    return (;
+        kind = :auto, args, ret, positional, keywords, defaults, name,
+        doc = isnothing(api_entry) ? "" : String(get(api_entry, "doc", "")),
+    )
+end
+
+"""
+    _api_kwarg_default_r(value) -> String
+
+Write an `@api` keyword argument default, as parsed from the metadata
+sidecar's JSON, in R syntax. A string is re-quoted for R; every other JSON
+scalar spells the same literal in R. The sidecar carries only numbers,
+strings, booleans and `null`.
+
+An integer is written without a trailing `L`: dyncall accepts a double for
+every integer token, and R has no 64-bit integer for a large `Int64` default
+anyway.
+"""
+_api_kwarg_default_r(v::Bool) = v ? "TRUE" : "FALSE"
+_api_kwarg_default_r(::Nothing) = "NULL"
+_api_kwarg_default_r(v::Integer) = string(v)
+_api_kwarg_default_r(v::AbstractFloat) = string(v)
+_api_kwarg_default_r(v::AbstractString) = _r_string(v)
+_api_kwarg_default_r(v) =
+    error("unsupported `@api` keyword default in the metadata sidecar: $(repr(v))")
+
+"""
+    _r_lowlevel_name(symbol) -> String
+
+The internal R name of an entrypoint's binding: `.jlr_` plus the sanitized
+symbol. The `.jlr_` prefix keeps it out of `exportPattern("^[^.]")`.
+"""
+_r_lowlevel_name(symbol::AbstractString) = ".jlr_" * sanitize_r_name(symbol)
 
 # The field names a `cstruct()` signature lists, sanitized to R identifiers
 # and made unique. Numeric Julia tuple field names become `x_1`, `x_2`, ....
@@ -266,23 +525,40 @@ function _r_string(s::AbstractString)
 end
 
 """
-    write_wrapper(dest::RTarget, abi_info::ABIInfo)
+    write_wrapper(dest::RTarget, abi_info::ABIInfo;
+                  api_metadata = Dict{String, Any}(), api_enums = Dict{String, Any}())
 
 Emit the R package described by `dest`/`abi_info`: `DESCRIPTION`, `NAMESPACE`,
 `LICENSE`, `R/lowlevel.R` and, when it does not exist yet, `R/facade.R`.
 
 `R/lowlevel.R` registers every aggregate with `cstruct()` in dependency order,
-checks each computed layout against the offsets `juliac` recorded, and defines
-the `.onLoad` hook that locates the shared library, resolves the exported
-symbols, and records the package as loaded. The registration lines run when
-the package is installed, so the type information is part of the installed
-namespace. The file is written to a scratch name and renamed into place, so a
-failed emission never leaves a half-written file.
+checks each computed layout against the offsets `juliac` recorded, defines the
+helpers that read a `JLWStatus` and raise a condition, binds every entrypoint
+whose types have a dyncall token, and defines the `.onLoad` hook that locates
+the shared library, resolves the exported symbols, and records the package as
+loaded. The registration lines run when the package is installed, so the type
+information is part of the installed namespace. The file is written to a
+scratch name and renamed into place, so a failed emission never leaves a
+half-written file.
 
 `R/facade.R` is the author-editable public API. It is created only if it is
-absent, so rebuilding never overwrites edits.
+absent, so rebuilding never overwrites edits. An entrypoint whose arguments
+and return are scalars — or, for an `@api` entry, which pass through raw —
+gets a wrapper; anything else is exposed as a forwarder to its low-level
+binding with a `TODO` comment.
+
+`api_metadata` is the `exports` map from an `@api` metadata sidecar (see
+[`read_api_metadata`](@ref)), keyed by C symbol. A symbol present there takes
+its wrapper's name, argument names, keyword defaults and doc comment from the
+sidecar entry. A symbol absent from `api_metadata` (the default is an empty
+`Dict`) gets the mechanical, ABI-derived shape. `api_enums` is the sidecar's
+`enums` table, carried for the enum conversion a later phase adds.
 """
-function write_wrapper(dest::RTarget, abi_info::ABIInfo)
+function write_wrapper(
+        dest::RTarget, abi_info::ABIInfo;
+        api_metadata::AbstractDict = Dict{String, Any}(),
+        api_enums::AbstractDict = Dict{String, Any}()
+    )
     (; typeinfo) = abi_info
 
     pkgdir = joinpath(dest.dir, dest.package_name)
@@ -303,7 +579,7 @@ function write_wrapper(dest::RTarget, abi_info::ABIInfo)
     facade_path = joinpath(rdir, "facade.R")
     if !isfile(facade_path)
         _write_atomically(facade_path, rdir) do f
-            _write_r_facade(f, dest)
+            _write_r_facade(f, dest, abi_info, typedict, api_metadata, api_enums)
         end
     end
 
@@ -330,6 +606,7 @@ function _write_r_lowlevel(
     println(f)
 
     _write_r_layout_check(f)
+    _write_r_status_helpers(f)
 
     structs = [(id, desc) for (id, desc) in pairs(typeinfo) if desc isa StructDesc]
     if isempty(structs)
@@ -357,7 +634,119 @@ function _write_r_lowlevel(
         end
     end
 
+    _write_r_bindings(f, abi_info, typedict)
     _write_r_loader(f, dest, entrypoints)
+    return nothing
+end
+
+# Condition classes for the `JLWStatus` codes, and the helpers the
+# low-level bindings call. A nonzero code raises a condition whose class
+# chain carries the specific category, as the MATLAB gateway's identifiers do.
+function _write_r_status_helpers(f::IO)
+    print(
+        f, raw"""# A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
+# above guarantees the field is where the library put it.
+.jlr_status_message <- function(status) {
+  bytes <- as.raw(status$message)
+  nul <- which(bytes == as.raw(0L))
+  if (length(nul) > 0L) {
+    bytes <- bytes[seq_len(nul[[1L]] - 1L)]
+  }
+  rawToChar(bytes)
+}
+
+# The R condition class for a `JLWStatus` code. An unknown code is a plain
+# `jlw_error`.
+.jlr_status_class <- function(code) {
+  switch(
+    as.character(code),
+    "1" = "jlw_error",
+    "2" = "jlw_argument",
+    "3" = "jlw_dimension",
+    "4" = "jlw_inexact",
+    "5" = "jlw_bounds",
+    "jlw_error"
+  )
+}
+
+.jlr_abort <- function(code, msg) {
+  stop(structure(
+    class = c(.jlr_status_class(code), "jlw_error", "error", "condition"),
+    list(message = msg, call = NULL, code = code)
+  ))
+}
+
+# Raise on a failed status; a zero code is the only success.
+.jlr_check_status <- function(status) {
+  if (status$code != 0L) {
+    .jlr_abort(status$code, .jlr_status_message(status))
+  }
+  invisible(NULL)
+}
+
+"""
+    )
+    return nothing
+end
+
+# One low-level binding per entrypoint whose types all have a dyncall token.
+# The symbol is resolved lazily from `.jlr_syms`, which `.onLoad` fills, so
+# nothing here runs at install time.
+function _write_r_bindings(
+        f::IO, abi_info::ABIInfo, typedict::Dict{Int, String}
+    )
+    (; entrypoints, typeinfo) = abi_info
+
+    bindings = Tuple{MethodDesc, String, Vector{String}, NamedTuple}[]
+    for method in entrypoints
+        signature = _r_call_signature(method, typeinfo, typedict)
+        signature === nothing && continue
+        names = _uniquify!(
+            [sanitize_r_name(a.name) for a in method.args], Set{String}()
+        )
+        ret = _r_classify_return(method.return_type, typeinfo; pass_opaque = true)
+        push!(bindings, (method, signature, names, ret))
+    end
+    if isempty(bindings)
+        println(f, "# The library exports no callable entrypoints.")
+        println(f)
+        return nothing
+    end
+
+    println(f, "# Low-level entrypoint bindings. Each signature string is generated")
+    println(f, "# from the ABI; a mismatch would crash the R process rather than raise.")
+    for (method, signature, names, ret) in bindings
+        _write_r_binding(f, method, signature, names, ret)
+    end
+    return nothing
+end
+
+function _write_r_binding(
+        f::IO, method::MethodDesc, signature::AbstractString,
+        names::Vector{String}, ret
+    )
+    call = "dyncall(get(" * _r_string(method.symbol) * ", envir = .jlr_syms), " *
+        _r_string(signature) *
+        (isempty(names) ? "" : ", " * join(names, ", ")) * ")"
+    println(
+        f, _r_lowlevel_name(method.symbol), " <- function(", join(names, ", "), ") {"
+    )
+    if ret.kind === :status
+        println(f, "  .jlr_result <- ", call)
+        println(f, "  .jlr_check_status(.jlr_result)")
+        println(f, "  invisible(NULL)")
+    elseif ret.kind === :result
+        println(f, "  .jlr_result <- ", call)
+        println(f, "  .jlr_check_status(.jlr_result\$status)")
+        println(f, "  .jlr_result\$value")
+    elseif ret.kind === :void
+        println(f, "  ", call)
+        println(f, "  invisible(NULL)")
+    else
+        println(f, "  ", call)
+    end
+    println(f, "}")
+    println(f)
     return nothing
 end
 
@@ -526,13 +915,90 @@ function _write_r_loader(f::IO, dest::RTarget, entrypoints::Vector{MethodDesc})
     return nothing
 end
 
-function _write_r_facade(f::IO, dest::RTarget)
+function _write_r_facade(
+        f::IO, dest::RTarget, abi_info::ABIInfo, typedict::Dict{Int, String},
+        api_metadata::AbstractDict = Dict{String, Any}(),
+        api_enums::AbstractDict = Dict{String, Any}()
+    )
+    (; entrypoints, typeinfo) = abi_info
+
     println(f, "# Public façade for the ", dest.package_name, " R package.")
     println(f, "#")
     println(f, "# JuliaLibWrapping creates this file once and never rewrites it, so")
     println(f, "# edits here survive a rebuild. R/lowlevel.R is regenerated on every")
     println(f, "# build.")
     println(f)
+
+    # An entrypoint whose types have no dyncall token has no low-level
+    # binding, so exposing it would leave a call to an undefined function.
+    exposed = [
+        m for m in entrypoints
+            if _r_call_signature(m, typeinfo, typedict) !== nothing
+    ]
+    plans = [
+        _r_facade_plan(m, typeinfo, get(api_metadata, m.symbol, nothing), api_enums)
+            for m in exposed
+    ]
+    # The release entrypoints are internal plumbing, never public API.
+    public = [
+        (m, p) for (m, p) in zip(exposed, plans)
+            if !(m.symbol in _RELEASE_ENTRYPOINT_SYMBOLS)
+    ]
+    if isempty(public)
+        println(f, "# The library exports no entrypoints with a callable signature.")
+        println(f)
+        return nothing
+    end
+
+    # Two entrypoints mapping onto one public name would silently shadow
+    # each other, so the build fails instead.
+    claimed = Dict{String, String}()
+    for (method, plan) in public
+        owner = get(claimed, plan.name, nothing)
+        isnothing(owner) || error(
+            "the façade name `$(plan.name)` for '$(method.symbol)' is already " *
+                "taken by $owner; rename the function in Julia"
+        )
+        claimed[plan.name] = "the entrypoint '$(method.symbol)'"
+    end
+
+    for (i, (method, plan)) in pairs(public)
+        i == 1 || println(f)
+        _write_r_facade_entry(f, method, plan)
+    end
+    return nothing
+end
+
+function _write_r_facade_entry(f::IO, method::MethodDesc, plan)
+    lowlevel = _r_lowlevel_name(method.symbol)
+    if plan.kind === :auto
+        for line in (isempty(plan.doc) ? String[] : split(plan.doc, '\n'))
+            println(f, "# ", line)
+        end
+        signature = String[]
+        append!(signature, plan.positional)
+        for (i, name) in pairs(plan.keywords)
+            # R has no keyword-only parameters: a keyword is a named formal,
+            # carrying the sidecar's default when it has one.
+            default = plan.defaults[i]
+            push!(
+                signature,
+                isnothing(default) ? name :
+                    name * " = " * _api_kwarg_default_r(something(default))
+            )
+        end
+        println(f, plan.name, " <- function(", join(signature, ", "), ") {")
+        println(
+            f, "  ", lowlevel, "(", join(vcat(plan.positional, plan.keywords), ", "), ")"
+        )
+        println(f, "}")
+    else
+        println(f, "# TODO: hand-wrap — ", plan.reason, ".")
+        println(f, "# The low-level binding is exposed unchanged; see R/lowlevel.R.")
+        println(f, plan.name, " <- function(...) {")
+        println(f, "  ", lowlevel, "(...)")
+        println(f, "}")
+    end
     return nothing
 end
 

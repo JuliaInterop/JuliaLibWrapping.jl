@@ -228,6 +228,7 @@ docstrings the sidecar carries.
 accepts_api_metadata(::AbstractTarget) = false
 accepts_api_metadata(::PythonTarget) = true
 accepts_api_metadata(::MatlabTarget) = true
+accepts_api_metadata(::RTarget) = true
 
 function _apply_privatization(t::PythonTarget, privatize::Bool)
     t.privatized == privatize && return t
@@ -239,6 +240,22 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
         )
     )
     return PythonTarget(
+        t.dir, t.package_name, t.library_basename;
+        bundle_subdir = t.bundle_subdir, version = t.version,
+        privatized = true
+    )
+end
+
+function _apply_privatization(t::RTarget, privatize::Bool)
+    t.privatized == privatize && return t
+    t.privatized && throw(
+        ArgumentError(
+            "RTarget for package \"$(t.package_name)\" was constructed with " *
+                "`privatized = true`, but `build_library` was called with `privatize = false`. " *
+                "The generated package would claim a private libjulia it does not have."
+        )
+    )
+    return RTarget(
         t.dir, t.package_name, t.library_basename;
         bundle_subdir = t.bundle_subdir, version = t.version,
         privatized = true

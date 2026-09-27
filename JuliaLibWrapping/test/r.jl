@@ -29,6 +29,24 @@ function _r_toolchain()
 end
 
 """
+    _r_compiler() -> Union{String, Nothing}
+
+The C compiler the end-to-end R test uses to build a small shared library, or
+`nothing` when there is none. CI must run the test, so a missing compiler is
+an error there; locally it is a skip, so a contributor without one still gets
+a green suite.
+"""
+function _r_compiler()
+    compiler = Sys.which("cc")
+    if isnothing(compiler)
+        haskey(ENV, "CI") &&
+            error("cc not found on PATH; required on CI to compile the R test library")
+        @info "Skipping the R end-to-end checks (no cc)"
+    end
+    return compiler
+end
+
+"""
     _r_field_typeinfo() -> OrderedDict{Int, TypeDesc}
 
 A hand-built ABI whose aggregates exercise every field token the emitter can
@@ -125,6 +143,15 @@ end
     @test_throws ArgumentError RTarget("out", "has-dash", "lib")
     @test_throws ArgumentError RTarget("out", "trailing.", "lib")
     @test_throws ArgumentError RTarget("out", "ok", "lib"; version = "")
+
+    # `build_library` records whether the bundle a target describes was
+    # privatized; a target may not be downgraded out of claiming one.
+    priv = JuliaLibWrapping._apply_privatization(t, true)
+    @test priv.privatized
+    @test priv.package_name == t.package_name
+    @test JuliaLibWrapping._apply_privatization(t, false) === t
+    @test JuliaLibWrapping._apply_privatization(priv, true) === priv
+    @test_throws ArgumentError JuliaLibWrapping._apply_privatization(priv, false)
 end
 
 @testset "R type mangling" begin
@@ -270,6 +297,9 @@ end
     rscript = _r_toolchain()
     if !isnothing(rscript)
         abi = read_abi_info("bindinginfo_cvoid.json")
+        abi_scalars = read_abi_info("bindinginfo_r_scalars.json")
+        abi_scale = read_abi_info("bindinginfo_api_scale.json")
+        md = JuliaLibWrapping.read_api_metadata("api_scale.jlw.json")
         mktempdir() do path
             write_wrapper(RTarget(path, "shared", "libshared"), abi)
             write_wrapper(
@@ -278,10 +308,15 @@ end
                     bundle_subdir = "bundle", privatized = true
                 ), abi
             )
+            write_wrapper(RTarget(path, "rscalars", "libscalars"), abi_scalars)
+            write_wrapper(
+                RTarget(path, "rapiscale", "libapiscale"), abi_scale;
+                api_metadata = md.exports, api_enums = md.enums
+            )
             script = joinpath(path, "parse.R")
             write(
                 script, """
-                for (pkg in c("shared", "bundled")) {
+                for (pkg in c("shared", "bundled", "rscalars", "rapiscale")) {
                   invisible(parse(file = file.path($(repr(path)), pkg, "R", "lowlevel.R")))
                   invisible(parse(file = file.path($(repr(path)), pkg, "R", "facade.R")))
                 }
@@ -334,6 +369,299 @@ end
             ok = success(pipeline(`$rscript --vanilla $script`; stdout = out, stderr = out))
             ok || @info "R layout check output" output = String(take!(out))
             @test ok
+
+            # The real JLWInterop layouts, including the carrier structs the
+            # api-scale fixture registers, must survive rdyncall's computation
+            # unchanged: the field tokens are what phase 3 builds on.
+            write_wrapper(
+                RTarget(path, "rscalars", "libscalars"),
+                read_abi_info("bindinginfo_r_scalars.json")
+            )
+            write_wrapper(
+                RTarget(path, "rapiscale", "libapiscale"),
+                read_abi_info("bindinginfo_api_scale.json")
+            )
+            script2 = joinpath(path, "layout2.R")
+            write(
+                script2, """
+                library(rdyncall)
+                sys.source(file.path($(repr(path)), "rscalars", "R", "lowlevel.R"),
+                           envir = globalenv())
+                sys.source(file.path($(repr(path)), "rapiscale", "R", "lowlevel.R"),
+                           envir = globalenv())
+                if (JLWStatus\$size != 260L) stop("JLWStatus has the wrong size")
+                if (JLWStatus\$fields\$offset[[2]] != 4L) stop("a JLWStatus message moved")
+                if (JLWResult_Float64\$size != 272L) stop("JLWResult{Float64} has the wrong size")
+                if (CVector_borrowed_Float64\$size != 16L) stop("CVector has the wrong size")
+                if (CString_borrowed\$fields\$type[[1]] != "l") stop("a CString length is not 64-bit")
+                cat("OK\\n")
+                """
+            )
+            out2 = IOBuffer()
+            ok2 = success(pipeline(`$rscript --vanilla $script2`; stdout = out2, stderr = out2))
+            ok2 || @info "R layout check output" output = String(take!(out2))
+            @test ok2
+        end
+    end
+end
+
+@testset "R call signatures" begin
+    typeinfo = _r_field_typeinfo()
+    typedict = Dict{Int, String}()
+    for (id, type) in pairs(typeinfo)
+        type isa StructDesc && JuliaLibWrapping.mangle_r_type!(typedict, id, typeinfo)
+    end
+    arg(name, id) = JuliaLibWrapping.ArgDesc(name, id, false)
+    method(ret, ids...) = JuliaLibWrapping.MethodDesc(
+        "f", "f(...)", ret, [arg("a" * string(i), a) for (i, a) in enumerate(ids)]
+    )
+    sig(m) = JuliaLibWrapping._r_call_signature(m, typeinfo, typedict)
+
+    @test sig(method(1, 1, 5)) == "id)i"
+    @test sig(method(nothing, 7)) == "p)v"
+    @test sig(method(13, 15)) == "*<Pair>)<Pair>"
+    @test sig(method(1, 13)) == "<Pair>)i"
+    @test sig(method(nothing)) == ")v"
+
+    # An array is not a C parameter, so the entrypoint gets no binding.
+    @test sig(method(1, 10)) === nothing
+    # Variadic entrypoints have no recorded call-site argument types.
+    va = JuliaLibWrapping.MethodDesc(
+        "f", "f(a, ...)", 1, [arg("a", 1), JuliaLibWrapping.ArgDesc("rest", 1, true)]
+    )
+    @test sig(va) === nothing
+
+    # A pointer to a pointer has no typed rdyncall token; `p` has the same ABI.
+    deep = OrderedDict{Int, TypeDesc}(
+        1 => PrimitiveTypeDesc("Int32", true, 32, 4, 4),
+        2 => PointerDesc("Ptr{Nothing}", nothing),
+        3 => PointerDesc("Ptr{Ptr{Nothing}}", 2),
+    )
+    deepdict = Dict{Int, String}()
+    @test JuliaLibWrapping._r_call_token(deepdict, 3, deep) == "p"
+    @test JuliaLibWrapping._r_call_token(deepdict, 2, deep) == "p"
+
+    # A `Cvoid` argument has no call token, nor does a primitive rdyncall has
+    # no token for at all.
+    void = OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Cvoid", false, 0, 0, 0))
+    @test JuliaLibWrapping._r_call_token(Dict{Int, String}(), 1, void) === nothing
+    wide = OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Cwchar_t", false, 32, 4, 4))
+    @test JuliaLibWrapping._r_call_token(Dict{Int, String}(), 1, wide) === nothing
+end
+
+@testset "R keyword defaults" begin
+    @test JuliaLibWrapping._api_kwarg_default_r(true) == "TRUE"
+    @test JuliaLibWrapping._api_kwarg_default_r(false) == "FALSE"
+    @test JuliaLibWrapping._api_kwarg_default_r(nothing) == "NULL"
+    @test JuliaLibWrapping._api_kwarg_default_r(2) == "2"
+    @test JuliaLibWrapping._api_kwarg_default_r(2.5) == "2.5"
+    @test JuliaLibWrapping._api_kwarg_default_r("a\"b") == "\"a\\\"b\""
+    @test_throws ErrorException JuliaLibWrapping._api_kwarg_default_r([1])
+end
+
+@testset "R façade plans" begin
+    info = read_abi_info("bindinginfo_r_scalars.json")
+    bysym(sym) = only(m for m in info.entrypoints if m.symbol == sym)
+    for m in info.entrypoints
+        @test JuliaLibWrapping._r_facade_plan(m, info.typeinfo).kind === :auto
+    end
+    @test JuliaLibWrapping._r_facade_plan(
+        bysym("plain_add"), info.typeinfo
+    ).ret.kind === :scalar
+    @test JuliaLibWrapping._r_facade_plan(
+        bysym("do_thing"), info.typeinfo
+    ).ret.kind === :status
+    result = JuliaLibWrapping._r_facade_plan(bysym("scale_value"), info.typeinfo)
+    @test result.ret.kind === :result
+    @test result.ret.inner.kind === :scalar
+
+    # An undeclared entrypoint with a pointer argument or a generic struct
+    # return gets a raw forwarder, not an idiomatic wrapper.
+    cvoid = read_abi_info("bindinginfo_cvoid.json")
+    zero = only(m for m in cvoid.entrypoints if m.symbol == "zero_first")
+    plan = JuliaLibWrapping._r_facade_plan(zero, cvoid.typeinfo)
+    @test plan.kind === :skip
+    @test plan.name == "zero_first"
+    @test occursin("argument 1", plan.reason)
+    chunk = only(m for m in cvoid.entrypoints if m.symbol == "chunk_table")
+    @test JuliaLibWrapping._r_facade_plan(chunk, cvoid.typeinfo).kind === :skip
+
+    # An `@api` entry passes carriers and pointers through, so its sidecar
+    # keyword defaults survive until the carriers are converted.
+    abi = read_abi_info("bindinginfo_api_scale.json")
+    md = JuliaLibWrapping.read_api_metadata("api_scale.jlw.json")
+    scale = only(m for m in abi.entrypoints if m.symbol == "mylib_scale")
+    plan = JuliaLibWrapping._r_facade_plan(
+        scale, abi.typeinfo, md.exports["mylib_scale"], md.enums
+    )
+    @test plan.kind === :auto
+    @test plan.name == "scale"
+    @test plan.positional == ["x"]
+    @test plan.keywords == ["factor", "label"]
+    @test plan.defaults[1] == Some(2.0)
+    @test plan.defaults[2] === nothing
+    @test plan.doc == "Scale every entry."
+
+    # Enum annotations wait for the enum conversion, so those entries become
+    # forwarders under the sidecar's public name.
+    enum = read_abi_info("bindinginfo_enum.json")
+    emeta = JuliaLibWrapping.read_api_metadata("enum.jlw.json")
+    pick = only(m for m in enum.entrypoints if m.symbol == "EnumFixture_pick")
+    plan = JuliaLibWrapping._r_facade_plan(
+        pick, enum.typeinfo, emeta.exports["EnumFixture_pick"]
+    )
+    @test plan.kind === :skip
+    @test plan.name == "pick"
+    @test occursin("enum returns", plan.reason)
+    scale_by = only(m for m in enum.entrypoints if m.symbol == "EnumFixture_scale_by")
+    plan = JuliaLibWrapping._r_facade_plan(
+        scale_by, enum.typeinfo, emeta.exports["EnumFixture_scale_by"]
+    )
+    @test plan.kind === :skip
+    @test occursin("enum arguments", plan.reason)
+
+    @test JuliaLibWrapping.accepts_api_metadata(RTarget("out", "pkg", "lib"))
+end
+
+@testset "R scalars golden output" begin
+    abi = read_abi_info("bindinginfo_r_scalars.json")
+    mktempdir() do path
+        write_wrapper(RTarget(path, "rscalars", "libscalars"; version = "1.2.3"), abi)
+        pkgdir = joinpath(path, "rscalars")
+        for (file, golden) in (
+                (joinpath("R", "lowlevel.R"), "expected_r_scalars_lowlevel.R"),
+                (joinpath("R", "facade.R"), "expected_r_scalars_facade.R"),
+            )
+            actual = read(joinpath(pkgdir, file), String)
+            expected = read(joinpath(@__DIR__, golden), String)
+            @test actual == expected
+        end
+    end
+end
+
+@testset "R api-scale golden output" begin
+    abi = read_abi_info("bindinginfo_api_scale.json")
+    md = JuliaLibWrapping.read_api_metadata("api_scale.jlw.json")
+    mktempdir() do path
+        write_wrapper(
+            RTarget(path, "rapiscale", "libapiscale"; version = "1.2.3"), abi;
+            api_metadata = md.exports, api_enums = md.enums
+        )
+        pkgdir = joinpath(path, "rapiscale")
+        for (file, golden) in (
+                (joinpath("R", "lowlevel.R"), "expected_r_api_scale_lowlevel.R"),
+                (joinpath("R", "facade.R"), "expected_r_api_scale_facade.R"),
+            )
+            actual = read(joinpath(pkgdir, file), String)
+            expected = read(joinpath(@__DIR__, golden), String)
+            @test actual == expected
+        end
+    end
+end
+
+@testset "R end-to-end" begin
+    compiler = _r_compiler()
+    rscript = _r_toolchain()
+    if !isnothing(compiler) && !isnothing(rscript)
+        abi = read_abi_info("bindinginfo_r_scalars.json")
+        mktempdir() do path
+            write_wrapper(RTarget(path, "rscalars", "librscalars"), abi)
+            pkgdir = joinpath(path, "rscalars")
+            csrc = joinpath(path, "rscalars.c")
+            write(
+                csrc, """
+                #include <string.h>
+                typedef struct { int code; unsigned char message[256]; } JLWStatus;
+                typedef struct { JLWStatus status; double value; } JLWResultd;
+
+                static void set_status(JLWStatus *s, int code, const char *msg) {
+                  s->code = code;
+                  memset(s->message, 0, 256);
+                  if (msg != 0) strncpy((char *)s->message, msg, 255);
+                }
+
+                int plain_add(int a, int b) { return a + b; }
+
+                JLWStatus do_thing(int x) {
+                  JLWStatus s;
+                  set_status(&s, x < 0 ? 2 : 0, x < 0 ? "negative" : "");
+                  return s;
+                }
+
+                JLWResultd scale_value(double x) {
+                  JLWResultd r;
+                  if (x < 0) {
+                    set_status(&r.status, 3, "must be non-negative");
+                    r.value = 0.0;
+                    return r;
+                  }
+                  set_status(&r.status, 0, "");
+                  r.value = x * 2.0;
+                  return r;
+                }
+                """
+            )
+            lib = joinpath(path, "librscalars." * Base.Libc.Libdl.dlext)
+            compile = `$compiler -shared -fPIC -o $lib $csrc`
+            ok = success(pipeline(compile; stdout = devnull, stderr = devnull))
+            ok || @info "R test library compile failed" command = compile
+            @test ok
+            if ok
+                script = joinpath(path, "run.R")
+                lowlevel = joinpath(pkgdir, "R", "lowlevel.R")
+                facade = joinpath(pkgdir, "R", "facade.R")
+                write(
+                    script, """
+                    library(rdyncall)
+                    env <- new.env(parent = globalenv())
+                    sys.source($(repr(lowlevel)), envir = env)
+                    handle <- dynload($(repr(lib)))
+                    for (sym in env\$.jlr_symbols) {
+                      assign(sym, dynsym(handle, sym), envir = env\$.jlr_syms)
+                    }
+                    # A scalar round-trips.
+                    if (!identical(env\$.jlr_plain_add(2L, 3L), 5L)) {
+                      stop("plain_add returned the wrong value")
+                    }
+                    # A bare JLWStatus is checked and discarded.
+                    if (!is.null(env\$.jlr_do_thing(1L))) {
+                      stop("do_thing did not return NULL")
+                    }
+                    err <- tryCatch(env\$.jlr_do_thing(-1L), error = function(e) e)
+                    if (!inherits(err, "jlw_argument")) {
+                      stop("do_thing did not raise jlw_argument")
+                    }
+                    if (!identical(conditionMessage(err), "negative")) {
+                      stop("the status message was misread")
+                    }
+                    if (!identical(err\$code, 2L)) {
+                      stop("the condition lost its code")
+                    }
+                    # A JLWResult unwraps its payload.
+                    if (!identical(env\$.jlr_scale_value(2), 4)) {
+                      stop("scale_value returned the wrong value")
+                    }
+                    err <- tryCatch(env\$.jlr_scale_value(-1), error = function(e) e)
+                    if (!inherits(err, "jlw_dimension")) {
+                      stop("scale_value did not raise jlw_dimension")
+                    }
+                    if (!identical(conditionMessage(err), "must be non-negative")) {
+                      stop("the status message was misread")
+                    }
+                    # The façade wrapper calls the same binding.
+                    facade <- new.env(parent = env)
+                    sys.source($(repr(facade)), envir = facade)
+                    if (!identical(facade\$plain_add(2, 3), 5L)) {
+                      stop("the façade wrapper is not wired to the binding")
+                    }
+                    cat("OK\\n")
+                    """
+                )
+                out = IOBuffer()
+                ok = success(pipeline(`$rscript --vanilla $script`; stdout = out, stderr = out))
+                ok || @info "R end-to-end output" output = String(take!(out))
+                @test ok
+            end
         end
     end
 end
