@@ -1,4 +1,4 @@
-# Build the boundary example library end-to-end with a bundled Python package.
+# Build the boundary example library end-to-end with bundled Python and R packages.
 # Run from this directory with a recent enough Julia 1.13:
 #
 #   julia build.jl
@@ -29,6 +29,7 @@ result = standard_build(
     joinpath(HERE, "lib");
     libname = "boundary",
     matlab_package = "boundary",
+    r_package = "boundary",
     out = joinpath(HERE, "out"),
     verbose = true,
 )

@@ -74,6 +74,11 @@
   invisible(NULL)
 }
 
+# `as.externalptr` needs a non-empty vector; the carriers' builders use this.
+.jlr_extptr <- function(x) {
+  as.externalptr(if (length(x) == 0L) as.raw(0L) else x)
+}
+
 # Foreign C aggregates, in dependency order.
 cstruct("CString_borrowed{l*C}length data;")
 .jlr_check_layout("CString_borrowed", size = 16L, alignment = 8L,
@@ -95,7 +100,7 @@ cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
   .jlr_bytes <- charToRaw(enc2utf8(as.character(x)))
   .jlr_carrier <- cdata("CString_borrowed")
   .jlr_carrier$length <- length(.jlr_bytes)
-  .jlr_carrier$data <- as.externalptr(.jlr_bytes)
+  .jlr_carrier$data <- .jlr_extptr(.jlr_bytes)
   .jlr_carrier
 }
 
@@ -135,7 +140,7 @@ cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
   for (.jlr_i in seq_len(.jlr_n)) {
     .jlr_off <- (.jlr_i - 1L) * 16L
     pack(.jlr_karr, .jlr_off + 0L, "l", length(.jlr_bufs[[.jlr_i]]))
-    pack(.jlr_karr, .jlr_off + 8L, "p", as.externalptr(.jlr_bufs[[.jlr_i]]))
+    pack(.jlr_karr, .jlr_off + 8L, "p", .jlr_extptr(.jlr_bufs[[.jlr_i]]))
   }
   .jlr_varr <- raw(.jlr_n * 8)
   for (.jlr_i in seq_len(.jlr_n)) {
@@ -143,8 +148,8 @@ cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
   }
   .jlr_carrier <- cdata("CDict_borrowed_Float64")
   .jlr_carrier$length <- .jlr_n
-  .jlr_carrier$keys <- as.externalptr(.jlr_karr)
-  .jlr_carrier$values <- as.externalptr(.jlr_varr)
+  .jlr_carrier$keys <- .jlr_extptr(.jlr_karr)
+  .jlr_carrier$values <- .jlr_extptr(.jlr_varr)
   .jlr_carrier
 }
 
@@ -238,6 +243,18 @@ cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
   }
 }
 
+# An explicit path may omit the platform's shared-library extension, as the
+# MATLAB gateway's `<LIBNAME>_MEX_LIBRARY` accepts. Return the first of
+# `base`, `base<suffix>` that exists, or `NULL`.
+.jlr_library_candidate <- function(base) {
+  for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
+    if (file.exists(candidate)) {
+      return(candidate)
+    }
+  }
+  NULL
+}
+
 # The directories the loader searches, in order. The shared library and its
 # juliac runtime stay where they were built, so a bundle's RUNPATH resolves
 # `libjulia` from inside the installed package.
@@ -253,12 +270,25 @@ cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
 .jlr_resolve_library <- function(libname, pkgname) {
   override <- Sys.getenv(.jlr_library_env_var, unset = "")
   if (nzchar(override)) {
-    return(override)
+    found <- .jlr_library_candidate(override)
+    if (!is.null(found)) {
+      return(found)
+    }
+    stop(
+      sprintf(
+        paste0(
+          "could not find the %s shared library at %s, or beside that path ",
+          "with a platform suffix; set %s to an explicit path"
+        ),
+        .jlr_library_basename, override, .jlr_library_env_var
+      ),
+      call. = FALSE
+    )
   }
   tried <- character(0)
   for (directory in .jlr_library_dirs(libname, pkgname)) {
-    for (suffix in .jlr_library_suffixes()) {
-      candidate <- file.path(directory, paste0(.jlr_library_basename, suffix))
+    for (suffix in c("", .jlr_library_suffixes())) {
+      candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
       tried <- c(tried, candidate)
       if (file.exists(candidate)) {
         return(candidate)

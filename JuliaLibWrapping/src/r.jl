@@ -28,9 +28,12 @@ When `bundle_subdir` is a string (e.g. `"bundle"`), the emitter assumes the
 shared library and its juliac runtime closure will be laid out under that
 subdirectory of the installed package in the standard `--bundle` shape
 (`<bundle_subdir>/lib/<lib>`, `<bundle_subdir>/lib/julia/`,
-`<bundle_subdir>/artifacts/`). The generated loader searches there first, so
-the embedded `RUNPATH` resolves `libjulia` from inside the tree. The default
-`nothing` preserves the flat single-`.so`-beside-the-package layout.
+`<bundle_subdir>/artifacts/`). A build that produces its own bundle copies it
+to `inst/<bundle_subdir>`, which `R CMD INSTALL` moves to the installed
+package root; the generated loader searches there first (via `system.file`),
+so the embedded `RUNPATH` resolves `libjulia` from inside the tree. The
+default `nothing` preserves the flat single-`.so`-beside-the-package layout,
+and `<LIBNAME>_R_LIBRARY` overrides both.
 
 `version` sets the `Version` field of the generated `DESCRIPTION`.
 
@@ -948,6 +951,7 @@ function _write_r_lowlevel(
 
     _write_r_layout_check(f)
     _write_r_status_helpers(f)
+    _write_r_extptr_helper(f)
     isempty(api_enums) || _write_r_enum_helpers(f, api_enums)
     _r_metadata_mutates(api_metadata) && _write_r_copy_helper(f)
 
@@ -1026,6 +1030,23 @@ function _write_r_status_helpers(f::IO)
     .jlr_abort(status$code, .jlr_status_message(status))
   }
   invisible(NULL)
+}
+
+"""
+    )
+    return nothing
+end
+
+# A borrowed-carrier builder points at an R vector's data. `as.externalptr`
+# refuses a zero-length vector, but a pointer to a zero-length buffer is legal
+# and a carrier may legitimately be empty (an empty string, an empty string
+# vector, an empty dictionary). Point such a buffer at a dummy NUL byte; the
+# declared length still tells the library it holds nothing.
+function _write_r_extptr_helper(f::IO)
+    print(
+        f, raw"""# `as.externalptr` needs a non-empty vector; the carriers' builders use this.
+.jlr_extptr <- function(x) {
+  as.externalptr(if (length(x) == 0L) as.raw(0L) else x)
 }
 
 """
@@ -1184,12 +1205,12 @@ end
 # element type's R vector already has the right C representation, or `nothing`
 # when the buffer must be packed.
 function _r_array_borrow_expr(eltype::AbstractString, source::AbstractString)
-    eltype == "Float64" && return "as.externalptr(as.double(" * source * "))"
-    eltype == "Int32" && return "as.externalptr(as.integer(" * source * "))"
+    eltype == "Float64" && return ".jlr_extptr(as.double(" * source * "))"
+    eltype == "Int32" && return ".jlr_extptr(as.integer(" * source * "))"
     eltype == "Float32" &&
-        return "as.externalptr(as.floatraw(as.double(" * source * ")))"
+        return ".jlr_extptr(as.floatraw(as.double(" * source * ")))"
     eltype == "UInt8" &&
-        return "as.externalptr(as.raw(as.integer(" * source * ")))"
+        return ".jlr_extptr(as.raw(as.integer(" * source * ")))"
     return nothing
 end
 
@@ -1245,7 +1266,7 @@ function _write_r_array_helpers(
                 _r_pack_value_expr(cinfo.eltype, "x"), ")"
             )
             println(f, "  }")
-            println(f, "  .jlr_data <- as.externalptr(.jlr_buf)")
+            println(f, "  .jlr_data <- .jlr_extptr(.jlr_buf)")
         else
             println(f, "  .jlr_data <- ", borrow)
         end
@@ -1288,7 +1309,7 @@ function _write_r_cstring_helpers(
         println(f, "  .jlr_bytes <- charToRaw(enc2utf8(as.character(x)))")
         println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- length(.jlr_bytes)")
-        println(f, "  .jlr_carrier\$data <- as.externalptr(.jlr_bytes)")
+        println(f, "  .jlr_carrier\$data <- .jlr_extptr(.jlr_bytes)")
         println(f, "  .jlr_carrier")
         println(f, "}")
         println(f)
@@ -1361,12 +1382,12 @@ function _write_r_strarray_helpers(
         )
         println(
             f, "    pack(.jlr_arr, .jlr_off + ", layout.data_offset,
-            "L, \"p\", as.externalptr(.jlr_bufs[[.jlr_i]]))"
+            "L, \"p\", .jlr_extptr(.jlr_bufs[[.jlr_i]]))"
         )
         println(f, "  }")
         println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- .jlr_n")
-        println(f, "  .jlr_carrier\$data <- as.externalptr(.jlr_arr)")
+        println(f, "  .jlr_carrier\$data <- .jlr_extptr(.jlr_arr)")
         println(f, "  .jlr_carrier")
         println(f, "}")
         println(f)
@@ -1415,7 +1436,7 @@ function _write_r_cdict_helpers(
         )
         println(
             f, "    pack(.jlr_karr, .jlr_off + ", layout.data_offset,
-            "L, \"p\", as.externalptr(.jlr_bufs[[.jlr_i]]))"
+            "L, \"p\", .jlr_extptr(.jlr_bufs[[.jlr_i]]))"
         )
         println(f, "  }")
         println(f, "  .jlr_varr <- raw(.jlr_n * ", binfo.size, ")")
@@ -1427,8 +1448,8 @@ function _write_r_cdict_helpers(
         println(f, "  }")
         println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- .jlr_n")
-        println(f, "  .jlr_carrier\$keys <- as.externalptr(.jlr_karr)")
-        println(f, "  .jlr_carrier\$values <- as.externalptr(.jlr_varr)")
+        println(f, "  .jlr_carrier\$keys <- .jlr_extptr(.jlr_karr)")
+        println(f, "  .jlr_carrier\$values <- .jlr_extptr(.jlr_varr)")
         println(f, "  .jlr_carrier")
         println(f, "}")
         println(f)
@@ -1631,6 +1652,18 @@ function _write_r_loader(f::IO, dest::RTarget, entrypoints::Vector{MethodDesc})
   }
 }
 
+# An explicit path may omit the platform's shared-library extension, as the
+# MATLAB gateway's `<LIBNAME>_MEX_LIBRARY` accepts. Return the first of
+# `base`, `base<suffix>` that exists, or `NULL`.
+.jlr_library_candidate <- function(base) {
+  for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
+    if (file.exists(candidate)) {
+      return(candidate)
+    }
+  }
+  NULL
+}
+
 # The directories the loader searches, in order. The shared library and its
 # juliac runtime stay where they were built, so a bundle's RUNPATH resolves
 # `libjulia` from inside the installed package.
@@ -1656,12 +1689,25 @@ function _write_r_loader(f::IO, dest::RTarget, entrypoints::Vector{MethodDesc})
 .jlr_resolve_library <- function(libname, pkgname) {
   override <- Sys.getenv(.jlr_library_env_var, unset = "")
   if (nzchar(override)) {
-    return(override)
+    found <- .jlr_library_candidate(override)
+    if (!is.null(found)) {
+      return(found)
+    }
+    stop(
+      sprintf(
+        paste0(
+          "could not find the %s shared library at %s, or beside that path ",
+          "with a platform suffix; set %s to an explicit path"
+        ),
+        .jlr_library_basename, override, .jlr_library_env_var
+      ),
+      call. = FALSE
+    )
   }
   tried <- character(0)
   for (directory in .jlr_library_dirs(libname, pkgname)) {
-    for (suffix in .jlr_library_suffixes()) {
-      candidate <- file.path(directory, paste0(.jlr_library_basename, suffix))
+    for (suffix in c("", .jlr_library_suffixes())) {
+      candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
       tried <- c(tried, candidate)
       if (file.exists(candidate)) {
         return(candidate)

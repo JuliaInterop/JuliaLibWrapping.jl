@@ -440,6 +440,20 @@ end
         # A non-Python target is unaffected either way.
         c = CTarget("out", "x")
         @test JuliaLibWrapping._apply_privatization(c, true) === c
+
+        # The R target carries its own `privatized` flag for the same reason.
+        r = RTarget("out", "xr", "x")
+        @test !r.privatized
+        @test JuliaLibWrapping._apply_privatization(r, false) === r
+        rpriv = JuliaLibWrapping._apply_privatization(r, true)
+        @test rpriv.privatized
+        @test rpriv.package_name == r.package_name
+        @test rpriv.library_basename == r.library_basename
+        @test JuliaLibWrapping._apply_privatization(rpriv, true) === rpriv
+        @test_throws(
+            "was constructed with `privatized = true`",
+            JuliaLibWrapping._apply_privatization(rpriv, false)
+        )
     end
     @testset "backend selection" begin
         # The default backend requires JuliaC.
@@ -510,6 +524,23 @@ end
         @test err isa ArgumentError
         @test occursin("needs `bundle_subdir", err.msg)
         @test occursin("\"pkg\"", err.msg)
+
+        # The R target has the same requirement: without a subdir the bundle
+        # would never land under `inst/` where the loader looks.
+        err = try
+            build_library(
+                entry,
+                [RTarget("/tmp", "pkg", "libfoo")];
+                project = proj, libname = "abi_stress",
+                bundle = true
+            )
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("RTarget for package", err.msg)
+        @test occursin("needs `bundle_subdir", err.msg)
     end
 
     @testset "end-to-end" begin
@@ -615,11 +646,12 @@ end
         end
     end
 
-    @testset "examples: run smoke.py" begin
-        # The `ols` and `boundary` examples ship Python smoke tests that call
-        # into the generated wrappers for real. Build each library and run its
-        # smoke test, which is the only coverage that exercises the emitted
-        # helpers (numpy conversions, ownership handling) at runtime rather
+    @testset "examples: run smoke tests" begin
+        # The `ols` and `boundary` examples ship Python and R smoke tests that
+        # call into the generated wrappers for real. Build each library once,
+        # emitting both targets, and run each smoke test against it. This is
+        # the coverage that exercises the emitted helpers (numpy and R
+        # conversions, ownership handling, library loading) at runtime rather
         # than just parsing them.
         has_julia = Sys.which("julia") !== nothing
         has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
@@ -637,6 +669,26 @@ end
                 )
                 @info "Skipping example smoke tests (no python3 with numpy)"
             else
+                # The generated R package is installed into a throwaway
+                # library and loaded from there. `R CMD INSTALL` loads the
+                # package to test it, so the library override has to be set
+                # for the install too.
+                rscript = Sys.which("Rscript")
+                r_cmd = Sys.which("R")
+                has_rdyncall = rscript !== nothing && success(
+                    pipeline(
+                        `$rscript --vanilla -e "quit(status = !requireNamespace(\"rdyncall\", quietly = TRUE))"`;
+                        stdout = devnull, stderr = devnull
+                    )
+                )
+                r_ok = r_cmd !== nothing && has_rdyncall
+                if !r_ok
+                    haskey(ENV, "CI") && error(
+                        "R with rdyncall is required on CI to run the R smoke tests"
+                    )
+                    @info "Skipping the R example smoke tests" rscript r_cmd has_rdyncall
+                end
+
                 # `ols` keeps its entrypoints in the package; `boundary` puts
                 # them in a `lib/` binding layer, whose own project names the
                 # package and JLWInterop by relative path.
@@ -652,7 +704,10 @@ end
                         result = if isnothing(libsub)
                             build_library(
                                 entry,
-                                [PythonTarget(out, name * "_py", name)];
+                                [
+                                    PythonTarget(out, name * "_py", name),
+                                    RTarget(out, name, name),
+                                ];
                                 project, libname = name,
                                 libdir = out, cpu_target = "generic"
                             )
@@ -660,6 +715,7 @@ end
                             standard_build(
                                 srcdir;
                                 libname = name, project, out,
+                                r_package = name,
                                 bundle = false, cpu_target = "generic"
                             )
                         end
@@ -679,6 +735,26 @@ end
                                 cmd; stdout = stdout, stderr = stderr
                             )
                         )
+
+                        if r_ok
+                            rlib = mkpath(joinpath(out, "rlib"))
+                            pkgdir = joinpath(out, name)
+                            @test isdir(pkgdir)
+                            r_env = [
+                                "R_LIBS" => rlib,
+                                uppercase(name) * "_R_LIBRARY" => result.library,
+                            ]
+                            install = addenv(
+                                `$r_cmd CMD INSTALL --library=$rlib $pkgdir`,
+                                r_env...,
+                            )
+                            @test success(pipeline(install; stdout = stdout, stderr = stderr))
+                            smoke = addenv(
+                                `$rscript --vanilla $(joinpath(exdir, "test", "smoke.R"))`,
+                                r_env...,
+                            )
+                            @test success(pipeline(smoke; stdout = stdout, stderr = stderr))
+                        end
                     end
                 end
             end
@@ -711,6 +787,10 @@ end
                         out, "abi_stress_py", "abi_stress";
                         bundle_subdir = "bundle"
                     ),
+                    RTarget(
+                        out, "abiStress", "abi_stress";
+                        bundle_subdir = "bundle"
+                    ),
                 ];
                 project = proj, libname = "abi_stress",
                 libdir = out, bundle = true
@@ -732,6 +812,15 @@ end
             salted = filter(f -> contains(f, "libjulia"), libnames)
             @test !isempty(salted)
             @test !any(startswith.(salted, "libjulia"))
+
+            # The R package ships the same tree through `inst/`, so
+            # `R CMD INSTALL` moves it to the package root and the generated
+            # loader finds it with `system.file`.
+            r_bundled_lib = joinpath(
+                out, "abiStress", "inst", "bundle", "lib",
+                "abi_stress." * Base.Libc.Libdl.dlext
+            )
+            @test isfile(r_bundled_lib)
 
             # Import directly from `out`, without installing.
             cmd = addenv(

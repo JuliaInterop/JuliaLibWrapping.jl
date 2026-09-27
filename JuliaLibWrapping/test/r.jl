@@ -293,6 +293,64 @@ end
     end
 end
 
+@testset "standard_build target list with R" begin
+    # R reads the `@api` sidecar, so `build_library` hands it the metadata.
+    @test JuliaLibWrapping.accepts_api_metadata(
+        RTarget("out", "demo", "demo")
+    )
+
+    # R is opt-in, like MATLAB: the package is a separate artifact.
+    default = JuliaLibWrapping._standard_targets(
+        "out", "demo", "demo_py", nothing, nothing, true, "0.0.0"
+    )
+    @test map(typeof, default) == [CTarget, PythonTarget]
+
+    with_r = JuliaLibWrapping._standard_targets(
+        "out", "demo", "demo_py", nothing, "demo", true, "0.0.0"
+    )
+    @test map(typeof, with_r) == [CTarget, PythonTarget, RTarget]
+    r = last(with_r)
+    @test r.package_name == "demo"
+    @test r.library_basename == "demo"
+    @test r.bundle_subdir == "bundle"
+    @test r.version == "0.0.0"
+
+    # Without a bundle there is nothing to hunt for at load time.
+    no_bundle = JuliaLibWrapping._standard_targets(
+        "out", "demo", "demo_py", nothing, "demo", false, "0.0.0"
+    )
+    @test last(no_bundle).bundle_subdir === nothing
+end
+
+@testset "R bundle copy" begin
+    mktempdir() do path
+        # A bundle lands under `inst/` so `R CMD INSTALL` ships it to the
+        # installed package root, where `system.file` finds it.
+        t = RTarget(path, "bundled", "libbundled"; bundle_subdir = "bundle")
+        @test JuliaLibWrapping._carries_bundle(t)
+        @test JuliaLibWrapping._bundle_subdir(t) == "bundle"
+        bundle = joinpath(path, "source-bundle")
+        mkpath(joinpath(bundle, "lib"))
+        write(joinpath(bundle, "lib", "libbundled.so"), "fake")
+        dest = JuliaLibWrapping._copy_bundle_into_package(t, bundle)
+        @test dest == joinpath(path, "bundled", "inst", "bundle")
+        @test isfile(joinpath(dest, "lib", "libbundled.so"))
+
+        # A second build replaces the tree rather than merging into it, so a
+        # file that dropped out of the bundle does not linger in the package.
+        rm(joinpath(bundle, "lib", "libbundled.so"))
+        write(joinpath(bundle, "lib", "extra.so"), "new")
+        JuliaLibWrapping._copy_bundle_into_package(t, bundle)
+        @test !isfile(joinpath(dest, "lib", "libbundled.so"))
+        @test isfile(joinpath(dest, "lib", "extra.so"))
+
+        # A non-package target is untouched by the copy loop.
+        c = CTarget(path, "libbundled")
+        @test !JuliaLibWrapping._carries_bundle(c)
+        @test JuliaLibWrapping._copy_bundle_into_package(c, bundle) === nothing
+    end
+end
+
 @testset "R emitted files parse" begin
     rscript = _r_toolchain()
     if !isnothing(rscript)
@@ -394,6 +452,11 @@ end
                 if (JLWResult_Float64\$size != 272L) stop("JLWResult{Float64} has the wrong size")
                 if (CVector_borrowed_Float64\$size != 16L) stop("CVector has the wrong size")
                 if (CString_borrowed\$fields\$type[[1]] != "l") stop("a CString length is not 64-bit")
+                # `as.externalptr` rejects an empty vector; `.jlr_extptr` is the
+                # wrapper the builders use so an empty carrier still gets a
+                # legal (dummy) pointer.
+                if (!inherits(.jlr_extptr(raw(0)), "externalptr")) stop("empty buffer pointer")
+                if (!inherits(.jlr_extptr(as.double(numeric(0))), "externalptr")) stop("empty array pointer")
                 cat("OK\\n")
                 """
             )
@@ -642,15 +705,17 @@ end
 
 @testset "R shortcut expressions" begin
     # A borrowed array whose R vector already has the right C representation
-    # is passed by reference; the rest are packed into a raw buffer.
+    # is passed by reference; the rest are packed into a raw buffer. Every
+    # pointer goes through `.jlr_extptr`, which tolerates a zero-length
+    # buffer that `as.externalptr` rejects.
     @test JuliaLibWrapping._r_array_borrow_expr("Float64", "x") ==
-        "as.externalptr(as.double(x))"
+        ".jlr_extptr(as.double(x))"
     @test JuliaLibWrapping._r_array_borrow_expr("Int32", "x") ==
-        "as.externalptr(as.integer(x))"
+        ".jlr_extptr(as.integer(x))"
     @test JuliaLibWrapping._r_array_borrow_expr("Float32", "x") ==
-        "as.externalptr(as.floatraw(as.double(x)))"
+        ".jlr_extptr(as.floatraw(as.double(x)))"
     @test JuliaLibWrapping._r_array_borrow_expr("UInt8", "x") ==
-        "as.externalptr(as.raw(as.integer(x)))"
+        ".jlr_extptr(as.raw(as.integer(x)))"
     @test JuliaLibWrapping._r_array_borrow_expr("Int16", "x") === nothing
 
     # A `Bool` is packed as the one-byte `C` token the field workaround uses.
@@ -913,6 +978,13 @@ end
                     library(rdyncall)
                     env <- new.env(parent = globalenv())
                     sys.source($(repr(lowlevel)), envir = env)
+                    # The library override accepts a path with or without the
+                    # platform extension, as the MATLAB gateway's does.
+                    Sys.setenv(LIBRSCALARS_R_LIBRARY = $(repr(splitext(lib)[1])))
+                    if (!identical(env\$.jlr_resolve_library("", ""), $(repr(lib)))) {
+                      stop("the library override without an extension was not resolved")
+                    }
+                    Sys.unsetenv("LIBRSCALARS_R_LIBRARY")
                     handle <- dynload($(repr(lib)))
                     for (sym in env\$.jlr_symbols) {
                       assign(sym, dynsym(handle, sym), envir = env\$.jlr_syms)

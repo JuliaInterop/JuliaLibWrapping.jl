@@ -64,7 +64,8 @@ append-only writes or other one-shot side effects are not.
 
 A compiled Julia library depends on `libjulia`, a sysimage, standard libraries,
 and artifacts. `bundle = true` asks JuliaC to assemble that runtime closure and
-copies it into each Python target's declared `bundle_subdir`:
+copies it into each Python target's declared `bundle_subdir` (and into an R
+target's `inst/<bundle_subdir>`):
 
 ```
 mylib_py/
@@ -85,9 +86,10 @@ distribution with `pip install` in a clean virtual environment on such a
 machine.
 
 Bundling requires the `:juliac` backend and a `bundle_subdir` for every Python
-target. Generated `pyproject.toml` metadata builds a generic sdist or wheel;
-distributors remain responsible for platform tags and any required wheel
-audit/repair tooling.
+or R target. Generated `pyproject.toml` metadata builds a generic sdist or
+wheel; distributors remain responsible for platform tags and any required
+wheel audit/repair tooling. An R package is installed from its source
+directory with `R CMD INSTALL`; the copied bundle is an ordinary part of it.
 
 ## Multiple wrapped libraries in one process
 

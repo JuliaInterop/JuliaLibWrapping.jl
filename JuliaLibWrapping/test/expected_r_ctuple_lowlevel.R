@@ -74,6 +74,11 @@
   invisible(NULL)
 }
 
+# `as.externalptr` needs a non-empty vector; the carriers' builders use this.
+.jlr_extptr <- function(x) {
+  as.externalptr(if (length(x) == 0L) as.raw(0L) else x)
+}
+
 # Foreign C aggregates, in dependency order.
 cstruct("CString_owned{i*C}length data;")
 .jlr_check_layout("CString_owned", size = 16L, alignment = 8L,
@@ -288,6 +293,18 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
   }
 }
 
+# An explicit path may omit the platform's shared-library extension, as the
+# MATLAB gateway's `<LIBNAME>_MEX_LIBRARY` accepts. Return the first of
+# `base`, `base<suffix>` that exists, or `NULL`.
+.jlr_library_candidate <- function(base) {
+  for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
+    if (file.exists(candidate)) {
+      return(candidate)
+    }
+  }
+  NULL
+}
+
 # The directories the loader searches, in order. The shared library and its
 # juliac runtime stay where they were built, so a bundle's RUNPATH resolves
 # `libjulia` from inside the installed package.
@@ -303,12 +320,25 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
 .jlr_resolve_library <- function(libname, pkgname) {
   override <- Sys.getenv(.jlr_library_env_var, unset = "")
   if (nzchar(override)) {
-    return(override)
+    found <- .jlr_library_candidate(override)
+    if (!is.null(found)) {
+      return(found)
+    }
+    stop(
+      sprintf(
+        paste0(
+          "could not find the %s shared library at %s, or beside that path ",
+          "with a platform suffix; set %s to an explicit path"
+        ),
+        .jlr_library_basename, override, .jlr_library_env_var
+      ),
+      call. = FALSE
+    )
   }
   tried <- character(0)
   for (directory in .jlr_library_dirs(libname, pkgname)) {
-    for (suffix in .jlr_library_suffixes()) {
-      candidate <- file.path(directory, paste0(.jlr_library_basename, suffix))
+    for (suffix in c("", .jlr_library_suffixes())) {
+      candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
       tried <- c(tried, candidate)
       if (file.exists(candidate)) {
         return(candidate)
