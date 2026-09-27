@@ -504,23 +504,53 @@ end
     @test plan.defaults[2] === nothing
     @test plan.doc == "Scale every entry."
 
-    # Enum annotations wait for the enum conversion, so those entries become
-    # forwarders under the sidecar's public name.
+    # An enum argument takes a member name or the integer, and an enum return
+    # comes back as the member name, so both entries are wrapped.
     enum = read_abi_info("bindinginfo_enum.json")
     emeta = JuliaLibWrapping.read_api_metadata("enum.jlw.json")
     pick = only(m for m in enum.entrypoints if m.symbol == "EnumFixture_pick")
     plan = JuliaLibWrapping._r_facade_plan(
-        pick, enum.typeinfo, emeta.exports["EnumFixture_pick"]
+        pick, enum.typeinfo, emeta.exports["EnumFixture_pick"], emeta.enums
     )
-    @test plan.kind === :skip
+    @test plan.kind === :auto
     @test plan.name == "pick"
-    @test occursin("enum returns", plan.reason)
+    @test plan.ret.kind === :result
+    @test plan.ret.inner.kind === :enum
+    @test plan.ret.inner.enum == "PenaltyKind"
+
     scale_by = only(m for m in enum.entrypoints if m.symbol == "EnumFixture_scale_by")
+    plan = JuliaLibWrapping._r_facade_plan(
+        scale_by, enum.typeinfo, emeta.exports["EnumFixture_scale_by"], emeta.enums
+    )
+    @test plan.kind === :auto
+    @test plan.args[2].kind === :enum
+    @test plan.args[2].enum == "PenaltyKind"
+    @test plan.defaults[1] == Some("abslog1")
+
+    # A declaration whose sidecar carries no enum table cannot coerce, so the
+    # entrypoint becomes a forwarder rather than emitting a broken default.
     plan = JuliaLibWrapping._r_facade_plan(
         scale_by, enum.typeinfo, emeta.exports["EnumFixture_scale_by"]
     )
     @test plan.kind === :skip
-    @test occursin("enum arguments", plan.reason)
+    @test occursin("no entry in the sidecar", plan.reason)
+
+    # A `mutates` declaration copies the named array for the call and returns
+    # the copy; only an array carrier qualifies.
+    scale = only(m for m in abi.entrypoints if m.symbol == "mylib_scale")
+    entry = md.exports["mylib_scale"]
+    mutated = merge(entry, Dict{String, Any}("mutates" => ["x"]))
+    plan = JuliaLibWrapping._r_facade_plan(scale, abi.typeinfo, mutated, md.enums)
+    @test plan.kind === :auto
+    @test plan.mutates == [1]
+    for bad in (["nope"], ["factor"])
+        p = JuliaLibWrapping._r_facade_plan(
+            scale, abi.typeinfo,
+            merge(entry, Dict{String, Any}("mutates" => bad)), md.enums
+        )
+        @test p.kind === :skip
+        @test occursin("mutates", p.reason)
+    end
 
     @test JuliaLibWrapping.accepts_api_metadata(RTarget("out", "pkg", "lib"))
 end
@@ -559,6 +589,55 @@ end
             @test actual == expected
         end
     end
+end
+
+@testset "R enum helpers" begin
+    enums = Dict{String, Any}(
+        "Penalty-Kind" => Dict{String, Any}(
+            "basetype" => "Int32",
+            "members" => [Dict{String, Any}("name" => "a", "value" => 0)],
+        ),
+        "Penalty_Kind" => Dict{String, Any}(
+            "basetype" => "Int32",
+            "members" => [Dict{String, Any}("name" => "b", "value" => 1)],
+        ),
+    )
+    # Distinct Julia names can sanitize alike; the later one is suffixed, in
+    # sorted order so the mapping is stable across builds.
+    names = JuliaLibWrapping._r_enum_r_names(enums)
+    @test names["Penalty-Kind"] == "Penalty_Kind"
+    @test names["Penalty_Kind"] == "Penalty_Kind2"
+    @test JuliaLibWrapping._r_enum_r_names(Dict{String, Any}()) ==
+        Dict{String, String}()
+
+    @test JuliaLibWrapping._r_apply_enum_return((kind = :scalar,), "E") ==
+        (kind = :enum, enum = "E")
+    wrapped = JuliaLibWrapping._r_apply_enum_return(
+        (kind = :result, inner = (kind = :scalar,)), "E"
+    )
+    @test wrapped.kind === :result
+    @test wrapped.inner == (kind = :enum, enum = "E")
+    @test JuliaLibWrapping._r_apply_enum_return((kind = :void,), "E") === nothing
+
+    @test JuliaLibWrapping._r_result_outputs((kind = :scalar,)) == ["out"]
+    @test JuliaLibWrapping._r_result_outputs((kind = :void,)) == String[]
+    @test JuliaLibWrapping._r_result_outputs((kind = :status,)) == String[]
+    tuple_ret = (
+        kind = :carrier,
+        carrier = (
+            family = :tuple,
+            elements = [(kind = :scalar,), (kind = :scalar,)],
+        ),
+    )
+    @test JuliaLibWrapping._r_result_outputs(tuple_ret) == ["out1", "out2"]
+
+    @test !JuliaLibWrapping._r_metadata_mutates(Dict{String, Any}())
+    @test JuliaLibWrapping._r_metadata_mutates(
+        Dict{String, Any}("f" => Dict{String, Any}("mutates" => ["a"]))
+    )
+    @test !JuliaLibWrapping._r_metadata_mutates(
+        Dict{String, Any}("f" => Dict{String, Any}("mutates" => String[]))
+    )
 end
 
 @testset "R shortcut expressions" begin
@@ -723,6 +802,57 @@ end
                 )
                 @test actual == expected
             end
+        end
+    end
+end
+
+@testset "R enum golden output" begin
+    abi = read_abi_info("bindinginfo_enum.json")
+    md = JuliaLibWrapping.read_api_metadata("enum.jlw.json")
+    mktempdir() do path
+        write_wrapper(
+            RTarget(path, "renum", "libenum"; version = "1.2.3"), abi;
+            api_metadata = md.exports, api_enums = md.enums
+        )
+        pkgdir = joinpath(path, "renum")
+        for (file, golden) in (
+                (joinpath("R", "lowlevel.R"), "expected_r_enum_lowlevel.R"),
+                (joinpath("R", "facade.R"), "expected_r_enum_facade.R"),
+            )
+            actual = read(joinpath(pkgdir, file), String)
+            expected = read(joinpath(@__DIR__, golden), String)
+            @test actual == expected
+        end
+    end
+end
+
+@testset "R mutates golden output" begin
+    abi = read_abi_info("bindinginfo_api_scale.json")
+    meta = Dict{String, Any}(
+        "mylib_scale" => Dict{String, Any}(
+            "name" => "scale",
+            "args" => ["x"],
+            "kwargs" => [
+                Dict{String, Any}("name" => "factor", "default" => 2.0),
+                Dict{String, Any}("name" => "label"),
+            ],
+            "mutates" => ["x"],
+            "doc" => "Scale `x` in place and return it.",
+        ),
+    )
+    mktempdir() do path
+        write_wrapper(
+            RTarget(path, "rmutates", "libmutates"; version = "1.2.3"), abi;
+            api_metadata = meta
+        )
+        pkgdir = joinpath(path, "rmutates")
+        for (file, golden) in (
+                (joinpath("R", "lowlevel.R"), "expected_r_mutates_lowlevel.R"),
+                (joinpath("R", "facade.R"), "expected_r_mutates_facade.R"),
+            )
+            actual = read(joinpath(pkgdir, file), String)
+            expected = read(joinpath(@__DIR__, golden), String)
+            @test actual == expected
         end
     end
 end

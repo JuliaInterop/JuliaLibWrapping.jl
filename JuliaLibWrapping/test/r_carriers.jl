@@ -32,6 +32,9 @@ typedef struct { TupleBundle values; } CNTupleBundle;
 typedef struct { JLWStatus status; CNTupleCVL value; } JLWResultCVL;
 typedef struct { JLWStatus status; CNTupleCVV value; } JLWResultCVV;
 typedef struct { JLWStatus status; CNTupleBundle value; } JLWResultBundle;
+typedef struct { JLWStatus status; double value; } JLWResultD;
+typedef struct { JLWStatus status; int value; } JLWResultI;
+typedef struct { JLWStatus status; CVectorD value; } JLWResultCDV;
 
 static void set_status(JLWStatus *s, int code, const char *msg) {
   s->code = code; memset(s->message, 0, 256);
@@ -144,6 +147,33 @@ void jlw_free_strings(CStringO *p, long n) {
   for (long i=0;i<n;i++) free(p[i].data);
   free(p);
 }
+
+/* The `bindinginfo_enum.json` entrypoints: an enum argument and an enum
+   return, both plain ints in the ABI. */
+JLWResultD EnumFixture_scale_by(double x, int penalty) {
+  JLWResultD r; set_status(&r.status, 0, "");
+  r.value = penalty == 0 ? x * 2.0 : x * x;
+  return r;
+}
+
+JLWResultI EnumFixture_pick(double x) {
+  JLWResultI r; set_status(&r.status, 0, "");
+  r.value = x >= 0 ? 0 : 1;
+  return r;
+}
+
+/* The `bindinginfo_api_scale.json` entrypoint, mutated through its borrowed
+   vector. Returns a fresh owned vector holding the written values. */
+JLWResultCDV mylib_scale(CVectorD x, double factor, CStringO label) {
+  JLWResultCDV r; set_status(&r.status, 0, "");
+  long n = x.dims[0];
+  double bump = label.length > 0 ? 1.0 : 0.0;
+  for (long i = 0; i < n; i++) x.data[i] = x.data[i] * factor + bump;
+  r.value.dims[0] = n;
+  r.value.data = (double *)malloc((n > 0 ? n : 1) * sizeof(double));
+  for (long i = 0; i < n; i++) r.value.data[i] = x.data[i];
+  return r;
+}
 """
 
 # The R driver: load each generated package into its own environment, resolve
@@ -216,6 +246,35 @@ chk("bundle", ct$bundle(),
 jo <- load_pkg("rjlwresultowned")
 chk("greet", jo$greet(), "hello")
 chk("tally", jo$tally(), c(a=1.5, bb=-2.0))
+
+# An enum argument takes a member name or the integer, and an enum return
+# comes back as the member name.
+en <- load_pkg("renum")
+chk("enum return", en$pick(1), "abslog1")
+chk("enum return negative", en$pick(-1), "square")
+chk("enum arg default", en$scale_by(3), 6)
+chk("enum arg name", en$scale_by(3, "square"), 9)
+chk("enum arg integer", en$scale_by(3, 1), 9)
+bad <- tryCatch(en$scale_by(3, "nope"), error = function(e) e)
+if (!inherits(bad, "jlw_argument")) stop("a bad enum name was not rejected")
+chk(
+  "enum error message", conditionMessage(bad),
+  "penalty must be one of 'abslog1', 'square', or the underlying integer."
+)
+
+# A `mutates` argument is copied for the call and returned, so the caller's
+# vector keeps its value; `.in_place = TRUE` writes through it instead.
+mt <- load_pkg("rmutates")
+x <- c(1, 2, 3)
+res <- mt$scale(x, 2.0, "x")
+chk("mutates copy", res$x, c(3, 5, 7))
+chk("mutates original", x, c(1, 2, 3))
+chk("mutates result", res$out, c(3, 5, 7))
+
+x2 <- c(1, 2, 3)
+out2 <- mt$scale(x2, 2.0, "x", .in_place = TRUE)
+chk("in-place result", out2, c(3, 5, 7))
+chk("in-place write-through", x2, c(3, 5, 7))
 cat("OK\n")
 """
 
@@ -252,6 +311,29 @@ cat("OK\n")
             for (fixture, pkg, lib) in packages
                 write_wrapper(RTarget(path, pkg, lib), read_abi_info(fixture))
             end
+            # Enum and mutates packages need their sidecar metadata.
+            enum_meta = JuliaLibWrapping.read_api_metadata("enum.jlw.json")
+            write_wrapper(
+                RTarget(path, "renum", "libenum"),
+                read_abi_info("bindinginfo_enum.json");
+                api_metadata = enum_meta.exports, api_enums = enum_meta.enums
+            )
+            write_wrapper(
+                RTarget(path, "rmutates", "libmutates"),
+                read_abi_info("bindinginfo_api_scale.json");
+                api_metadata = Dict{String, Any}(
+                    "mylib_scale" => Dict{String, Any}(
+                        "name" => "scale",
+                        "args" => ["x"],
+                        "kwargs" => [
+                            Dict{String, Any}("name" => "factor", "default" => 2.0),
+                            Dict{String, Any}("name" => "label"),
+                        ],
+                        "mutates" => ["x"],
+                        "doc" => "Scale `x` in place and return it.",
+                    ),
+                )
+            )
             csrc = joinpath(path, "carriers.c")
             write(csrc, _R_CARRIER_C)
             lib = joinpath(path, "libcarriers." * Base.Libc.Libdl.dlext)

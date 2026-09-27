@@ -660,9 +660,13 @@ low-level binding.
 `pass_opaque` follows the Python target: an `@api` declaration may pass
 unrecognized carriers and raw pointers through as the values the low-level
 binding expects, while an undeclared entrypoint is only wrapped when every
-type is mapped. Recognized carriers are converted in either case. Enums are
-not converted yet, so an enum-annotated entry is skipped rather than emitted
-with a default that would not coerce.
+type is mapped. Recognized carriers are converted in either case. An
+`arg_enums` argument accepts a member name or the underlying integer, and a
+`return_enum` return comes back as the member name.
+
+`mutates` names the arguments the declaration writes to. They must be array
+carriers, and the wrapper copies them for the call and returns the copies,
+unless the caller passes `.in_place = TRUE`.
 """
 function _r_facade_plan(
         method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
@@ -674,7 +678,7 @@ function _r_facade_plan(
     pass_opaque = !isnothing(api_entry)
     name = _r_entry_name(method, api_entry)
     skip(reason) = (kind = :skip, reason = reason, name = name)
-    args = [
+    args = Any[
         _r_classify_arg(a.type, typeinfo, typedict; pass_opaque)
             for a in method.args
     ]
@@ -701,19 +705,101 @@ function _r_facade_plan(
         haskey(kw, "default") ? Some(kw["default"]) : nothing
         for kw in get(api_entry, "kwargs", [])
     ]
+
+    declared = _r_declared_names(method, api_entry)
+    enum_names = _r_enum_r_names(api_enums)
     if !isnothing(api_entry)
         arg_enums = get(api_entry, "arg_enums", nothing)
-        if !isnothing(arg_enums) && !isempty(arg_enums)
-            return skip("enum arguments need the R target's enum support")
+        if !isnothing(arg_enums)
+            for (i, raw) in pairs(declared)
+                key = get(arg_enums, raw, nothing)
+                key === nothing && continue
+                haskey(enum_names, String(key)) || return skip(
+                    "argument enum `$key` has no entry in the sidecar"
+                )
+                args[i].kind === :scalar || return skip(
+                    "argument `$raw` is declared as enum `$key`, but its ABI " *
+                        "type does not classify as a scalar"
+                )
+                args[i] = (kind = :enum, enum = enum_names[String(key)])
+            end
         end
         return_enum = get(api_entry, "return_enum", nothing)
-        isnothing(return_enum) ||
-            return skip("enum returns need the R target's enum support")
+        if !isnothing(return_enum)
+            haskey(enum_names, String(return_enum)) || return skip(
+                "return enum `$return_enum` has no entry in the sidecar"
+            )
+            wrapped = _r_apply_enum_return(ret, enum_names[String(return_enum)])
+            isnothing(wrapped) && return skip(
+                "return enum `$return_enum` cannot wrap the return type"
+            )
+            ret = wrapped
+        end
     end
+
+    # A declaration says which arguments it writes to. The wrapper copies
+    # them for the call and returns the copies, because R's value semantics
+    # would otherwise let a write reach a variable the caller aliases.
+    mutates = Int[]
+    for raw in (isnothing(api_entry) ? String[] : get(api_entry, "mutates", String[]))
+        i = findfirst(==(String(raw)), declared)
+        isnothing(i) && return skip(
+            "`mutates` names `$raw`, which is not an argument here"
+        )
+        (args[i].kind === :carrier && args[i].carrier.family === :array) ||
+            return skip("`mutates` names `$raw`, which is not an array argument")
+        push!(mutates, i)
+    end
+    sort!(mutates)
+
     return (;
         kind = :auto, args, ret, positional, keywords, defaults, name,
+        mutates,
         doc = isnothing(api_entry) ? "" : String(get(api_entry, "doc", "")),
     )
+end
+
+"""
+    _r_declared_names(method, api_entry) -> Vector{String}
+
+The argument names as the sidecar spells them, before sanitizing, in
+declaration order. `arg_enums` and `mutates` are keyed by these.
+"""
+function _r_declared_names(method::MethodDesc, api_entry)
+    isnothing(api_entry) && return String[a.name for a in method.args]
+    return vcat(
+        String[String(n) for n in get(api_entry, "args", [])],
+        String[String(kw["name"]) for kw in get(api_entry, "kwargs", [])],
+    )
+end
+
+"""
+    _r_enum_r_names(api_enums) -> Dict{String, String}
+
+Map each sidecar enum name to a unique R identifier, in sorted order so a
+sanitizing collision resolves the same way on every build. The identifier
+indexes `.jlr_enum_values` and names the enum in the generated messages.
+"""
+function _r_enum_r_names(api_enums::AbstractDict)
+    keys_sorted = sort(String[String(k) for k in keys(api_enums)])
+    names = _uniquify!([sanitize_r_name(k) for k in keys_sorted], Set{String}())
+    return Dict{String, String}(k => n for (k, n) in zip(keys_sorted, names))
+end
+
+"""
+    _r_apply_enum_return(ret, enum_name) -> Union{Nothing, NamedTuple}
+
+Wrap an enum-annotated return as `enum_name`. A scalar return is the enum
+itself; a `JLWResult{C}` wraps `C` and keeps the result unwrap. `nothing` when
+the return's shape cannot carry an enum.
+"""
+function _r_apply_enum_return(ret, enum_name::AbstractString)
+    if ret.kind === :scalar
+        return (kind = :enum, enum = enum_name)
+    elseif ret.kind === :result && ret.inner.kind === :scalar
+        return merge(ret, (inner = (kind = :enum, enum = enum_name),))
+    end
+    return nothing
 end
 
 """
@@ -800,7 +886,8 @@ else is exposed as a forwarder to its low-level binding with a `TODO` comment.
 its wrapper's name, argument names, keyword defaults and doc comment from the
 sidecar entry. A symbol absent from `api_metadata` (the default is an empty
 `Dict`) gets the mechanical, ABI-derived shape. `api_enums` is the sidecar's
-`enums` table, carried for the enum conversion a later phase adds.
+`enums` table; it becomes the `.jlr_enum_values` lookup the wrappers coerce
+against.
 """
 function write_wrapper(
         dest::RTarget, abi_info::ABIInfo;
@@ -819,7 +906,9 @@ function write_wrapper(
     release_present = _release_symbols_present(abi_info)
 
     _write_atomically(joinpath(rdir, "lowlevel.R"), rdir) do f
-        _write_r_lowlevel(f, dest, abi_info, typedict, release_present)
+        _write_r_lowlevel(
+            f, dest, abi_info, typedict, release_present, api_metadata, api_enums
+        )
     end
 
     facade_path = joinpath(rdir, "facade.R")
@@ -840,7 +929,9 @@ end
 
 function _write_r_lowlevel(
         f::IO, dest::RTarget, abi_info::ABIInfo, typedict::Dict{Int, String},
-        release_present::Bool = true
+        release_present::Bool = true,
+        api_metadata::AbstractDict = Dict{String, Any}(),
+        api_enums::AbstractDict = Dict{String, Any}()
     )
     (; entrypoints, typeinfo) = abi_info
 
@@ -857,6 +948,8 @@ function _write_r_lowlevel(
 
     _write_r_layout_check(f)
     _write_r_status_helpers(f)
+    isempty(api_enums) || _write_r_enum_helpers(f, api_enums)
+    _r_metadata_mutates(api_metadata) && _write_r_copy_helper(f)
 
     structs = [(id, desc) for (id, desc) in pairs(typeinfo) if desc isa StructDesc]
     if isempty(structs)
@@ -938,6 +1031,92 @@ function _write_r_status_helpers(f::IO)
 """
     )
     return nothing
+end
+
+# Enum lookups declared via `@api` argument and return types. An argument
+# accepts a member name or the underlying integer; a return comes back as the
+# member name, a form the arguments accept, so a value can be passed straight
+# back in.
+function _write_r_enum_helpers(f::IO, api_enums::AbstractDict)
+    names = _r_enum_r_names(api_enums)
+    keys_sorted = sort(String[String(k) for k in keys(api_enums)])
+    println(f, "# Enum tables declared via `@api` argument and return types.")
+    println(f, ".jlr_enum_values <- list(")
+    for (i, key) in pairs(keys_sorted)
+        members = api_enums[key]["members"]
+        pairs_str = join(
+            (
+                _r_string(String(m["name"])) * " = " *
+                    _api_kwarg_default_r(m["value"])
+                    for m in members
+            ),
+            ", ",
+        )
+        comma = i == length(keys_sorted) ? "" : ","
+        println(f, "  ", names[key], " = c(", pairs_str, ")", comma)
+    end
+    println(f, ")")
+    println(f)
+    print(
+        f, raw"""# Coerce an enum argument: a member name or the underlying integer.
+.jlr_enum_coerce <- function(name, value, argname) {
+  members <- .jlr_enum_values[[name]]
+  if (is.character(value) && length(value) == 1L) {
+    idx <- match(value, names(members))
+    if (!is.na(idx)) {
+      return(unname(members[[idx]]))
+    }
+  } else if ((is.numeric(value) || is.logical(value)) && length(value) == 1L) {
+    return(value)
+  }
+  .jlr_abort(2L, sprintf(
+    "%s must be one of %s, or the underlying integer.",
+    argname, paste(sprintf("'%s'", names(members)), collapse = ", ")
+  ))
+}
+
+# Turn an enum return's integer back into its member name.
+.jlr_enum_name <- function(name, value) {
+  members <- .jlr_enum_values[[name]]
+  idx <- match(value, members)
+  if (is.na(idx)) {
+    .jlr_abort(1L, sprintf("%s is not a known %s value", format(value), name))
+  }
+  names(members)[[idx]]
+}
+
+"""
+    )
+    return nothing
+end
+
+# A fresh vector or array with the same type and shape, for a mutating call:
+# the write reaches this copy, not the caller's buffer. `vector(typeof(x), n)`
+# always allocates, so the copy cannot alias `x` even when R's
+# copy-on-modify would have let a plain assignment leave it shared.
+function _write_r_copy_helper(f::IO)
+    print(
+        f, raw""".jlr_copy_buffer <- function(x) {
+  out <- vector(typeof(x), length(x))
+  out[] <- x
+  dim(out) <- dim(x)
+  out
+}
+
+"""
+    )
+    return nothing
+end
+
+# Does any sidecar export declare a written argument? The copy helper is
+# emitted only when one does.
+function _r_metadata_mutates(api_metadata::AbstractDict)
+    for (_, entry) in api_metadata
+        entry isa AbstractDict || continue
+        mutates = get(entry, "mutates", nothing)
+        isnothing(mutates) || isempty(mutates) || return true
+    end
+    return false
 end
 
 # One low-level binding per entrypoint whose types all have a dyncall token.
@@ -1610,56 +1789,112 @@ function _write_r_facade(
     return nothing
 end
 
-# The R expression a façade passes for one argument, converting a recognized
-# carrier with its generated builder and forwarding everything else as it
-# stands.
+# The R expression a façade passes for one argument: a recognized carrier is
+# built, an enum is coerced from a member name or integer, and everything else
+# is forwarded as it stands.
 function _r_arg_conversion(arg, name::AbstractString)
-    arg.kind === :carrier && return arg.builder * "(" * name * ")"
+    if arg.kind === :carrier
+        return arg.builder * "(" * name * ")"
+    elseif arg.kind === :enum
+        return ".jlr_enum_coerce(" * _r_string(arg.enum) * ", " * name *
+            ", " * _r_string(name) * ")"
+    end
     return String(name)
 end
 
 # Wrap the low-level call so a carrier return is converted to the R value its
-# reader produces. A `JLWResult` is already unwrapped by the binding.
+# reader produces and an enum return to its member name. A `JLWResult` is
+# already unwrapped by the binding.
 function _r_return_conversion(ret, call::AbstractString)
-    if ret.kind === :carrier
+    if ret.kind === :enum
+        return ".jlr_enum_name(" * _r_string(ret.enum) * ", " * call * ")"
+    elseif ret.kind === :carrier
         return ret.reader * "(" * call * ")"
-    elseif ret.kind === :result && ret.inner.kind === :carrier
-        return ret.inner.reader * "(" * call * ")"
+    elseif ret.kind === :result
+        if ret.inner.kind === :enum
+            return ".jlr_enum_name(" * _r_string(ret.inner.enum) * ", " * call * ")"
+        elseif ret.inner.kind === :carrier
+            return ret.inner.reader * "(" * call * ")"
+        end
     end
     return call
 end
 
+"""
+    _r_result_outputs(ret) -> Vector{String}
+
+The names a mutating wrapper gives the values the call returns alongside its
+copies: `out` for a single value, `out1`…`outN` for a tuple, and none for a
+`void` or bare-status return.
+"""
+function _r_result_outputs(ret)
+    inner = ret.kind === :result ? ret.inner : ret
+    if inner.kind === :carrier && inner.carrier.family === :tuple
+        return String["out" * string(i) for i in eachindex(inner.carrier.elements)]
+    elseif inner.kind in (:void, :status)
+        return String[]
+    end
+    return String["out"]
+end
+
 function _write_r_facade_entry(f::IO, method::MethodDesc, plan)
     lowlevel = _r_lowlevel_name(method.symbol)
-    if plan.kind === :auto
-        for line in (isempty(plan.doc) ? String[] : split(plan.doc, '\n'))
-            println(f, "# ", line)
-        end
-        signature = String[]
-        append!(signature, plan.positional)
-        for (i, name) in pairs(plan.keywords)
-            # R has no keyword-only parameters: a keyword is a named formal,
-            # carrying the sidecar's default when it has one.
-            default = plan.defaults[i]
-            push!(
-                signature,
-                isnothing(default) ? name :
-                    name * " = " * _api_kwarg_default_r(something(default))
-            )
-        end
-        names = vcat(plan.positional, plan.keywords)
-        forwarded = [_r_arg_conversion(plan.args[i], name) for (i, name) in pairs(names)]
-        call = lowlevel * "(" * join(forwarded, ", ") * ")"
-        println(f, plan.name, " <- function(", join(signature, ", "), ") {")
-        println(f, "  ", _r_return_conversion(plan.ret, call))
-        println(f, "}")
-    else
+    if plan.kind !== :auto
         println(f, "# TODO: hand-wrap — ", plan.reason, ".")
         println(f, "# The low-level binding is exposed unchanged; see R/lowlevel.R.")
         println(f, plan.name, " <- function(...) {")
         println(f, "  ", lowlevel, "(...)")
         println(f, "}")
+        return nothing
     end
+    for line in (isempty(plan.doc) ? String[] : split(plan.doc, '\n'))
+        println(f, "# ", line)
+    end
+    signature = String[]
+    append!(signature, plan.positional)
+    for (i, name) in pairs(plan.keywords)
+        # R has no keyword-only parameters: a keyword is a named formal,
+        # carrying the sidecar's default when it has one.
+        default = plan.defaults[i]
+        push!(
+            signature,
+            isnothing(default) ? name :
+                name * " = " * _api_kwarg_default_r(something(default))
+        )
+    end
+    # A copied argument comes back in the result, unless the caller asks for
+    # the write to reach its own buffer. The leading period keeps `.in_place`
+    # out of the declared keyword namespace.
+    isempty(plan.mutates) || push!(signature, ".in_place = FALSE")
+
+    names = vcat(plan.positional, plan.keywords)
+    forwarded = [_r_arg_conversion(plan.args[i], name) for (i, name) in pairs(names)]
+    call = lowlevel * "(" * join(forwarded, ", ") * ")"
+    println(f, plan.name, " <- function(", join(signature, ", "), ") {")
+    if isempty(plan.mutates)
+        println(f, "  ", _r_return_conversion(plan.ret, call))
+    else
+        for i in plan.mutates
+            println(f, "  if (!.in_place) {")
+            println(f, "    ", names[i], " <- .jlr_copy_buffer(", names[i], ")")
+            println(f, "  }")
+        end
+        println(f, "  .jlr_result <- ", _r_return_conversion(plan.ret, call))
+        println(f, "  if (.in_place) {")
+        println(f, "    return(.jlr_result)")
+        println(f, "  }")
+        parts = String[names[i] * " = " * names[i] for i in plan.mutates]
+        outputs = _r_result_outputs(plan.ret)
+        if length(outputs) == 1
+            push!(parts, "out = .jlr_result")
+        else
+            for (i, output) in pairs(outputs)
+                push!(parts, output * " = .jlr_result[[" * string(i) * "]]")
+            end
+        end
+        println(f, "  list(", join(parts, ", "), ")")
+    end
+    println(f, "}")
     return nothing
 end
 
