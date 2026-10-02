@@ -40,6 +40,13 @@ end
 Use a target instance directly with `write_wrapper`, or include it in the
 target vector passed to `build_library`.
 
+A target that ships the juliac bundle inside its output defines a few small
+hooks so `build_library` can validate and copy it: `_carries_bundle(::MyTarget)
+= true`, `_bundle_subdir(t::MyTarget) = t.bundle_subdir`, and a
+`_copy_bundle_into_package` method that places the tree where the target's
+loader looks for it. `RTarget` puts it under `inst/` because `R CMD INSTALL`
+ships that directory to the package root.
+
 The built-in emitters sanitize and uniquify foreign identifiers independently;
 do not assume Julia type spellings are valid or unique in another language.
 Pointer types may also need inline treatment rather than standalone aliases.
@@ -51,7 +58,8 @@ in ABI metadata rather than requiring Julia type objects at generation time.
 The recognizers in `src/recognizers.jl` cover `CArray`, `CString`,
 `CStrArray`, `CDict`, `COpt`, `JLWStatus`, `JLWResult`, raw primitive pointers,
 and release entrypoints. New targets can reuse these helpers so ownership and
-shape validation remain consistent with the built-in Python target.
+shape validation remain consistent with the built-in Python, MATLAB, and R
+targets.
 
 Treat a failed recognition as an ordinary unrecognized struct. A target should
 not infer ownership from a similar-looking but invalid layout.

@@ -20,7 +20,9 @@ Julia source
                     └── JuliaLibWrapping ◀──────┘
                               │
                               ├── C header
-                              └── Python package
+                              ├── Python package
+                              ├── MATLAB package
+                              └── R package
 ```
 
 The ABI JSON describes exported C symbols and exact binary layouts. The
@@ -66,6 +68,15 @@ the ABI mechanical.
 It recognizes JLWInterop carriers structurally, verifies struct layouts at
 import, converts declared values to Python types, raises `JLWError` for status
 failures, and manages owning results.
+
+[`MatlabTarget`](@ref) emits one `.m` façade per declaration plus a MEX
+gateway that performs the carrier conversion in C.
+
+[`RTarget`](@ref) emits an installable R package whose bindings call the
+library through rdyncall. It keeps the same low-level/façade split as Python,
+raises R conditions with `jlw_*` classes for status failures, and discovers a
+bundled runtime through `system.file` or the `<LIBNAME>_R_LIBRARY`
+environment variable.
 
 See [Extending JuliaLibWrapping](@ref) for the descriptor graph and target
 extension interface.

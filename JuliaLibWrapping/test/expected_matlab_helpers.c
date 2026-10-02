@@ -379,6 +379,26 @@ static void jlw_call_plain_add
     plhs[0] = jlw_out_int32_t(result);
 }
 
+static void jlw_call_scale_value
+    (int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    (void)nlhs;
+    if (nrhs != 2) {
+        mexErrMsgIdAndTxt("jlw:argument", "scale_value takes 1 arguments");
+    }
+    if (mxIsSparse(prhs[1])) {
+        mexErrMsgIdAndTxt("jlw:argument", "x must not be sparse");
+    }
+    if (!mxIsDouble(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 1) {
+        mexErrMsgIdAndTxt("jlw:argument", "x must be a double scalar");
+    }
+    double arg1 = *mxGetDoubles(prhs[1]);
+    JLWResult_Float64 result =
+        ((JLWResult_Float64 (*)(double))jlw_symbol("scale_value"))(arg1);
+    jlw_check(result.status);
+    plhs[0] = jlw_out_double(result.value);
+}
+
 static void jlw_call_stats
     (int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {

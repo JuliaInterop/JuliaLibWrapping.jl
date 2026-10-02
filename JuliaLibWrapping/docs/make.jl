@@ -31,6 +31,7 @@ makedocs(;
         "Generated bindings" => [
             "Python package and façade" => "python.md",
             "MATLAB package and gateway" => "matlab.md",
+            "R package and rdyncall bindings" => "r.md",
             "JLWInterop carriers" => "jlwinterop.md",
         ],
         "Building and distribution" => "building.md",

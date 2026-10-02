@@ -1,4 +1,4 @@
-# Build the OLS tutorial library end-to-end with a bundled Python package.
+# Build the OLS tutorial library end-to-end with bundled Python and R packages.
 # Run from this directory with a recent enough Julia 1.13:
 #
 #   julia --project=. build.jl
@@ -47,6 +47,7 @@ using JuliaLibWrapping, JuliaC
 result = standard_build(HERE;
     libname = "ols",
     project = prepare_project(),
+    r_package = "ols",
     verbose = true,
 )
 

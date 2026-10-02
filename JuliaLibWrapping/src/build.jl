@@ -37,9 +37,9 @@ docstring to `<libname>.jlw.json` in `libdir`. Once `juliac` has run,
 [`check_metadata_consistency`](@ref) validates the sidecar against the ABI
 JSON: an unknown symbol, an argument mismatch, or an enum reference that does
 not resolve is a build error. Targets can use the validated metadata's public
-names, keyword arguments, enum types, and docstrings. [`PythonTarget`](@ref)
-and [`MatlabTarget`](@ref) receive them as `write_wrapper`'s `api_metadata` and
-`api_enums` keywords.
+names, keyword arguments, enum types, and docstrings. [`PythonTarget`](@ref),
+[`MatlabTarget`](@ref) and [`RTarget`](@ref) receive them as
+`write_wrapper`'s `api_metadata` and `api_enums` keywords.
 An entry file that defines no `@api` functions produces no sidecar, and every
 target emits as it would without one.
 
@@ -80,15 +80,16 @@ A juliac-produced `.so` depends on `libjulia`, a sysimage, stdlibs, and
 artifacts — none of which a `pip install`-ing Python user has on their
 machine. Pass `bundle = true` to also produce a self-contained directory
 tree (the `juliac --bundle` layout) and copy it into every
-[`PythonTarget`](@ref)'s package. The Python loader generated for those
-targets searches the bundle first, so the embedded `RUNPATH` resolves
-`libjulia` from inside the wheel at import time.
+[`PythonTarget`](@ref)'s package and [`RTarget`](@ref)'s `inst/` tree. The
+loaders generated for those targets search the bundle first, so the embedded
+`RUNPATH` resolves `libjulia` from inside the installed package.
 
-`bundle = true` requires the `:juliac` backend and that each [`PythonTarget`](@ref)
-declare a `bundle_subdir` (e.g.
+`bundle = true` requires the `:juliac` backend and that each
+[`PythonTarget`](@ref) or [`RTarget`](@ref) declare a `bundle_subdir` (e.g.
 `PythonTarget(out, "mylib_py", "mylib"; bundle_subdir = "bundle")`).
-Targets that are not Python (e.g. [`CTarget`](@ref)) are unaffected — C
-consumers manage their own linkage.
+Targets that are not language packages (e.g. [`CTarget`](@ref)) are
+unaffected: a C header carries no bundle, and the MATLAB gateway references
+the bundle in place.
 
 `privatize` salts the bundled `libjulia` and `libjulia-internal` with a
 distinct SONAME prefix, so the loader cannot satisfy this library's runtime
@@ -143,10 +144,10 @@ function build_library(
     end
     if bundle
         for t in targets
-            t isa PythonTarget || continue
-            t.bundle_subdir === nothing && throw(
+            _carries_bundle(t) || continue
+            _bundle_subdir(t) === nothing && throw(
                 ArgumentError(
-                    "PythonTarget for package \"$(t.package_name)\" needs `bundle_subdir = \"bundle\"` " *
+                    "$(nameof(typeof(t))) for package \"$(t.package_name)\" needs `bundle_subdir = \"bundle\"` " *
                         "(or some other subdir name) when `build_library` is called with `bundle = true`; " *
                         "the bundle tree is copied into that subdirectory of the package."
                 )
@@ -190,8 +191,8 @@ function build_library(
         isdir(bundle_dir) ||
             error("juliac --bundle completed but no bundle tree at $bundle_dir")
         for t in targets
-            t isa PythonTarget || continue
-            _copy_bundle_into_python_package(t, bundle_dir)
+            _carries_bundle(t) || continue
+            _copy_bundle_into_package(t, bundle_dir)
         end
     end
 
@@ -228,6 +229,7 @@ docstrings the sidecar carries.
 accepts_api_metadata(::AbstractTarget) = false
 accepts_api_metadata(::PythonTarget) = true
 accepts_api_metadata(::MatlabTarget) = true
+accepts_api_metadata(::RTarget) = true
 
 function _apply_privatization(t::PythonTarget, privatize::Bool)
     t.privatized == privatize && return t
@@ -245,6 +247,36 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
     )
 end
 
+function _apply_privatization(t::RTarget, privatize::Bool)
+    t.privatized == privatize && return t
+    t.privatized && throw(
+        ArgumentError(
+            "RTarget for package \"$(t.package_name)\" was constructed with " *
+                "`privatized = true`, but `build_library` was called with `privatize = false`. " *
+                "The generated package would claim a private libjulia it does not have."
+        )
+    )
+    return RTarget(
+        t.dir, t.package_name, t.library_basename;
+        bundle_subdir = t.bundle_subdir, version = t.version,
+        privatized = true
+    )
+end
+
+# Whether a `bundle = true` build copies the bundle into this target at all.
+# Only language packages with an installable resource tree carry one; a C
+# header and a MATLAB `+package` directory reference the bundle in place.
+_carries_bundle(::AbstractTarget) = false
+_carries_bundle(::PythonTarget) = true
+_carries_bundle(::RTarget) = true
+
+# The `bundle_subdir` a bundle-carrying target was constructed with, or
+# `nothing` for a target that carries no bundle. A bundle-carrying target
+# whose subdir is unset is rejected up front by `build_library`.
+_bundle_subdir(::AbstractTarget) = nothing
+_bundle_subdir(t::PythonTarget) = t.bundle_subdir
+_bundle_subdir(t::RTarget) = t.bundle_subdir
+
 # Copy the bundle before emitting Python sources.
 function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractString)
     pkgdir = joinpath(t.dir, t.package_name)
@@ -255,6 +287,24 @@ function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractS
     cp(bundle_dir, dest)
     return dest
 end
+
+# R packages ship payloads through `inst/`: `R CMD INSTALL` copies the
+# contents of `inst/` to the installed package root, so the bundle lands
+# where the generated `.onLoad` looks for it with `system.file`.
+function _copy_bundle_into_r_package(t::RTarget, bundle_dir::AbstractString)
+    dest = joinpath(t.dir, t.package_name, "inst", t.bundle_subdir::String)
+    # Avoid retaining files from an older, larger bundle.
+    ispath(dest) && rm(dest; recursive = true)
+    mkpath(dirname(dest))
+    cp(bundle_dir, dest)
+    return dest
+end
+
+_copy_bundle_into_package(::AbstractTarget, bundle_dir::AbstractString) = nothing
+_copy_bundle_into_package(t::PythonTarget, bundle_dir::AbstractString) =
+    _copy_bundle_into_python_package(t, bundle_dir)
+_copy_bundle_into_package(t::RTarget, bundle_dir::AbstractString) =
+    _copy_bundle_into_r_package(t, bundle_dir)
 
 """
     standard_build(dir = pwd(); libname, kwargs...)
@@ -281,18 +331,21 @@ build_library(joinpath(dir, "src", libname*".jl"),
 ```
 
 `matlab_package` adds a [`MatlabTarget`](@ref) emitting into a
-`+<matlab_package>` directory. It is opt-in: the emitted MATLAB sources need
-`mex` run against them before they can be called, and `standard_build`
-leaves that to the user.
+`+<matlab_package>` directory, and `r_package` adds an [`RTarget`](@ref)
+emitting an installable R package named `<r_package>`. Both are opt-in:
+the emitted MATLAB sources need `mex` run against them before they can be
+called, and an R package is a separate artifact that most C and Python
+consumers do not want.
 
-The kwargs `out`, `entry`, `python_package`, `matlab_package`, `project`,
-`bundle`, and `version` override the defaults above; anything else is
-forwarded to
+The kwargs `out`, `entry`, `python_package`, `matlab_package`, `r_package`,
+`project`, `bundle`, and `version` override the defaults above; anything else
+is forwarded to
 `build_library` (e.g. `verbose`, `trim`, `privatize`). `project`
 defaults to `dir`, but can be pointed at a separate location when the
 on-disk source layout and the entry `Project.toml` live in different
 directories. `version` sets the version in the generated Python
-package's `pyproject.toml` (see [`PythonTarget`](@ref)). For layouts
+package's `pyproject.toml` and the generated R package's `DESCRIPTION`
+(see [`PythonTarget`](@ref) and [`RTarget`](@ref)). For layouts
 outside this convention, call `build_library` directly.
 """
 function standard_build(
@@ -303,12 +356,13 @@ function standard_build(
         entry::AbstractString = joinpath(dir, "src", libname * ".jl"),
         python_package::AbstractString = libname * "_py",
         matlab_package::Union{AbstractString, Nothing} = nothing,
+        r_package::Union{AbstractString, Nothing} = nothing,
         bundle::Bool = true,
         version::AbstractString = _DEFAULT_PACKAGE_VERSION,
         kwargs...
     )
     targets = _standard_targets(
-        out, libname, python_package, matlab_package, bundle, version
+        out, libname, python_package, matlab_package, r_package, bundle, version
     )
     return build_library(
         entry, targets;
@@ -318,7 +372,8 @@ function standard_build(
 end
 
 """
-    _standard_targets(out, libname, python_package, matlab_package, bundle, version)
+    _standard_targets(out, libname, python_package, matlab_package, r_package,
+                      bundle, version)
 
 The target list [`standard_build`](@ref) assembles. Separate from the build so
 that what it emits can be checked without compiling a library.
@@ -327,6 +382,7 @@ function _standard_targets(
         out::AbstractString, libname::AbstractString,
         python_package::AbstractString,
         matlab_package::Union{AbstractString, Nothing},
+        r_package::Union{AbstractString, Nothing},
         bundle::Bool, version::AbstractString
     )
     targets = AbstractTarget[
@@ -342,6 +398,14 @@ function _standard_targets(
         MatlabTarget(
             out, matlab_package, libname;
             library_subdir = bundle ? joinpath(libname * "-bundle", "lib") : ""
+        )
+    )
+    isnothing(r_package) || push!(
+        targets,
+        RTarget(
+            out, r_package, libname;
+            bundle_subdir = bundle ? "bundle" : nothing,
+            version
         )
     )
     return targets

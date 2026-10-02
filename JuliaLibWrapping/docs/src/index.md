@@ -44,8 +44,10 @@ for a conventional project; [`build_library`](@ref) provides detailed control.
 
 The Python output separates regenerated mechanical bindings from an
 author-editable public façade. A bundled package can carry its own Julia
-runtime, so its users do not need Julia installed. See [Generated Python
-bindings](@ref) and [Building and distributing a library](@ref).
+runtime, so its users do not need Julia installed. The package also emits
+MATLAB and R bindings when asked, from the same ABI and sidecar metadata. See
+[Generated Python bindings](@ref), [R package and rdyncall
+bindings](@ref), and [Building and distributing a library](@ref).
 
 ## Find a topic
 

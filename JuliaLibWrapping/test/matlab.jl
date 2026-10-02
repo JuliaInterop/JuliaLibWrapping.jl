@@ -337,14 +337,14 @@ end
 @testset "standard_build target list" begin
     # A C header and a Python package by default, as before.
     default = JuliaLibWrapping._standard_targets(
-        "out", "demo", "demo_py", nothing, true, "0.0.0"
+        "out", "demo", "demo_py", nothing, nothing, true, "0.0.0"
     )
     @test map(typeof, default) == [CTarget, PythonTarget]
 
     # MATLAB is opt-in: its sources need `mex` run against them before
     # they can be called, which a build does not do.
     with_matlab = JuliaLibWrapping._standard_targets(
-        "out", "demo", "demo_py", "demo", true, "0.0.0"
+        "out", "demo", "demo_py", "demo", nothing, true, "0.0.0"
     )
     @test map(typeof, with_matlab) == [CTarget, PythonTarget, MatlabTarget]
     matlab = last(with_matlab)
