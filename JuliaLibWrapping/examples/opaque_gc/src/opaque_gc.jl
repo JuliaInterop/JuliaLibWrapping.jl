@@ -97,7 +97,9 @@ calls this and then confirms the objects are still counted and still readable.
 Base.@ccallable function force_gc()::UInt64
     num_collected_models[] = 0
     sleep(.1)
+    prevstate = GC.enable(true)
     GC.gc()
+    GC.enable(prevstate)
     sleep(.1)
     num_freed = num_collected_models[]
     num_collected_models[] = 0
