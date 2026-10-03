@@ -85,17 +85,18 @@ def test_objects_survive_forced_julia_gc():
     assert num_active_opaques() == 0
 
 
-def test_freed_object_is_collectable_after_gc():
-    # The complement of the test above: once a handle is freed, its Julia root
-    # is gone, so the object is no longer counted and a forced collection is a
-    # no-op for the count (it neither resurrects nor double-frees anything).
+def test_object_is_only_finalized_when_freed():
+    # Checks the variables only referred to by globals are rooted, 
+    # as was not the case in
+    # https://github.com/JuliaLang/julia/issues/60846
+
     force_gc()
     disable_gc()
     try:
         assert num_active_opaques() == 0
         h = make_model(4)
 
-        # Check that h is collected after we freed it
+        # Check that h is collected after we freed it, but not before
         assert force_gc() == 0
         assert num_active_opaques() == 1
         h.free()
@@ -156,7 +157,7 @@ if __name__ == "__main__":
     test_gc_frees_each_handle()
     test_objects_survive_forced_julia_gc()
     test_immutable_struct_round_trips()
-    test_freed_object_is_collectable_after_gc()
+    test_object_is_only_finalized_when_freed()
     test_bulk_collection_returns_to_zero()
     test_explicit_free_is_idempotent()
     test_explicit_free_then_gc_frees_only_once()
