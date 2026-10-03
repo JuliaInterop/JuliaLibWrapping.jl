@@ -33,6 +33,7 @@ const num_collected_models = Base.RefValue{UInt64}(0)
 function make_model(n::Int64)
     m = Model(Float64[i for i in 1:n])
     finalizer(m) do _
+        println(Core.stdout, "freeing")
         num_collected_models[] += 1
     end
     m
@@ -89,15 +90,16 @@ end
 """
     force_gc()
 
-Trigger a full Julia garbage collection. A live handle roots its Julia object
+Trigger a full Julia garbage collection. A l<ive handle roots its Julia object
 in the per-type storage table, so `GC.gc()` must not reclaim it; the smoke test
 calls this and then confirms the objects are still counted and still readable.
 """
 Base.@ccallable function force_gc()::UInt64
-    num_collected_models[] = 0
     GC.gc()
-    sleep(1)
-    return num_collected_models[]
+    sleep(.1)
+    num_freed = num_collected_models[]
+    num_collected_models[] = 0
+    return num_freed
 end
 
 Base.@ccallable function disable_gc()::Cvoid
