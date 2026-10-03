@@ -123,7 +123,7 @@ def test_freed_object_is_collectable_after_gc():
     # The complement of the test above: once a handle is freed, its Julia root
     # is gone, so the object is no longer counted and a forced collection is a
     # no-op for the count (it neither resurrects nor double-frees anything).
-    println("Initiating GC test")
+    print("Initiating GC test")
     assert force_gc()
     disable_gc()
     assert num_active_opaques() == 0
