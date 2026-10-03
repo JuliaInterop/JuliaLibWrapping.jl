@@ -101,10 +101,12 @@ end
 
 Base.@ccallable function disable_gc()::Cvoid
     GC.enable(false)
+    nothing
 end
 
 Base.@ccallable function enable_gc()::Cvoid
     GC.enable(true)
+    nothing
 end
 
 
