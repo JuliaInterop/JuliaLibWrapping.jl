@@ -23,7 +23,7 @@ end
 # object rooted until its handle is freed.
 @register_opaque_carrier Model
 
-num_collected_models = Threads.Atomic{Int}(0)
+const num_collected_models = Base.RefValue{UInt64}(0)
 
 # Allocate a model and return an opaque handle to it. The payload is a
 # deterministic pattern (`1.0, 2.0, …, n`) so the caller can check the stored
