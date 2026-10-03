@@ -23,6 +23,8 @@ from opaque_gc_py import (
     point_sum,
     num_active_opaques,
     force_gc,
+    disable_gc,
+    enable_gc,
     Opaque,
 )
 
@@ -121,13 +123,16 @@ def test_freed_object_is_collectable_after_gc():
     # The complement of the test above: once a handle is freed, its Julia root
     # is gone, so the object is no longer counted and a forced collection is a
     # no-op for the count (it neither resurrects nor double-frees anything).
+    disable_gc()
     assert num_active_opaques() == 0
     h = make_model(4)
+    assert force_gc() == 0
     assert num_active_opaques() == 1
     h.free()
     assert num_active_opaques() == 0
+    assert force_gc() == 1
     for _ in range(3):
-        force_gc()
+        assert force_gc() == 0
     assert num_active_opaques() == 0
 
 

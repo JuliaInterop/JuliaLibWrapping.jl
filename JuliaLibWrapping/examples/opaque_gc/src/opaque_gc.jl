@@ -23,12 +23,20 @@ end
 # object rooted until its handle is freed.
 @register_opaque_carrier Model
 
+num_collected_models = Threads.Atomic{Int}(0)
+
 # Allocate a model and return an opaque handle to it. The payload is a
 # deterministic pattern (`1.0, 2.0, …, n`) so the caller can check the stored
 # data byte for byte after a round trip. The object stays alive until the
 # handle is released — explicitly via the Python wrapper's `free()`, or
 # automatically when that wrapper is garbage-collected.
-make_model(n::Int64) = Model(Float64[i for i in 1:n])
+function make_model(n::Int64)
+    m = Model(Float64[i for i in 1:n])
+    finalizer(m) do 
+        num_collected_models[] += 1
+    end
+    m
+end
 @api make_model(n::Int64)::Model
 
 # Read a model's length back through its handle. This dereferences the Julia
@@ -85,10 +93,20 @@ Trigger a full Julia garbage collection. A live handle roots its Julia object
 in the per-type storage table, so `GC.gc()` must not reclaim it; the smoke test
 calls this and then confirms the objects are still counted and still readable.
 """
-Base.@ccallable function force_gc()::Cvoid
+Base.@ccallable function force_gc()::UInt64
+    num_collected_models[] = 0
     GC.gc()
-    return nothing
+    return num_collected_models[]
 end
+
+Base.@ccallable function disable_gc()::Cvoid
+    GC.enable(false)
+end
+
+Base.@ccallable function enable_gc()::Cvoid
+    GC.enable(true)
+end
+
 
 # Emit `jlw_free`, `jlw_free_strings` and `jlw_free_opaque` together. The last
 # is what the Python `Opaque` wrapper calls to release a handle; without this
