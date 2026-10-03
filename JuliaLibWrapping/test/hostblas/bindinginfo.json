@@ -1,0 +1,77 @@
+{
+  "functions": [
+    {
+      "symbol": "demo_add",
+      "name": "demo_add(a::Int64, b::Int64)",
+      "arguments": [
+        { "name": "a", "type_id": 1 },
+        { "name": "b", "type_id": 1 }
+      ],
+      "returns": { "type_id": 1 }
+    },
+    {
+      "symbol": "hostblas_takeover",
+      "name": "hostblas_takeover(path::Ptr{UInt8})",
+      "arguments": [
+        { "name": "path", "type_id": 2 }
+      ],
+      "returns": { "type_id": 3 }
+    },
+    {
+      "symbol": "hostblas_is_ready",
+      "name": "hostblas_is_ready()",
+      "arguments": [],
+      "returns": { "type_id": 3 }
+    },
+    {
+      "symbol": "hostblas_last_error",
+      "name": "hostblas_last_error(out::Ptr{UInt8}, outlen::Cint)",
+      "arguments": [
+        { "name": "out", "type_id": 2 },
+        { "name": "outlen", "type_id": 3 }
+      ],
+      "returns": { "type_id": 3 }
+    },
+    {
+      "symbol": "hostblas_forwarded_count",
+      "name": "hostblas_forwarded_count()",
+      "arguments": [],
+      "returns": { "type_id": 3 }
+    }
+  ],
+  "types": [
+    {
+      "id": 1,
+      "kind": "primitive",
+      "name": "Int64",
+      "signed": true,
+      "bits": 64,
+      "size": 8,
+      "alignment": 8
+    },
+    {
+      "id": 2,
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "pointee_type_id": 4
+    },
+    {
+      "id": 3,
+      "kind": "primitive",
+      "name": "Int32",
+      "signed": true,
+      "bits": 32,
+      "size": 4,
+      "alignment": 4
+    },
+    {
+      "id": 4,
+      "kind": "primitive",
+      "name": "UInt8",
+      "signed": false,
+      "bits": 8,
+      "size": 1,
+      "alignment": 1
+    }
+  ]
+}

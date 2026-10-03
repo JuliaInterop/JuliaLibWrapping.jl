@@ -90,4 +90,6 @@ non-privatized package warns when another JuliaLibWrapping package is already
 loaded in the process.
 
 See [Bundling for distribution](@ref) and [Multiple wrapped libraries in one
-process](@ref) for the runtime implications.
+process](@ref) for the runtime implications. With `host_blas = true`, importing
+the package also retargets Julia's BLAS at a BLAS the host has already loaded;
+see [Running in the host BLAS](@ref).

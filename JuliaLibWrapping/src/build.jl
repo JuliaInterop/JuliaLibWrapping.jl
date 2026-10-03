@@ -107,6 +107,18 @@ library, using the same syntax as the `--cpu-target` `julia` flag or the
 `"generic;sandybridge,-xsaveopt,clone_all"`). The default, `nothing`, defers
 to `JULIA_CPU_TARGET` if it is set in the environment, or otherwise to the
 host CPU.
+
+# Host BLAS
+
+When a [`PythonTarget`](@ref) is constructed with `host_blas = true`,
+`build_library` compiles the shipped `HostBlasTakeover` module into the same
+library as `entry` (through a generated entry file) and, with `bundle = true`,
+prunes the OpenBLAS and gfortran/gomp libraries that `juliac` always bundles,
+replacing the OpenBLAS slot with a non-BLAS placeholder. The generated Python
+package gains an import-time hook that finds a BLAS already loaded in the host
+process and retargets libblastrampoline at it. Every Python target must agree
+on the option; the takeover is compiled once per library. `host_blas` requires
+a single-file `entry` and, for the host search and the prune, Linux.
 """
 function build_library(
         entry::AbstractString,
@@ -156,6 +168,26 @@ function build_library(
 
     project = _materialize_project(project)
 
+    # `host_blas` is a property of the library, not of one target, so it comes
+    # from the Python targets and must be consistent across them. The takeover
+    # is compiled in below and the bundle is pruned after `juliac`.
+    host_blas = _host_blas_setting(targets)
+    if host_blas
+        _require_host_blas_supported()
+        compile_ccallable || throw(
+            ArgumentError(
+                "host_blas = true needs `compile_ccallable = true`: the takeover " *
+                    "is exported as `Base.@ccallable` entry points."
+            )
+        )
+        isfile(entry) || throw(
+            ArgumentError(
+                "host_blas = true requires `entry` to be a single Julia file, " *
+                    "not a package directory: $entry"
+            )
+        )
+    end
+
     mkpath(libdir)
     library_path = joinpath(libdir, libname * "." * Libdl.dlext)
 
@@ -163,6 +195,16 @@ function build_library(
     metadata_path = isnothing(sidecar) ? nothing : sidecar.path
     api_metadata = isnothing(sidecar) ? Dict{String, Any}() : sidecar.metadata
     api_enums = isnothing(sidecar) ? Dict{String, Any}() : sidecar.enums
+
+    # With `host_blas`, `juliac` compiles a generated entry that `include`s
+    # the takeover and then the wrapped entry, so both APIs share one
+    # libjulia. The API sidecar above is still dumped from the original entry.
+    compile_entry = entry
+    if host_blas
+        compile_entry = write_host_blas_entry(
+            entry, joinpath(libdir, libname * "_host_blas_entry.jl")
+        )
+    end
 
     ext = Base.get_extension(@__MODULE__, :JuliaLibWrappingJuliaCExt)
     isnothing(ext) &&
@@ -174,7 +216,7 @@ function build_library(
     bundle && ispath(bundle_dir) && rm(bundle_dir; recursive = true)
 
     ext._build_library_juliac(
-        entry; project, libname, libdir, abi_path,
+        compile_entry; project, libname, libdir, abi_path,
         trim, compile_ccallable, verbose,
         bundle, bundle_dir = (bundle ? bundle_dir : nothing),
         privatize, cpu_target
@@ -189,6 +231,9 @@ function build_library(
     if bundle
         isdir(bundle_dir) ||
             error("juliac --bundle completed but no bundle tree at $bundle_dir")
+        # Prune before the bundle is copied into any target, so every copy is
+        # already BLAS-free.
+        host_blas && prune_bundle_for_host_blas(bundle_dir; verbose)
         for t in targets
             t isa PythonTarget || continue
             _copy_bundle_into_python_package(t, bundle_dir)
@@ -241,7 +286,7 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
     return PythonTarget(
         t.dir, t.package_name, t.library_basename;
         bundle_subdir = t.bundle_subdir, version = t.version,
-        privatized = true
+        privatized = true, host_blas = t.host_blas
     )
 end
 
@@ -285,6 +330,10 @@ build_library(joinpath(dir, "src", libname*".jl"),
 `mex` run against them before they can be called, and `standard_build`
 leaves that to the user.
 
+`host_blas` sets the `host_blas` option on the generated [`PythonTarget`](@ref),
+so the library runs its `LinearAlgebra` calls in a BLAS the host process has
+already loaded. See [`build_library`](@ref) for what that emits and requires.
+
 The kwargs `out`, `entry`, `python_package`, `matlab_package`, `project`,
 `bundle`, and `version` override the defaults above; anything else is
 forwarded to
@@ -305,10 +354,11 @@ function standard_build(
         matlab_package::Union{AbstractString, Nothing} = nothing,
         bundle::Bool = true,
         version::AbstractString = _DEFAULT_PACKAGE_VERSION,
+        host_blas::Bool = false,
         kwargs...
     )
     targets = _standard_targets(
-        out, libname, python_package, matlab_package, bundle, version
+        out, libname, python_package, matlab_package, bundle, version, host_blas
     )
     return build_library(
         entry, targets;
@@ -327,14 +377,14 @@ function _standard_targets(
         out::AbstractString, libname::AbstractString,
         python_package::AbstractString,
         matlab_package::Union{AbstractString, Nothing},
-        bundle::Bool, version::AbstractString
+        bundle::Bool, version::AbstractString, host_blas::Bool = false
     )
     targets = AbstractTarget[
         CTarget(out, libname),
         PythonTarget(
             out, python_package, libname;
             bundle_subdir = bundle ? "bundle" : nothing,
-            version
+            version, host_blas
         ),
     ]
     isnothing(matlab_package) || push!(

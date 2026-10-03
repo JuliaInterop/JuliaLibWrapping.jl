@@ -476,6 +476,10 @@ end
             tv = PythonTarget("/tmp/foo", "libsimple", "libsimple"; version = "1.2.3")
             @test sprint(show, tv) ==
                 "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; version = \"1.2.3\")"
+            th = PythonTarget("/tmp/foo", "libsimple", "libsimple"; host_blas = true)
+            @test th.host_blas
+            @test sprint(show, th) ==
+                "PythonTarget(\"/tmp/foo\", \"libsimple\", \"libsimple\"; host_blas = true)"
         end
 
         @testset "PythonTarget version" begin
@@ -524,6 +528,62 @@ end
                     bp = joinpath(path, "libsimple", "_lowlevel.py")
                     cmd = `$python3 -c "import ast; ast.parse(open('$bp').read())"`
                     @test success(run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true))
+                end
+            end
+        end
+
+        @testset "host_blas output" begin
+            # A subdirectory keeps this fixture out of the MATLAB goldens,
+            # which aggregate every top-level `bindinginfo_*.json`.
+            abi_info = read_abi_info(joinpath(@__DIR__, "hostblas", "bindinginfo.json"))
+            mktempdir() do path
+                dest = PythonTarget(path, "demo_py", "demo"; host_blas = true)
+                write_wrapper(dest, abi_info)
+
+                pkgdir = joinpath(path, "demo_py")
+                hook = read(joinpath(pkgdir, "_hostblas.py"), String)
+                lowlevel = read(joinpath(pkgdir, "_lowlevel.py"), String)
+                facade = read(joinpath(pkgdir, "_facade.py"), String)
+                init = read(joinpath(pkgdir, "__init__.py"), String)
+
+                # The hook discovers a loaded host BLAS and retargets the
+                # trampolines at it, with a readable failure otherwise.
+                @test occursin("/proc/self/maps", hook)
+                @test occursin("hostblas_takeover", hook)
+                @test occursin("hostblas_is_ready", hook)
+                @test occursin("hostblas_last_error", hook)
+                @test occursin("_HOST_BLAS_ENV_VAR = \"DEMO_PY_HOST_BLAS\"", hook)
+                @test occursin("no loaded BLAS library found", hook)
+                @test occursin("raise RuntimeError(", hook)
+                @test !occursin("exit(", hook)
+
+                # Imported for its side effect, after the façade has loaded the
+                # shared library and therefore the Julia runtime.
+                @test occursin("from . import _hostblas", init)
+
+                # The takeover is bound in `_lowlevel` for the hook, but stays
+                # out of the public façade and `__all__`.
+                @test occursin("hostblas_takeover", lowlevel)
+                @test occursin("hostblas_last_error", lowlevel)
+                @test !occursin("hostblas", facade)
+                @test occursin("__all__ = [\"demo_add\"]", facade)
+
+                # The hook imports neither numpy nor anything else; the CArray
+                # helpers still force the numpy dependency.
+                @test occursin(
+                    "dependencies = [\"numpy>=1.20\"]",
+                    read(joinpath(path, "pyproject.toml"), String)
+                )
+
+                python3 = Sys.which("python3")
+                if python3 !== nothing
+                    for name in ("_hostblas.py", "_lowlevel.py", "_facade.py")
+                        fp = joinpath(pkgdir, name)
+                        cmd = `$python3 -c "import ast; ast.parse(open('$fp').read())"`
+                        @test success(
+                            run(pipeline(cmd; stderr = devnull, stdout = devnull); wait = true)
+                        )
+                    end
                 end
             end
         end
@@ -3664,9 +3724,13 @@ end
     @testset "ExplicitImports" begin
         # JSON.parsefile and JSON.parse are the canonical JSON.jl entry points
         # but JSON.jl pre-dates the `public` keyword and never marked them
-        # public. Disable the bundled all-qualified-accesses-are-public check
-        # and re-run it with those names ignored.
+        # public. `Base.USE_BLAS64` is likewise the documented way to ask
+        # whether the running Julia uses an ILP64 BLAS, but Base does not mark
+        # it public. Disable the bundled all-qualified-accesses-are-public
+        # check and re-run it with those names ignored.
         test_explicit_imports(JuliaLibWrapping; all_qualified_accesses_are_public = false)
-        test_all_qualified_accesses_are_public(JuliaLibWrapping; ignore = (:parsefile, :parse))
+        test_all_qualified_accesses_are_public(
+            JuliaLibWrapping; ignore = (:parsefile, :parse, :USE_BLAS64)
+        )
     end
 end

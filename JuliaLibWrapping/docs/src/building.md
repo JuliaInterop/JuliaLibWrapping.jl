@@ -89,6 +89,40 @@ target. Generated `pyproject.toml` metadata builds a generic sdist or wheel;
 distributors remain responsible for platform tags and any required wheel
 audit/repair tooling.
 
+## Running in the host BLAS
+
+A bundled library normally carries its own OpenBLAS. Pass `host_blas = true`
+to run Julia's `LinearAlgebra` in a BLAS the host process has already loaded,
+for example the OpenBLAS that PyPI NumPy ships. Julia and NumPy then share one
+backend and one thread pool, and the bundle loses the BLAS it would otherwise
+duplicate.
+
+```julia
+standard_build(@__DIR__; libname = "mylib", host_blas = true)
+```
+
+[`build_library`](@ref) compiles the takeover module into the same library,
+prunes the OpenBLAS and gfortran/gomp libraries from the bundle, and leaves a
+non-BLAS placeholder in the OpenBLAS slot so that `OpenBLAS_jll` still
+initializes. The generated Python package gains a `_hostblas.py` hook that
+runs at import time: it finds a loaded BLAS, calls the takeover, and raises a
+Python exception when no compatible BLAS is available. The takeover entry
+points stay out of the package façade.
+
+The hook reads `/proc/self/maps`, and the prune replaces an ELF `.so`, so
+`host_blas` is Linux-only. It also requires a single-file `entry` and an ILP64
+host BLAS; a loaded LP64 BLAS is refused with a readable error. Set
+`<PACKAGE_NAME>_HOST_BLAS` to the path of an ILP64 BLAS to override discovery.
+Without `bundle = true` the takeover still runs, but the prune is skipped.
+
+Import the host package before the wrapped one, so the BLAS is loaded when the
+hook runs:
+
+```python
+import numpy as np
+import mylib_py
+```
+
 ## Multiple wrapped libraries in one process
 
 Multiple APIs can be compiled into one Julia library. If they are built as

@@ -1,7 +1,7 @@
 """
     PythonTarget(dir, package_name, library_basename;
                  bundle_subdir = nothing, version = $(repr(_DEFAULT_PACKAGE_VERSION)),
-                 privatized = false)
+                 privatized = false, host_blas = false)
 
 Output configuration for a Python ctypes-based wrapper package. `dir` is the
 directory into which the package will be written; a sub-directory named
@@ -28,6 +28,16 @@ be PEP 440-compatible; a Julia `Major.Minor.Patch` version string is valid.
 without one warns if another wrapped package is already loaded. [`build_library`](@ref)
 sets this option; pass it directly only when using [`write_wrapper`](@ref) for
 a bundle built elsewhere.
+
+`host_blas` asks for a package whose Julia `LinearAlgebra` calls run in a BLAS
+the host process has already loaded, instead of the OpenBLAS `juliac` bundles.
+It is the target-side half of the option: the generated package gains an
+import-time `_hostblas.py` hook that finds the host BLAS and retargets
+libblastrampoline at it, and the takeover entry points (`hostblas_*`) stay out
+of the public façade. [`build_library`](@ref) also compiles the takeover into
+the library and prunes the bundled BLAS; pass `host_blas = true` directly only
+for a library already built that way. The host search and the bundle prune are
+Linux-only. See the "Running in the host BLAS" section of the manual.
 """
 struct PythonTarget <: AbstractTarget
     dir::String
@@ -36,13 +46,15 @@ struct PythonTarget <: AbstractTarget
     bundle_subdir::Union{Nothing, String}
     version::String
     privatized::Bool
+    host_blas::Bool
 end
 
 PythonTarget(
     dir::AbstractString, package_name::AbstractString,
     library_basename::AbstractString; bundle_subdir = nothing,
     version::AbstractString = _DEFAULT_PACKAGE_VERSION,
-    privatized::Bool = false
+    privatized::Bool = false,
+    host_blas::Bool = false
 ) =
     PythonTarget(
     String(dir), String(package_name), String(library_basename),
@@ -52,7 +64,8 @@ PythonTarget(
                 "PythonTarget version must not be empty"
             )
         ) : String(version),
-    privatized
+    privatized,
+    host_blas
 )
 
 function Base.show(io::IO, t::PythonTarget)
@@ -63,6 +76,7 @@ function Base.show(io::IO, t::PythonTarget)
     t.bundle_subdir === nothing || print(io, "; bundle_subdir = ", repr(t.bundle_subdir))
     t.version == _DEFAULT_PACKAGE_VERSION || print(io, "; version = ", repr(t.version))
     t.privatized && print(io, "; privatized = true")
+    t.host_blas && print(io, "; host_blas = true")
     return print(io, ")")
 end
 
@@ -476,10 +490,13 @@ function write_wrapper(
         end
     end
 
-    # Report bare-pointer arguments during generation.
+    # Report bare-pointer arguments during generation. The host-BLAS takeover
+    # entry points are plumbing, not the wrapped library's API, so they do not
+    # warrant the advisory.
     let raw_ptr_methods = [
             m.symbol for m in entrypoints
-                if !isempty(raw_primitive_pointer_args(m, typeinfo))
+                if !isempty(raw_primitive_pointer_args(m, typeinfo)) &&
+                !(dest.host_blas && m.symbol in _HOST_BLAS_ENTRYPOINTS)
         ]
         isempty(raw_ptr_methods) || @info "JuliaLibWrapping: entrypoints take raw `Ptr{<primitive>}` arguments; the emitted Python wrappers carry a docstring describing the layout/ownership contract. Consider wrapping these in `CArray{owned,T,N}` (JLWInterop) for safer interop." methods = raw_ptr_methods
     end
@@ -488,7 +505,7 @@ function write_wrapper(
         _python_status_path(m, typeinfo) !== nothing
             for m in entrypoints
     )
-    needs_numpy = any(
+    needs_numpy = dest.host_blas || any(
         type isa StructDesc &&
             _python_carray_info(type, typeinfo) !== nothing
             for type in values(typeinfo)
@@ -522,6 +539,15 @@ function write_wrapper(
         type isa StructDesc
             for type in values(typeinfo)
     )
+
+    # `_hostblas.py` is generated infrastructure, not an author-editable
+    # façade, so it is rewritten on every build like `_lowlevel.py`.
+    if dest.host_blas
+        _write_atomically(joinpath(pkgdir, "_hostblas.py"), pkgdir) do f
+            _write_hostblas_module(f, dest)
+        end
+    end
+
     init_path = joinpath(pkgdir, "__init__.py")
     open(init_path, "w") do f
         println(
@@ -535,6 +561,10 @@ function write_wrapper(
             println(f, "from ._facade import *  # noqa: F401,F403")
             println(f, "from ._facade import __all__  # noqa: F401")
         end
+        # Imported last: the façade has loaded `_lowlevel` (and therefore the
+        # shared library) by now, so the takeover runs once, before any Julia
+        # BLAS call.
+        dest.host_blas && println(f, "from . import _hostblas  # noqa: F401")
     end
 
     pyproject_path = joinpath(dest.dir, "pyproject.toml")
@@ -1966,7 +1996,14 @@ function _write_facade_stub(
         api_metadata::AbstractDict = Dict{String, Any}(),
         api_enums::AbstractDict = Dict{String, Any}()
     )
-    (; entrypoints, typeinfo) = abi_info
+    (; typeinfo) = abi_info
+    # With `host_blas`, the `hostblas_*` takeover entry points are build and
+    # runtime plumbing: `_lowlevel` still binds them so the generated
+    # `_hostblas.py` can call the takeover, but the public façade and `__all__`
+    # leave them out.
+    entrypoints = dest.host_blas ?
+        filter(m -> m.symbol ∉ _HOST_BLAS_ENTRYPOINTS, abi_info.entrypoints) :
+        abi_info.entrypoints
 
     struct_names = String[]
     for (id, type) in pairs(typeinfo)
