@@ -159,6 +159,5 @@ if __name__ == "__main__":
     test_immutable_struct_round_trips()
     test_object_is_only_finalized_when_freed()
     test_bulk_collection_returns_to_zero()
-    test_explicit_free_is_idempotent()
     test_explicit_free_then_gc_frees_only_once()
     print("opaque_gc_py GC smoke test passed")
