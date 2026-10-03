@@ -33,7 +33,6 @@ const num_collected_models = Base.RefValue{UInt64}(0)
 function make_model(n::Int64)
     m = Model(Float64[i for i in 1:n])
     finalizer(m) do _
-        println(Core.stdout, "freeing")
         num_collected_models[] += 1
     end
     m
@@ -96,14 +95,11 @@ calls this and then confirms the objects are still counted and still readable.
 """
 Base.@ccallable function force_gc()::UInt64
     num_collected_models[] = 0
-    sleep(.1)
     prevstate = GC.enable(true)
     GC.gc()
     GC.enable(prevstate)
     sleep(.1)
-    num_freed = num_collected_models[]
-    num_collected_models[] = 0
-    return num_freed
+    return num_collected_models[]
 end
 
 Base.@ccallable function disable_gc()::Cvoid
