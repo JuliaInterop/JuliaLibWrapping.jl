@@ -32,7 +32,7 @@ const num_collected_models = Base.RefValue{UInt64}(0)
 # automatically when that wrapper is garbage-collected.
 function make_model(n::Int64)
     m = Model(Float64[i for i in 1:n])
-    finalizer(m) do 
+    finalizer(m) do _
         num_collected_models[] += 1
     end
     m
