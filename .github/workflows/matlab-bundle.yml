@@ -20,7 +20,7 @@ jobs:
         with:
           version: 'pre'
           arch: x64
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Instantiate the example build environment
         run: |
           julia --project=JuliaLibWrapping/examples/boundary/build-env \
