@@ -512,6 +512,99 @@ end
         @test occursin("\"pkg\"", err.msg)
     end
 
+    @testset "host_blas helpers" begin
+        # The takeover is compiled once per library, so every Python target
+        # must agree on the option.
+        mktempdir() do dir
+            on = PythonTarget(dir, "on_py", "on"; host_blas = true)
+            off = PythonTarget(dir, "off_py", "off")
+            @test JuliaLibWrapping._host_blas_setting(AbstractTarget[on]) === true
+            @test JuliaLibWrapping._host_blas_setting(AbstractTarget[off]) === false
+            @test JuliaLibWrapping._host_blas_setting(AbstractTarget[on, on]) === true
+            @test JuliaLibWrapping._host_blas_setting(AbstractTarget[off, off]) === false
+            @test_throws "must agree on `host_blas`" JuliaLibWrapping._host_blas_setting(
+                AbstractTarget[on, off]
+            )
+            # A non-Python target carries no option and does not conflict.
+            @test JuliaLibWrapping._host_blas_setting(AbstractTarget[CTarget(dir, "x")]) === false
+        end
+
+        # The generated juliac entry includes the takeover, then the wrapped
+        # entry by absolute path so its `@__DIR__` still resolves.
+        mktempdir() do dir
+            entry = joinpath(dir, "user.jl")
+            write(entry, "module user end\n")
+            shim = JuliaLibWrapping.write_host_blas_entry(entry, joinpath(dir, "shim.jl"))
+            text = read(shim, String)
+            @test occursin(repr(abspath(JuliaLibWrapping._HOST_BLAS_TAKEOVER_PATH)), text)
+            @test occursin(repr(abspath(entry)), text)
+        end
+
+        # The takeover is compiled into a single entry file, so a
+        # package-directory entry is rejected rather than silently ignored.
+        if Sys.islinux()
+            mktempdir() do dir
+                @test_throws "single Julia file" build_library(
+                    dir, [PythonTarget(dir, "pkg_py", "pkg"; host_blas = true)];
+                    project = dir, libname = "pkg", libdir = dir
+                )
+            end
+
+            # Without `--compile-ccallable` the takeover entry points would not
+            # be exported at all.
+            mktempdir() do dir
+                entry = joinpath(dir, "x.jl")
+                write(entry, "module x end\n")
+                @test_throws "compile_ccallable" build_library(
+                    entry, [PythonTarget(dir, "x_py", "x"; host_blas = true)];
+                    project = dir, libname = "x", libdir = dir, compile_ccallable = false
+                )
+            end
+        end
+
+        # The prune removes the bundled BLAS and refills every name it
+        # removed; `OpenBLAS_jll` dlopens the unversioned name while the
+        # bundle also holds a versioned file and a `.so.0` alias.
+        has_cc = !isnothing(Sys.which("cc")) || !isnothing(Sys.which("gcc")) ||
+            !isnothing(Sys.which("clang"))
+        if Sys.islinux() && has_cc
+            mktempdir() do dir
+                julia_dir = joinpath(dir, "lib", "julia")
+                mkpath(julia_dir)
+                openblas = [
+                    "libopenblas64_.0.3.30.so", "libopenblas64_.so", "libopenblas64_.so.0",
+                ]
+                for name in openblas
+                    write(joinpath(julia_dir, name), "not really a library")
+                end
+                for name in ("libgfortran.so.5", "libgomp.so.1", "libblastrampoline.so.5")
+                    write(joinpath(julia_dir, name), "")
+                end
+                JuliaLibWrapping.prune_bundle_for_host_blas(dir)
+                for name in openblas
+                    @test filesize(joinpath(julia_dir, name)) > 0
+                end
+                @test !isfile(joinpath(julia_dir, "libgfortran.so.5"))
+                @test !isfile(joinpath(julia_dir, "libgomp.so.1"))
+                # libblastrampoline is a dispatcher, not a BLAS: it stays.
+                @test isfile(joinpath(julia_dir, "libblastrampoline.so.5"))
+                # The compile scratch file does not survive the prune.
+                @test !any(
+                    startswith("jlw_openblas_placeholder"), readdir(julia_dir)
+                )
+            end
+
+            # A bundle with nothing to replace is a loud failure, not a
+            # silent no-op.
+            mktempdir() do dir
+                mkpath(joinpath(dir, "lib", "julia"))
+                @test_throws "contain an OpenBLAS library to replace" JuliaLibWrapping.prune_bundle_for_host_blas(
+                    dir
+                )
+            end
+        end
+    end
+
     @testset "end-to-end" begin
         # Run the expensive integration test only when juliac is available.
         has_julia = Sys.which("julia") !== nothing
@@ -685,6 +778,65 @@ end
         end
     end
 
+    @testset "end-to-end with host_blas" begin
+        # Opt-in: this builds a full bundle and needs an ILP64 BLAS already
+        # loaded in the host Python, so that the takeover accepts it. PyPI
+        # NumPy's `scipy-openblas` is ILP64; a distro NumPy built against
+        # LP64 OpenBLAS is not, and the import fails with a readable error.
+        if get(ENV, "JLW_TEST_HOST_BLAS", "false") == "true"
+            Sys.islinux() || error("JLW_TEST_HOST_BLAS set but host_blas is Linux-only")
+            ext = Base.get_extension(JuliaLibWrapping, :JuliaLibWrappingJuliaCExt)
+            ext === nothing && error("JLW_TEST_HOST_BLAS set but JuliaC.jl is not loaded")
+            VERSION >= v"1.13.0-rc1" || error("JLW_TEST_HOST_BLAS set but julia < 1.13")
+            python3 = Sys.which("python3")
+            python3 === nothing && error("JLW_TEST_HOST_BLAS set but python3 not on PATH")
+            success(pipeline(`$python3 -c "import numpy"`; stderr = devnull)) ||
+                error("JLW_TEST_HOST_BLAS set but `python3 -c 'import numpy'` failed")
+
+            exdir = joinpath(@__DIR__, "..", "examples", "ols")
+            entry = joinpath(exdir, "src", "ols.jl")
+            project = example_project(exdir)
+            mktempdir() do out
+                result = build_library(
+                    entry,
+                    [
+                        PythonTarget(
+                            out, "ols_py", "ols";
+                            bundle_subdir = "bundle", host_blas = true
+                        ),
+                    ];
+                    project, libname = "ols", libdir = out, bundle = true,
+                    cpu_target = "generic"
+                )
+                # `bundle = true` moves the library into the bundle tree.
+                @test result.bundle_dir !== nothing
+                @test isfile(
+                    joinpath(out, "ols_py", "bundle", "lib", "ols." * Base.Libc.Libdl.dlext)
+                )
+
+                julia_dir = joinpath(out, "ols_py", "bundle", "lib", "julia")
+                names = readdir(julia_dir)
+                @test !any(startswith("libgfortran"), names)
+                @test !any(startswith("libgomp"), names)
+                @test any(startswith("libopenblas"), names)
+
+                # The takeover is plumbing; the public façade must not leak it.
+                facade = read(joinpath(out, "ols_py", "_facade.py"), String)
+                @test !occursin("hostblas", facade)
+
+                # `smoke.py` exercises `fit` (so `X \ y` reaches the host LAPACK)
+                # and checks it against `numpy.linalg.lstsq`.
+                cmd = addenv(
+                    `$python3 $(joinpath(exdir, "test", "smoke.py"))`,
+                    "PYTHONPATH" => out
+                )
+                @test success(pipeline(cmd; stdout = stdout, stderr = stderr))
+            end
+        else
+            @info "Skipping host_blas e2e test (set JLW_TEST_HOST_BLAS=true to run)"
+        end
+    end
+
     @testset "end-to-end with bundle" begin
         # Bundle tests are opt-in because they copy hundreds of MB.
         get(ENV, "JLW_TEST_BUNDLE", "false") == "true" || (@info "Skipping bundle e2e test (set JLW_TEST_BUNDLE=true to run)"; return)
@@ -741,4 +893,5 @@ end
             @test success(run(pipeline(cmd; stderr = stderr, stdout = stdout); wait = true))
         end
     end
+
 end
