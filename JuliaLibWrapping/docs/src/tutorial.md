@@ -185,6 +185,7 @@ After a successful build, `out/` contains:
     └── ols_py/
         ├── __init__.py
         ├── _lowlevel.py    # generated ctypes bindings (regenerated every build)
+        ├── _generated.py   # generated idiomatic wrappers (regenerated every build)
         ├── _facade.py      # public API (created once; user-editable)
         └── bundle/         # juliac --bundle tree: libjulia, stdlibs, BLAS, …
 
@@ -244,21 +245,28 @@ The expected `out` is `array([2.04, 4.02, 6., 7.98, 9.96])`, followed by the
 error message.
 
 `np.asfortranarray` is required for any `CMatrix{:borrowed,T}` argument: JLWInterop's
-`CArray` is column-major, and the automatically created façade rejects a
-row-major view rather than silently transposing. You can edit the wrapper to
-accept a different interface.
+`CArray` is column-major, and the generated façade rejects a row-major view
+rather than silently transposing. You can edit the wrapper to accept a
+different interface, or build with `coerce_arrays = true` so the generated
+wrapper converts the input itself (see [Array coercion](@ref)).
 
 ### Edit the façade
 
 In contrast with `predict`, `fit` is not automatically wrapped: it returns a
 `FitResult`, and JuliaLibWrapping declines to make choices about what that
-should look like from the Python perspective. The starter façade re-exports it
-from `_lowlevel` with a `TODO: hand-wrap` comment naming the obstacle. You edit
-`_facade.py` to provide the wrapper you want. The generated low-level layer
-still raises `JLWError` on a non-zero status, so a scikit-learn-style wrapper is:
+should look like from the Python perspective. `_generated.py` re-exports it
+from `_lowlevel` with a `TODO: hand-wrap` comment naming the obstacle. You add
+the wrapper you want to `_facade.py`, where a definition placed after the star
+import takes over the public name. The generated low-level layer still raises
+`JLWError` on a non-zero status, so a scikit-learn-style wrapper is:
 
 ```python
-# in ols_py/_facade.py, replacing the auto-generated TODO line
+# in ols_py/_facade.py, below `from ._generated import *`
+import numpy as np
+
+from . import _lowlevel
+
+
 def fit(X, y):
     X = np.asfortranarray(X)
     y = np.ascontiguousarray(y, dtype=np.float64)
@@ -331,10 +339,11 @@ When you add a new `Base.@ccallable` to `ols.jl`:
 
 - `_lowlevel.py` is **regenerated on every** `write_wrapper` /
   `build_library` call — your new entrypoint shows up automatically.
-- `_facade.py` is **written once** and then never touched. To pick
-  up new entrypoints in the starter façade, delete the file and
-  rebuild; JuliaLibWrapping will regenerate it (auto-wrapping where
-  it can, leaving `# TODO: hand-wrap` markers where it cannot).
+- `_generated.py` is **regenerated on every build**, wrapping what it can
+  and leaving `# TODO: hand-wrap` markers elsewhere, so a new entrypoint
+  reaches the public API through the star import in `_facade.py`.
+- `_facade.py` is **written once** and then never touched, so your
+  hand-written wrappers and overrides survive every rebuild.
 - `__init__.py` is regenerated to re-export from `_facade`.
 
 You trigger all of this by re-running the same build:
@@ -343,10 +352,9 @@ You trigger all of this by re-running the same build:
 julia --project=. build.jl
 ```
 
-`_lowlevel.py`, `pyproject.toml`, and `__init__.py` are rewritten in place.
-Because the package was installed with `pip install -e`, restart Python to
-pick up those changes without reinstalling.
+`_lowlevel.py`, `_generated.py`, `pyproject.toml`, and `__init__.py` are
+rewritten in place. Because the package was installed with `pip install -e`,
+restart Python to pick up those changes without reinstalling.
 
-Keep `_facade.py` under version control alongside the build script. To generate
-wrappers for new functions, delete it on a branch, rebuild, and merge the
-relevant generated functions into the existing file.
+Keep `_facade.py` under version control alongside the build script. It holds
+only what you wrote plus the star import.
