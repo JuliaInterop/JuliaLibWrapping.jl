@@ -1,0 +1,160 @@
+{
+  "_comment": "Opaque carrier (COpaque) coverage for a release-enabled library (one that called @export_release_entrypoints, so it exports jlw_free, jlw_free_strings AND jlw_free_opaque together). `make_model` returns JLWResult{COpaque} (an @api-style opaque return), `use_model` takes a COpaque and returns JLWResult{Int64} (opaque round-trip argument), `raw_handle` returns a bare COpaque (a hand-written @ccallable opaque return). COpaque is a one-field struct holding a Ptr{Cvoid}, distinguishable in the ABI from a raw void pointer. JLWStatus size 260, value at offset 264.",
+  "types": [
+    {
+      "kind": "array",
+      "name": "NTuple{256, UInt8}",
+      "id": 1,
+      "element_type_id": 2,
+      "count": 256,
+      "size": 256,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "UInt8",
+      "id": 2,
+      "size": 1,
+      "bits": 8,
+      "signed": false,
+      "alignment": 1
+    },
+    {
+      "kind": "primitive",
+      "name": "Int32",
+      "id": 3,
+      "size": 4,
+      "bits": 32,
+      "signed": true,
+      "alignment": 4
+    },
+    {
+      "kind": "struct",
+      "name": "JLWStatus",
+      "id": 4,
+      "size": 260,
+      "fields": [
+        { "name": "code", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 3 },
+        { "name": "message", "isptr": false, "offset": 4, "isfieldatomic": false, "type_id": 1 }
+      ],
+      "alignment": 4
+    },
+    {
+      "kind": "primitive",
+      "name": "Int64",
+      "id": 5,
+      "size": 8,
+      "bits": 64,
+      "signed": true,
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{Nothing}",
+      "id": 6,
+      "pointee_type_id": null
+    },
+    {
+      "kind": "struct",
+      "name": "COpaque",
+      "id": 7,
+      "size": 8,
+      "fields": [
+        { "name": "ptr", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 6 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{COpaque}",
+      "id": 8,
+      "size": 272,
+      "fields": [
+        { "name": "status", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 4 },
+        { "name": "value", "isptr": false, "offset": 264, "isfieldatomic": false, "type_id": 7 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "struct",
+      "name": "JLWResult{Int64}",
+      "id": 9,
+      "size": 272,
+      "fields": [
+        { "name": "status", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 4 },
+        { "name": "value", "isptr": false, "offset": 264, "isfieldatomic": false, "type_id": 5 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{UInt8}",
+      "id": 10,
+      "pointee_type_id": 2
+    },
+    {
+      "kind": "struct",
+      "name": "CString{:owned}",
+      "id": 11,
+      "size": 16,
+      "fields": [
+        { "name": "length", "isptr": false, "offset": 0, "isfieldatomic": false, "type_id": 5 },
+        { "name": "data", "isptr": false, "offset": 8, "isfieldatomic": false, "type_id": 10 }
+      ],
+      "alignment": 8
+    },
+    {
+      "kind": "pointer",
+      "name": "Ptr{CString{:owned}}",
+      "id": 12,
+      "pointee_type_id": 11
+    }
+  ],
+  "functions": [
+    {
+      "returns": { "type_id": 8 },
+      "name": "make_model()",
+      "arguments": [],
+      "symbol": "make_model"
+    },
+    {
+      "returns": { "type_id": 9 },
+      "name": "use_model(m::COpaque)",
+      "arguments": [
+        { "name": "m", "type_id": 7 }
+      ],
+      "symbol": "use_model"
+    },
+    {
+      "returns": { "type_id": 7 },
+      "name": "raw_handle()",
+      "arguments": [],
+      "symbol": "raw_handle"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 6 }
+      ],
+      "symbol": "jlw_free"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)",
+      "arguments": [
+        { "name": "p", "type_id": 12 },
+        { "name": "n", "type_id": 5 }
+      ],
+      "symbol": "jlw_free_strings"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_opaque(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 6 }
+      ],
+      "symbol": "jlw_free_opaque"
+    }
+  ]
+}

@@ -1874,6 +1874,71 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test_throws ArgumentError JLWInterop._zero_carrier(Vector{Float64})
     end
 
+    @testset "opaque carriers (COpaque)" begin
+        m = Module(:ApiOpaque)
+        Core.eval(m, :(using JLWInterop))
+        # A mutable and an immutable opaque type: the immutable one exercises
+        # the RefValue storage path.
+        Core.eval(m, :(mutable struct Model; id::Int; end))
+        Core.eval(m, :(struct Point; x::Float64; y::Float64; end))
+        Core.eval(m, :(JLWInterop.@register_opaque_carrier Model))
+        Core.eval(m, :(JLWInterop.@register_opaque_carrier Point))
+        # Release goes through the internal `_free_opaque`; the `@ccallable
+        # jlw_free_opaque` that `@export_release_entrypoints` emits (which wraps
+        # exactly this call) is checked in the "release entrypoints" testset.
+        # Invoking the macro here too would define the same `@ccallable` C symbol
+        # a second time in one process, which errors on Julia 1.10.
+        free_opaque(ptr) = JLWInterop._free_opaque(ptr)
+
+        Model = Core.eval(m, :Model)
+        Point = Core.eval(m, :Point)
+
+        # The carrier is a distinct struct, and the return carrier matches.
+        @test Core.eval(m, :(JLWInterop.carrier_type(Model))) === COpaque
+        @test Core.eval(m, :(JLWInterop.carrier_return_type(Model))) === COpaque
+
+        # A mutable object round-trips by identity; releasing drops the root.
+        # The number of active handles is the length of the internal registry —
+        # the count a library exposes for itself (there is no built-in
+        # entrypoint for it).
+        active() = length(JLWInterop.type_specific_free_func_map)
+        before = active()
+        obj = Core.eval(m, :(Model(7)))
+        c = Core.eval(m, :(JLWInterop.to_carrier($obj)))
+        @test c isa COpaque
+        @test c.ptr != C_NULL
+        @test active() == before + 1
+        @test Core.eval(m, :(JLWInterop.from_carrier(Model, $c))) === obj
+        free_opaque(c.ptr)
+        @test active() == before
+
+        # An immutable object round-trips by value.
+        pt = Core.eval(m, :(Point(1.0, 2.0)))
+        cp = Core.eval(m, :(JLWInterop.to_carrier($pt)))
+        @test cp isa COpaque
+        @test Core.eval(m, :(JLWInterop.from_carrier(Point, $cp))) == pt
+        free_opaque(cp.ptr)
+
+        # A null pointer is a safe no-op.
+        @test free_opaque(Ptr{Cvoid}(C_NULL)) === nothing
+
+        # End to end through an `@api` wrapper: the boundary returns
+        # `JLWResult{COpaque}` and accepts the carrier back as an argument.
+        Core.eval(m, :(make_model(id::Int64) = Model(id)))
+        Core.eval(m, :(JLWInterop.@api make_model(id::Int64)::Model))
+        Core.eval(m, :(model_id(model::Model) = Int64(model.id)))
+        Core.eval(m, :(JLWInterop.@api model_id(model::Model)::Int64))
+
+        r = Core.eval(m, :(ApiOpaque_make_model(Int64(42))))
+        @test iszero(r.status.code)
+        @test r.value isa COpaque
+        # Feed the handle back into a second entry point.
+        r2 = Core.eval(m, :(ApiOpaque_model_id($(r.value))))
+        @test iszero(r2.status.code)
+        @test r2.value == Int64(42)
+        free_opaque(r.value.ptr)
+    end
+
     @testset "@api kwargs and metadata" begin
         m = Module(:ApiTestD)
         Core.eval(m, :(using JLWInterop))
@@ -2220,11 +2285,15 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
             Tuple{typeof(m.jlw_free), Ptr{Cvoid}}
         @test only(methods(m.jlw_free_strings)).sig ==
             Tuple{typeof(m.jlw_free_strings), Ptr{JLWInterop.CString{:owned}}, Int64}
+        @test only(methods(m.jlw_free_opaque)).sig ==
+            Tuple{typeof(m.jlw_free_opaque), Ptr{Cvoid}}
         # The functions accept malloc'd data.
         a = CStrArray{:owned}(["x", "y"])
         Core.eval(m, :(jlw_free_strings($(a.data), $(a.length))))
         p = Libc.malloc(16)
         Core.eval(m, :(jlw_free($p)))
+        # A null opaque handle is a safe no-op.
+        Core.eval(m, :(jlw_free_opaque(Ptr{Cvoid}(C_NULL))))
     end
 
     @testset "CNTuple carrier" begin

@@ -685,6 +685,55 @@ end
         end
     end
 
+    @testset "examples: opaque handle GC" begin
+        # The `opaque_gc` example registers an opaque carrier and exports the
+        # release entrypoints, so `make_model` hands Python an `Opaque` wrapper
+        # that frees its Julia object when garbage-collected. This is the only
+        # end-to-end coverage of the opaque-handle path — structural
+        # recognition, `@register_opaque_carrier`, the `jlw_free_opaque`
+        # entrypoint, and the generated `Opaque` finalizer — in a real build.
+        # Its smoke test needs only python3 (no numpy): it watches
+        # `num_active_opaques()` fall as handles are collected.
+        has_julia = Sys.which("julia") !== nothing
+        has_cc = Sys.which("gcc") !== nothing || Sys.which("clang") !== nothing
+        juliac_ok = has_julia && VERSION >= v"1.13.0-rc1" && has_cc
+        python3 = Sys.which("python3")
+        if !juliac_ok || python3 === nothing
+            juliac_ok && python3 === nothing && haskey(ENV, "CI") && error(
+                "python3 is required on CI to run the opaque_gc smoke test"
+            )
+            @info "Skipping opaque_gc smoke test" has_julia has_cc VERSION python3
+        else
+            name = "opaque_gc"
+            exdir = joinpath(@__DIR__, "..", "examples", name)
+            entry = joinpath(exdir, "src", name * ".jl")
+            project = example_project(exdir)
+            mktempdir() do out
+                result = build_library(
+                    entry,
+                    [PythonTarget(out, name * "_py", name)];
+                    project, libname = name,
+                    libdir = out, cpu_target = "generic"
+                )
+                @test isfile(result.library)
+                # `make_model`'s `@api` return of `Model` produces a sidecar,
+                # which is what maps the opaque return onto an `Opaque`-wrapping
+                # façade function.
+                @test result.metadata_path == joinpath(out, name * ".jlw.json")
+                @test isfile(result.metadata_path)
+
+                # `out` on PYTHONPATH makes the generated package importable;
+                # the env override points the loader at the freshly built lib.
+                cmd = addenv(
+                    `$python3 $(joinpath(exdir, "test", "smoke.py"))`,
+                    "PYTHONPATH" => out,
+                    uppercase(name * "_py") * "_LIBRARY" => result.library,
+                )
+                @test success(pipeline(cmd; stdout = stdout, stderr = stderr))
+            end
+        end
+    end
+
     @testset "end-to-end with bundle" begin
         # Bundle tests are opt-in because they copy hundreds of MB.
         get(ENV, "JLW_TEST_BUNDLE", "false") == "true" || (@info "Skipping bundle e2e test (set JLW_TEST_BUNDLE=true to run)"; return)

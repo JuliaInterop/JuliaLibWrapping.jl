@@ -719,8 +719,9 @@ function write_wrapper(
     taken = Dict{String, String}()
     for method in sort(entrypoints; by = m -> m.symbol)
         # The release entry points serve the gateway, and the façades omit
-        # them.
-        method.symbol in ("jlw_free", "jlw_free_strings") && continue
+        # them (`jlw_free_opaque` among them; MATLAB opaque-handle support is
+        # not wired up yet, so it is simply skipped like the rest).
+        method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
         plan = _matlab_facade_plan(
             method, typeinfo, release_present,
             get(api_metadata, method.symbol, nothing), api_enums

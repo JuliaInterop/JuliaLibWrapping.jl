@@ -54,6 +54,26 @@ function is_jlwstatus_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDe
 end
 
 """
+    is_copaque_struct(desc::StructDesc, typeinfo) -> Bool
+
+Recognize `COpaque`, the carrier for a `JLWInterop` opaque handle: a struct
+named `COpaque…` with a single `ptr` field of type `Ptr{Cvoid}`.
+
+Unlike a bare `Ptr{Cvoid}` return, this carrier is distinguishable in the ABI,
+so a target can wrap it in an owning handle that releases the Julia object with
+the `jlw_free_opaque` entrypoint rather than handing back an unmanaged pointer.
+"""
+function is_copaque_struct(desc::StructDesc, typeinfo::OrderedDict{Int, TypeDesc})
+    startswith(desc.name, "COpaque") || return false
+    m = _match_fields(desc, ("ptr",))
+    isnothing(m) && return false
+    ptr_type = typeinfo[m.ptr.type]
+    ptr_type isa PointerDesc || return false
+    ptr_type.pointee_type === nothing || return false # must be `Ptr{Cvoid}`
+    return true
+end
+
+"""
     jlwstatus_location(method, typeinfo) -> Union{Nothing, NamedTuple}
 
 Locate a `JLWStatus` in `method`'s return type: `nothing` when there is none,
@@ -338,19 +358,24 @@ function raw_primitive_pointer_args(method::MethodDesc, typeinfo::OrderedDict{In
 end
 
 """
-    _RELEASE_ENTRYPOINT_SYMBOLS :: NTuple{2, String}
+    _RELEASE_ENTRYPOINT_SYMBOLS :: NTuple{3, String}
 
-Release symbols emitted by [`JLWInterop.@export_release_entrypoints`](@ref).
-Targets use them to manage owning carrier returns without exposing them as
-public API.
+Release symbols emitted together by [`JLWInterop.@export_release_entrypoints`](@ref):
+`jlw_free`/`jlw_free_strings` for the owning array/string carriers and
+`jlw_free_opaque` for a [`COpaque`](@ref) handle. Targets use them to manage
+owning returns (opaque handles included) without exposing them as public API.
+Because the macro emits all three at once, their joint presence is one opt-in.
 """
-const _RELEASE_ENTRYPOINT_SYMBOLS = ("jlw_free", "jlw_free_strings")
+const _RELEASE_ENTRYPOINT_SYMBOLS = ("jlw_free", "jlw_free_strings", "jlw_free_opaque")
 
 """
     _release_symbols_present(abi_info::ABIInfo) -> Bool
 
-Return whether the ABI exports both carrier-release entrypoints. Targets use
-this to decide whether owning returns can be wrapped automatically.
+Return whether the ABI exports the carrier-release entrypoints (all of
+[`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref)). Targets use this to decide whether owning
+returns — owning arrays/strings/dicts and opaque handles — can be wrapped
+automatically. The three are emitted together, so this is effectively "was
+`@export_release_entrypoints` called?".
 """
 function _release_symbols_present(abi_info::ABIInfo)
     symbols = Set{String}(m.symbol for m in abi_info.entrypoints)
@@ -360,7 +385,10 @@ end
 """
     _check_release_entrypoint_signatures(abi_info::ABIInfo)
 
-Validate release entrypoint signatures when both symbols are present.
+Validate the release entrypoints' signatures when all of
+[`_RELEASE_ENTRYPOINT_SYMBOLS`](@ref) are present (they are emitted together by
+`@export_release_entrypoints`). `jlw_free_opaque` shares `jlw_free`'s
+`(p::Ptr{Cvoid})::Cvoid` shape, so it reuses that check.
 """
 function _check_release_entrypoint_signatures(abi_info::ABIInfo)
     symbols = Dict{String, MethodDesc}()
@@ -372,19 +400,22 @@ function _check_release_entrypoint_signatures(abi_info::ABIInfo)
     typeinfo = abi_info.typeinfo
     _check_jlw_free_signature(symbols["jlw_free"], typeinfo)
     _check_jlw_free_strings_signature(symbols["jlw_free_strings"], typeinfo)
+    _check_jlw_free_signature(symbols["jlw_free_opaque"], typeinfo, "jlw_free_opaque")
     return nothing
 end
 
-function _check_jlw_free_signature(method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc})
+function _check_jlw_free_signature(
+        method::MethodDesc, typeinfo::OrderedDict{Int, TypeDesc},
+        symbol::AbstractString = "jlw_free"
+    )
     ok = method.return_type === nothing && length(method.args) == 1
     if ok
         t = typeinfo[only(method.args).type]
         ok = t isa PointerDesc && t.pointee_type === nothing
     end
     ok || error(
-        "release entrypoint `jlw_free` has signature `" * method.name *
-            "`, but JLWInterop.@export_release_entrypoints requires " *
-            "`jlw_free(p::Ptr{Cvoid})::Cvoid`"
+        "release entrypoint `" * symbol * "` has signature `" * method.name *
+            "`, but it must be `" * symbol * "(p::Ptr{Cvoid})::Cvoid`"
     )
     return nothing
 end

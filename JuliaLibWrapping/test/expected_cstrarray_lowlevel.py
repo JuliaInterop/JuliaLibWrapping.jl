@@ -214,3 +214,6 @@ _lib.jlw_free.restype = None
 _lib.jlw_free_strings.argtypes = [ctypes.POINTER(CString_owned), ctypes.c_int64]
 _lib.jlw_free_strings.restype = None
 
+_lib.jlw_free_opaque.argtypes = [ctypes.c_void_p]
+_lib.jlw_free_opaque.restype = None
+

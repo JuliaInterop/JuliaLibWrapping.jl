@@ -119,6 +119,14 @@
         { "name": "n", "type_id": 2 }
       ],
       "symbol": "jlw_free_strings"
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_opaque(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 7 }
+      ],
+      "symbol": "jlw_free_opaque"
     }
   ]
 }
