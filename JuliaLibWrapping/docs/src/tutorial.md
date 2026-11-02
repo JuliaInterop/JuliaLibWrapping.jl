@@ -98,7 +98,7 @@ JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
 [compat]
-JLWInterop = "0.2"
+JLWInterop = "0.3"
 julia = "1.13"
 ```
 
@@ -134,7 +134,7 @@ JuliaLibWrapping = "d61f35a8-f6af-436f-bc10-cee6b101f7bd"
 
 [compat]
 JuliaC = "0.3"
-JuliaLibWrapping = "0.2"
+JuliaLibWrapping = "0.3"
 julia = "1.13"
 ```
 
