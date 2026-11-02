@@ -1713,6 +1713,42 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
         @test st.code == JLWInterop._API_ERROR_CODES.generic
     end
 
+    @testset "@api optional keywords reach the function with their declared types" begin
+        m = Module(:ApiOptionalKeywords)
+        Core.eval(m, :(using JLWInterop))
+        Core.eval(
+            m, quote
+                function opts(x::Float64; a::Union{Int64, Nothing} = nothing,
+                              b::Union{Float64, Nothing} = nothing, c::Union{Bool, Nothing} = nothing)
+                    return x + something(a, 0) + something(b, 0.0) + (something(c, false) ? 100.0 : 0.0)
+                end
+            end
+        )
+        Core.eval(
+            m, :(
+                JLWInterop.@api opts(x::Float64; a::Union{Int64, Nothing} = nothing,
+                                     b::Union{Float64, Nothing} = nothing,
+                                     c::Union{Bool, Nothing} = nothing)::Float64
+            )
+        )
+        f = Core.eval(m, :ApiOptionalKeywords_opts)
+        @test f(1.0, COpt{Int64}(nothing), COpt{Float64}(nothing), COpt{Bool}(nothing)).value == 1.0
+        @test f(1.0, COpt(2), COpt{Float64}(nothing), COpt(true)).value == 103.0
+        @test f(1.0, COpt{Int64}(nothing), COpt(0.5), COpt(false)).value == 1.5
+
+        # The keywords travel in a `NamedTuple` of the declared field types, so
+        # its type does not depend on which of them are `nothing`, and the call
+        # can be resolved statically (as `juliac --trim=safe` requires).
+        argtypes = Tuple{Float64, COpt{Int64}, COpt{Float64}, COpt{Bool}}
+        ci = only(code_typed(f, argtypes; optimize = false))[1]
+        kwtypes = [
+            Core.Compiler.widenconst(ci.ssavaluetypes[st.args[2].id]) for st in ci.code
+                if st isa Expr && st.head === :call && st.args[2] isa Core.SSAValue &&
+                (st.args[1] === Core.kwcall || st.args[1] == GlobalRef(Core, :kwcall))
+        ]
+        @test kwtypes == [@NamedTuple{a::Union{Int64, Nothing}, b::Union{Float64, Nothing}, c::Union{Bool, Nothing}}]
+    end
+
     @testset "@api StridedArray arguments receive the carrier" begin
         # A StridedArray argument receives the CArray carrier directly.
         @test JLWInterop.carrier_type(StridedArray{Float64, 2}) === CArray{:borrowed, Float64, 2}

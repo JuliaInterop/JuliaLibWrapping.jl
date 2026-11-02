@@ -745,9 +745,15 @@ macro api(args...)
     # name would not resolve there.
     M = @__MODULE__
     call_args = [:($M.from_carrier($(arg_types[i]), $(arg_names[i]))) for i in eachindex(arg_names)]
-    call_kwargs = [Expr(:kw, kw_names[i], :($M.from_carrier($(kw_types[i]), $(kw_names[i])))) for i in eachindex(kw_names)]
-    call_expr = isempty(call_kwargs) ? :($name($(call_args...))) :
-        :($name($(call_args...); $(call_kwargs...)))
+    # Keywords are passed as a `NamedTuple` whose field types are the declared
+    # ones. Ordinary keyword syntax would type each field by its runtime value,
+    # so an optional keyword (`Union{T,Nothing}`) would make the `NamedTuple`
+    # type, and hence the call, depend on which keywords are `nothing`, which
+    # `juliac --trim=safe` cannot resolve.
+    kw_values = [:($M.from_carrier($(kw_types[i]), $(kw_names[i]))) for i in eachindex(kw_names)]
+    kw_tuple = Expr(:curly, Core.NamedTuple, Tuple(kw_names), Expr(:curly, Core.Tuple, kw_types...))
+    call_expr = isempty(kw_names) ? :($name($(call_args...))) :
+        :($(Core.kwcall)($kw_tuple(($(kw_values...),)), $name, $(call_args...)))
 
     ccallable_name = Symbol(symbol)
     to_carrier_call = isnothing(ret_opt_inner) ?
