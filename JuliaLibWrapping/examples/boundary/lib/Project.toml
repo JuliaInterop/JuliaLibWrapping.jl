@@ -16,5 +16,5 @@ JLWInterop = {path = "../../../../JLWInterop"}
 
 [compat]
 Boundary = "0.0.1"
-JLWInterop = "0.2"
+JLWInterop = "0.3"
 julia = "1.13"

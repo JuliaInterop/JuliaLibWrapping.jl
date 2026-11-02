@@ -22,5 +22,5 @@ JuliaLibWrapping = {path = "../../.."}
 
 [compat]
 JuliaC = "0.3.10"
-JuliaLibWrapping = "0.2"
+JuliaLibWrapping = "0.3"
 julia = "1.13"
