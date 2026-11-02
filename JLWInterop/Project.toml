@@ -1,7 +1,7 @@
 name = "JLWInterop"
 uuid = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
 authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
-version = "0.3.0"
+version = "0.3.1"
 
 [compat]
 LinearAlgebra = "1.10"
