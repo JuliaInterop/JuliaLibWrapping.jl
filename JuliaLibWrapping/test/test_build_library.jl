@@ -510,6 +510,70 @@ end
         @test err isa ArgumentError
         @test occursin("needs `bundle_subdir", err.msg)
         @test occursin("\"pkg\"", err.msg)
+
+        @test_throws "bundle_libstdcxx = true requires bundle = true" build_library(
+            entry, [PythonTarget("/tmp", "pkg", "libfoo")];
+            project = proj, libname = "abi_stress", bundle_libstdcxx = true
+        )
+    end
+
+    @testset "bundle copy relies on the system libstdc++" begin
+        # Real libraries from this Julia: libgmpxx needs libstdc++.
+        julialibs = joinpath(Sys.BINDIR, Base.LIBDIR, "julia")
+        gmpxx = joinpath(julialibs, "libgmpxx.so.4")
+        if !Sys.islinux() || !isfile(gmpxx)
+            @test_skip "needs Linux and this Julia's libgmpxx"
+        else
+            needs = JuliaLibWrapping._elf_version_needs(read(gmpxx), gmpxx)
+            @test any(((lib, v),) -> lib == "libstdc++.so.6" && startswith(v, "GLIBCXX_"), needs)
+
+            function bundle_with(f, name)
+                mktempdir() do dir
+                    lib = mkpath(joinpath(dir, "lib", "julia"))
+                    cp(joinpath(julialibs, "libstdc++.so.6"), joinpath(lib, "libstdc++.so.6"); follow_symlinks = true)
+                    symlink("libstdc++.so.6", joinpath(lib, "libstdc++.so"))
+                    cp(gmpxx, joinpath(lib, name); follow_symlinks = true)
+                    f(dir, lib)
+                end
+            end
+            bundle_with("libgmpxx.so.4") do dir, lib
+                JuliaLibWrapping._use_system_libstdcxx!(dir)
+                @test readdir(lib) == ["libgmpxx.so.4"]
+            end
+            # A library that needs a newer libstdc++ than the limit names itself.
+            bundle_with("libgmpxx.so.4") do dir, lib
+                @test_throws r"lib/julia/libgmpxx.so.4 needs libstdc\+\+ symbol version GLIBCXX_.*bundle_libstdcxx = true" JuliaLibWrapping._use_system_libstdcxx!(
+                    dir; limits = Dict("GLIBCXX" => v"3.4.0", "CXXABI" => v"1.3.11")
+                )
+                @test "libstdc++.so.6" in readdir(lib)
+            end
+            # Julia's loader needs the bundled copy when libjulia-internal
+            # links libstdc++ dynamically.
+            bundle_with("libjulia-internal.so.1.13") do dir, lib
+                @test_throws "links libstdc++ dynamically" JuliaLibWrapping._use_system_libstdcxx!(dir)
+            end
+            # The copy in a Python package replaces any earlier copy, leaves
+            # out libstdc++ unless asked to keep it, and leaves the bundle
+            # directory as it was.
+            bundle_with("libgmpxx.so.4") do bundle_dir, bundle_lib
+                mktempdir() do out
+                    t = PythonTarget(out, "pkg", "libpkg"; bundle_subdir = "bundle")
+                    stdcxx(d) = filter(startswith("libstdc++"), readdir(joinpath(d, "lib", "julia")))
+                    dest = JuliaLibWrapping._copy_bundle_into_python_package(t, bundle_dir; bundle_libstdcxx = true)
+                    @test dest == joinpath(out, "pkg", "bundle")
+                    @test stdcxx(dest) == ["libstdc++.so.6"]  # `libstdc++.so` is a link nothing mentions
+                    JuliaLibWrapping._copy_bundle_into_python_package(t, bundle_dir)
+                    @test isempty(stdcxx(dest))
+                    @test isfile(joinpath(dest, "lib", "julia", "libgmpxx.so.4"))
+                    @test stdcxx(bundle_dir) == ["libstdc++.so", "libstdc++.so.6"]
+                end
+            end
+            # A library the build cannot read is an error, not a guess.
+            bundle_with("libgmpxx.so.4") do dir, lib
+                write(joinpath(lib, "libold.so"), vcat(b"\x7fELF\x01\x01", zeros(UInt8, 58)))
+                @test_throws "not a 64-bit little-endian ELF file" JuliaLibWrapping._use_system_libstdcxx!(dir)
+            end
+        end
     end
 
     @testset "bundle copy keeps only the library names in use" begin
@@ -765,6 +829,14 @@ end
             salted = filter(f -> contains(f, "libjulia"), libnames)
             @test !isempty(salted)
             @test !any(startswith.(salted, "libjulia"))
+
+            # On Linux the package relies on the system's libstdc++; the
+            # bundle directory keeps its own.
+            if Sys.islinux()
+                stdcxx(d) = filter(startswith("libstdc++"), readdir(joinpath(d, "lib", "julia")))
+                @test isempty(stdcxx(joinpath(pkgdir, "bundle")))
+                @test !isempty(stdcxx(result.bundle_dir))
+            end
 
             # Import directly from `out`, without installing.
             cmd = addenv(
