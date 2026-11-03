@@ -2360,11 +2360,22 @@ uordblks() = (@ccall mallinfo2()::MallInfo2).fields[8]
             catch
             end
             foreach(_ -> bad(), 1:100)
+            # The runtime allocates one-time state at unpredictable points, so
+            # a single window can grow without a leak. A stranded buffer grows
+            # every window, by at least 24 bytes per call, so it is enough that
+            # one window holds the counter still (as for `CStrArray` above).
+            settled = false
             GC.gc(true)
             before = Int(uordblks())
-            foreach(_ -> bad(), 1:1000)
-            GC.gc(true)
-            @test Int(uordblks()) - before < 10_000
+            for _ in 1:5
+                foreach(_ -> bad(), 1:1000)
+                GC.gc(true)
+                after = Int(uordblks())
+                settled = after == before
+                settled && break
+                before = after
+            end
+            @test settled
         end
     end
 
