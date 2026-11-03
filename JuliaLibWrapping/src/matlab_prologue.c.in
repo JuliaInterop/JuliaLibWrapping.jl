@@ -17,6 +17,9 @@
    what lets a built package be moved or downloaded, since the
    layout it names is the one this target emits. A bare name
    would resolve against MATLAB's working directory instead. */
+#ifdef JLW_LIBRARY_PATH_HEADER
+#include "jlw_library_path.h"  /* written by `build_mex.m` */
+#endif
 #ifndef JLW_LIBRARY_PATH
 #define JLW_LIBRARY_PATH "@LIBRARY_BASENAME@"
 #endif
