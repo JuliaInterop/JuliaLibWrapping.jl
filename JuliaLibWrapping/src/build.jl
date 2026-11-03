@@ -12,7 +12,7 @@ const _TRIM_MODES = (:no, :safe, :unsafe, Symbol("unsafe-warn"))
                   trim=:safe, compile_ccallable=true,
                   backend=:auto, verbose=false,
                   bundle=false, bundle_dir=joinpath(libdir, libname*"-bundle"),
-                  privatize=bundle, cpu_target=nothing)
+                  privatize=bundle, bundle_libstdcxx=false, cpu_target=nothing)
 
 Run the full `juliac` → ABI JSON → wrapper pipeline in one call.
 
@@ -99,6 +99,15 @@ Privatization applies to the bundle, so `privatize = true` with
 `bundle = false` is an error rather than a silent no-op. Pass
 `privatize = false` alongside `bundle = true` to opt out.
 
+On Linux, the copy of the bundle in a Python package leaves out `libstdc++`,
+which the manylinux platforms let a wheel take from the system (as NumPy's
+own wheels do). The build stops with an error if a bundled library needs a
+newer `libstdc++` than manylinux_2_28 provides (symbol versions
+`GLIBCXX_3.4.25` and `CXXABI_1.3.11`, from GCC 8), or if `libjulia-internal`
+links the shared `libstdc++`, which Julia's loader then requires. Pass
+`bundle_libstdcxx = true` to keep the bundled copy; it requires
+`bundle = true`.
+
 # CPU target
 
 `cpu_target` sets the multi-microarchitecture target for the compiled
@@ -122,6 +131,7 @@ function build_library(
         bundle::Bool = false,
         bundle_dir::AbstractString = joinpath(libdir, libname * "-bundle"),
         privatize::Bool = bundle,
+        bundle_libstdcxx::Bool = false,
         cpu_target::Union{Nothing, AbstractString} = nothing
     )
     isfile(entry) || isdir(entry) ||
@@ -138,6 +148,14 @@ function build_library(
             ArgumentError(
                 "privatize = true requires bundle = true: privatization salts the " *
                     "bundled libjulia, and a build without a bundle has none to salt."
+            )
+        )
+    end
+    if bundle_libstdcxx && !bundle
+        throw(
+            ArgumentError(
+                "bundle_libstdcxx = true requires bundle = true: a build without a " *
+                    "bundle carries no libstdc++."
             )
         )
     end
@@ -191,7 +209,7 @@ function build_library(
             error("juliac --bundle completed but no bundle tree at $bundle_dir")
         for t in targets
             t isa PythonTarget || continue
-            _copy_bundle_into_python_package(t, bundle_dir)
+            _copy_bundle_into_python_package(t, bundle_dir; bundle_libstdcxx)
         end
     end
 
@@ -246,13 +264,16 @@ function _apply_privatization(t::PythonTarget, privatize::Bool)
 end
 
 # Copy the bundle before emitting Python sources.
-function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractString)
+function _copy_bundle_into_python_package(
+        t::PythonTarget, bundle_dir::AbstractString; bundle_libstdcxx::Bool = false
+    )
     pkgdir = joinpath(t.dir, t.package_name)
     mkpath(pkgdir)
     dest = joinpath(pkgdir, t.bundle_subdir::String)
     # Avoid retaining files from an older, larger bundle.
     ispath(dest) && rm(dest; recursive = true)
     cp(bundle_dir, dest)
+    Sys.islinux() && !bundle_libstdcxx && _use_system_libstdcxx!(dest)
     _prune_library_links!(dest)
     return dest
 end
@@ -306,6 +327,94 @@ function _prune_library_links!(dir::AbstractString)
         end
     end
     return dir
+end
+
+# The newest `libstdc++` symbol versions that every manylinux_2_28 system
+# provides (GCC 8).
+const _SYSTEM_LIBSTDCXX_VERSIONS = Dict("GLIBCXX" => v"3.4.25", "CXXABI" => v"1.3.11")
+
+# Remove `libstdc++` from `dir`, so that the bundled libraries that need it
+# load the system's. Julia's loader accepts a missing bundled `libstdc++` only
+# when `libjulia-internal` links it statically, as official builds do. Throws,
+# naming the library, if `libjulia-internal` needs the shared `libstdc++` or
+# a library needs a newer one than `limits`.
+function _use_system_libstdcxx!(dir::AbstractString; limits = _SYSTEM_LIBSTDCXX_VERSIONS)
+    stdcxx = String[]
+    for (d, _, files) in walkdir(dir), f in files
+        p = joinpath(d, f)
+        if startswith(f, "libstdc++.so")
+            push!(stdcxx, p)
+            continue
+        end
+        (islink(p) || !isfile(p)) && continue
+        bytes = read(p)
+        _is_elf(bytes) || continue
+        for (lib, version) in _elf_version_needs(bytes, p)
+            startswith(lib, "libstdc++.so") || continue
+            occursin("libjulia-internal", f) && throw(
+                ArgumentError(
+                    "$(relpath(p, dir)) links libstdc++ dynamically, so Julia's loader " *
+                        "requires the bundled copy. Pass `bundle_libstdcxx = true`."
+                )
+            )
+            m = match(r"^(GLIBCXX|CXXABI)_(\d+(?:\.\d+)*)$", version)
+            m === nothing && continue
+            version_number = VersionNumber(m[2])
+            version_number <= limits[m[1]] || throw(
+                ArgumentError(
+                    "$(relpath(p, dir)) needs libstdc++ symbol version $version, newer than " *
+                        "$(m[1])_$(limits[m[1]]), which manylinux_2_28 " *
+                        "systems provide. Pass `bundle_libstdcxx = true` to keep the bundled libstdc++."
+                )
+            )
+        end
+    end
+    foreach(rm, stdcxx)
+    return dir
+end
+
+_is_elf(bytes::Vector{UInt8}) = length(bytes) >= 4 && bytes[1:4] == b"\x7fELF"
+
+_read_le(::Type{T}, bytes, offset) where {T} =
+    ltoh(reinterpret(T, bytes[(offset + 1):(offset + sizeof(T))])[1])
+
+function _read_cstring(bytes, offset)
+    stop = something(findnext(==(0x00), bytes, offset + 1), lastindex(bytes) + 1)
+    return String(bytes[(offset + 1):(stop - 1)])
+end
+
+# The symbol versions an ELF shared library requires, as `library => version`
+# pairs from its `SHT_GNU_verneed` section. Only 64-bit little-endian files
+# are read; others throw.
+function _elf_version_needs(bytes::Vector{UInt8}, path::AbstractString)
+    bytes[5] == 2 && bytes[6] == 1 || throw(
+        ArgumentError(
+            "$path is not a 64-bit little-endian ELF file, whose libstdc++ requirements " *
+                "the build cannot read. Pass `bundle_libstdcxx = true`."
+        )
+    )
+    shoff = Int(_read_le(UInt64, bytes, 0x28))
+    shentsize = Int(_read_le(UInt16, bytes, 0x3a))
+    shnum = Int(_read_le(UInt16, bytes, 0x3c))
+    section(i) = shoff + i * shentsize
+    needs = Pair{String, String}[]
+    for i in 0:(shnum - 1)
+        _read_le(UInt32, bytes, section(i) + 4) == 0x6ffffffe || continue  # SHT_GNU_verneed
+        offset = Int(_read_le(UInt64, bytes, section(i) + 24))
+        count = Int(_read_le(UInt32, bytes, section(i) + 44))
+        strtab = Int(_read_le(UInt64, bytes, section(Int(_read_le(UInt32, bytes, section(i) + 40))) + 24))
+        need = offset
+        for _ in 1:count
+            lib = _read_cstring(bytes, strtab + Int(_read_le(UInt32, bytes, need + 4)))
+            aux = need + Int(_read_le(UInt32, bytes, need + 8))
+            for _ in 1:Int(_read_le(UInt16, bytes, need + 2))
+                push!(needs, lib => _read_cstring(bytes, strtab + Int(_read_le(UInt32, bytes, aux + 8))))
+                aux += Int(_read_le(UInt32, bytes, aux + 12))
+            end
+            need += Int(_read_le(UInt32, bytes, need + 12))
+        end
+    end
+    return needs
 end
 
 _is_filename_byte(c::UInt8) = UInt8('a') <= c <= UInt8('z') || UInt8('A') <= c <= UInt8('Z') ||

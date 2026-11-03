@@ -85,6 +85,13 @@ each shared library as a regular file, under only those of its names that
 some other file of the bundle refers to; the bundle directory itself keeps its
 links. A library that nothing refers to by name keeps all of its names.
 
+On Linux, the copy also leaves out `libstdc++`, which every manylinux system
+provides and which NumPy's wheels already load. The build stops with an error
+if a bundled library needs a newer `libstdc++` than manylinux_2_28 systems
+have (`GLIBCXX_3.4.25`, `CXXABI_1.3.11`), or if the Julia used for the build
+links `libjulia-internal` to the shared `libstdc++` (official Julia builds link
+it statically). Pass `bundle_libstdcxx = true` to keep the bundled copy.
+
 The bundle is large—typically hundreds of megabytes—but allows installation
 on a machine without Julia or `LD_LIBRARY_PATH` configuration. Test a
 distribution with `pip install` in a clean virtual environment on such a
