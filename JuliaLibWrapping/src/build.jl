@@ -253,7 +253,87 @@ function _copy_bundle_into_python_package(t::PythonTarget, bundle_dir::AbstractS
     # Avoid retaining files from an older, larger bundle.
     ispath(dest) && rm(dest; recursive = true)
     cp(bundle_dir, dest)
+    _prune_library_links!(dest)
     return dest
+end
+
+# Wheels cannot hold symbolic links, so every link in a package's bundle would
+# be stored as a full copy of its target: a library reachable as `libfoo.so`,
+# `libfoo.so.1`, and `libfoo.so.1.2.3` would be stored three times. For each
+# file that links point to, keep only the names that some other file of the
+# bundle mentions (a `DT_NEEDED` entry, or a name the Julia runtime opens),
+# each as a regular file. A file none of whose names is mentioned keeps all of
+# them, links included.
+function _prune_library_links!(dir::AbstractString)
+    root = realpath(dir)
+    groups = Dict{String, Vector{String}}()  # target file => paths that resolve to it
+    for (d, _, files) in walkdir(dir), f in files
+        p = joinpath(d, f)
+        isfile(p) || continue  # a dangling link
+        target = realpath(p)
+        startswith(target, joinpath(root, "")) || continue
+        push!(get!(groups, target, String[]), p)
+    end
+    filter!(((_, paths),) -> any(islink, paths), groups)
+    isempty(groups) && return dir
+
+    # Mentions are whole runs of file-name characters, so `libfoo.so.1` does
+    # not count as a mention of `libfoo.so`. `Libdl` appends the platform
+    # extension to a name that lacks one, so the name without it also counts.
+    stem(name) = chopsuffix(name, "." * Libdl.dlext)
+    candidates = Set{String}()
+    for paths in values(groups), p in paths
+        push!(candidates, basename(p), stem(basename(p)))
+    end
+    mentions = Dict{String, Set{String}}()  # regular file => candidates it mentions
+    for (d, _, files) in walkdir(dir), f in files
+        p = joinpath(d, f)
+        (islink(p) || !isfile(p)) && continue
+        mentions[realpath(p)] = _mentioned_names(read(p), candidates)
+    end
+
+    for (target, paths) in groups
+        mentioned(name) = any(((f, names),) -> f != target && (name in names || stem(name) in names), mentions)
+        keep = filter(p -> mentioned(basename(p)), paths)
+        isempty(keep) && continue
+        for p in keep
+            islink(p) || continue
+            rm(p)
+            cp(target, p)
+        end
+        for p in paths
+            p in keep || rm(p)
+        end
+    end
+    return dir
+end
+
+_is_filename_byte(c::UInt8) = UInt8('a') <= c <= UInt8('z') || UInt8('A') <= c <= UInt8('Z') ||
+    UInt8('0') <= c <= UInt8('9') || c in (UInt8('.'), UInt8('_'), UInt8('+'), UInt8('-'))
+
+# The members of `candidates` that occur in `bytes` as a maximal run of
+# file-name characters.
+function _mentioned_names(bytes::AbstractVector{UInt8}, candidates::Set{String})
+    found = Set{String}()
+    lengths = Set(ncodeunits(c) for c in candidates)
+    inrun, start = false, firstindex(bytes)
+    for i in eachindex(bytes)
+        if _is_filename_byte(bytes[i])
+            inrun || (inrun = true; start = i)
+        elseif inrun
+            _record_mention!(found, bytes, start, i - 1, lengths, candidates)
+            inrun = false
+        end
+    end
+    inrun && _record_mention!(found, bytes, start, lastindex(bytes), lengths, candidates)
+    return found
+end
+
+function _record_mention!(found, bytes, lo, hi, lengths, candidates)
+    hi - lo + 1 in lengths || return found
+    name = String(bytes[lo:hi])
+    name in candidates && push!(found, name)
+    return found
 end
 
 """

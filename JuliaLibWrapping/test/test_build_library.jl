@@ -512,6 +512,39 @@ end
         @test occursin("\"pkg\"", err.msg)
     end
 
+    @testset "bundle copy keeps only the library names in use" begin
+        mktempdir() do dir
+            lib = joinpath(dir, "lib")
+            mkpath(lib)
+            # `libfoo` is needed by its versioned name, `libbar` is opened by
+            # its name without extension, and nothing mentions `libbaz`.
+            # `libfoo`'s own mention of `libfoo.so` does not count.
+            ext = Base.Libc.Libdl.dlext
+            write(joinpath(lib, "libfoo.$ext.1.2.3"), "foo\0libfoo.$ext\0")
+            symlink("libfoo.$ext.1.2.3", joinpath(lib, "libfoo.$ext.1"))
+            symlink("libfoo.$ext.1", joinpath(lib, "libfoo.$ext"))
+            write(joinpath(lib, "libbar.$ext.2.0"), "bar")
+            symlink("libbar.$ext.2.0", joinpath(lib, "libbar.$ext.2"))
+            symlink("libbar.$ext.2.0", joinpath(lib, "libbar.$ext"))
+            write(joinpath(lib, "libbaz.$ext.3.0"), "baz")
+            symlink("libbaz.$ext.3.0", joinpath(lib, "libbaz.$ext.3"))
+            write(joinpath(lib, "libmain.$ext"), "\0libfoo.$ext.1\0../lib/libbar:other\0libbaz.$ext.3x\0")
+
+            JuliaLibWrapping._prune_library_links!(dir)
+
+            @test sort(readdir(lib)) == sort(
+                [
+                    "libfoo.$ext.1", "libbar.$ext", "libbaz.$ext.3.0", "libbaz.$ext.3", "libmain.$ext",
+                ]
+            )
+            @test !islink(joinpath(lib, "libfoo.$ext.1"))
+            @test read(joinpath(lib, "libfoo.$ext.1"), String) == "foo\0libfoo.$ext\0"
+            @test !islink(joinpath(lib, "libbar.$ext"))
+            @test read(joinpath(lib, "libbar.$ext"), String) == "bar"
+            @test islink(joinpath(lib, "libbaz.$ext.3"))
+        end
+    end
+
     @testset "end-to-end" begin
         # Run the expensive integration test only when juliac is available.
         has_julia = Sys.which("julia") !== nothing

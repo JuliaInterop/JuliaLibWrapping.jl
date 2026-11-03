@@ -80,6 +80,11 @@ mylib_py/
     └── artifacts/…
 ```
 
+Wheels cannot contain symbolic links, so the copy in a Python package stores
+each shared library as a regular file, under only those of its names that
+some other file of the bundle refers to; the bundle directory itself keeps its
+links. A library that nothing refers to by name keeps all of its names.
+
 The bundle is large—typically hundreds of megabytes—but allows installation
 on a machine without Julia or `LD_LIBRARY_PATH` configuration. Test a
 distribution with `pip install` in a clean virtual environment on such a
