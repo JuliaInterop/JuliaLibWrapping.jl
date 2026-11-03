@@ -608,10 +608,13 @@ end
         @test occursin("#define JLW_LIBRARY_ENV \"LIBDEMO_MEX_LIBRARY\"", gateway)
 
         # The build script compiles the path in, and takes a directory so
-        # the library can stay next to the runtime its RUNPATH names.
+        # the library can stay next to the runtime its RUNPATH names. The
+        # path goes in a header: a string macro on the mex command line
+        # loses its quotes to the shell.
         build = read(joinpath(path, "build_mex.m"), String)
         @test occursin("function build_mex(library_dir)", build)
-        @test occursin("-DJLW_LIBRARY_PATH=", build)
+        @test occursin("'-DJLW_LIBRARY_PATH_HEADER'", build)
+        @test !occursin("-DJLW_LIBRARY_PATH=", build)
         # With no subdirectory the library sits beside the script.
         @test occursin("library_dir = here;", build)
     end
@@ -657,6 +660,12 @@ end
             cp(joinpath(@__DIR__, "mex_stub.h"), joinpath(path, "mex.h"))
             command = `$compiler -fsyntax-only -Wall -Wextra -Werror -I$path
                            $(joinpath(path, "libdemo_mex.c"))`
+            @test success(run(pipeline(command; stdout = stdout, stderr = stderr); wait = true))
+            # The gateway also compiles with the path from the header that
+            # `build_mex.m` writes, here one with a space and an escaped quote.
+            write(joinpath(path, "jlw_library_path.h"), "#define JLW_LIBRARY_PATH \"/a b/\\\"c\\\"/libdemo\"\n")
+            command = `$compiler -fsyntax-only -Wall -Wextra -Werror -DJLW_LIBRARY_PATH_HEADER
+                           -I$path $(joinpath(path, "libdemo_mex.c"))`
             @test success(run(pipeline(command; stdout = stdout, stderr = stderr); wait = true))
         end
     end
