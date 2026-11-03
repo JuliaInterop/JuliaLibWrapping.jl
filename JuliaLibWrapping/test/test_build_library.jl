@@ -552,6 +552,22 @@ end
             bundle_with("libjulia-internal.so.1.13") do dir, lib
                 @test_throws "links libstdc++ dynamically" JuliaLibWrapping._use_system_libstdcxx!(dir)
             end
+            # The copy in a Python package replaces any earlier copy, leaves
+            # out libstdc++ unless asked to keep it, and leaves the bundle
+            # directory as it was.
+            bundle_with("libgmpxx.so.4") do bundle_dir, bundle_lib
+                mktempdir() do out
+                    t = PythonTarget(out, "pkg", "libpkg"; bundle_subdir = "bundle")
+                    stdcxx(d) = filter(startswith("libstdc++"), readdir(joinpath(d, "lib", "julia")))
+                    dest = JuliaLibWrapping._copy_bundle_into_python_package(t, bundle_dir; bundle_libstdcxx = true)
+                    @test dest == joinpath(out, "pkg", "bundle")
+                    @test stdcxx(dest) == ["libstdc++.so.6"]  # `libstdc++.so` is a link nothing mentions
+                    JuliaLibWrapping._copy_bundle_into_python_package(t, bundle_dir)
+                    @test isempty(stdcxx(dest))
+                    @test isfile(joinpath(dest, "lib", "julia", "libgmpxx.so.4"))
+                    @test stdcxx(bundle_dir) == ["libstdc++.so", "libstdc++.so.6"]
+                end
+            end
             # A library the build cannot read is an error, not a guess.
             bundle_with("libgmpxx.so.4") do dir, lib
                 write(joinpath(lib, "libold.so"), vcat(b"\x7fELF\x01\x01", zeros(UInt8, 58)))
