@@ -947,6 +947,77 @@ class JLWError(RuntimeError):
         self.message = message
 """
 
+# The owning handle wrapped around a `COpaque` return. It holds the pointer to
+# a Julia object kept alive across the boundary and releases it (through the
+# `jlw_free_opaque` entrypoint) from its `__del__` when garbage-collected, or
+# eagerly via `free()`; a `_freed` flag guarantees the call happens at most once
+# whichever way it is triggered. `__del__` swallows exceptions so a handle still
+# live at interpreter shutdown — when `_lib`/`ctypes` may already be gone — does
+# not raise from finalization. Emitted into `_lowlevel.py` only when the ABI
+# exports that entrypoint and carries a `COpaque` struct (see
+# [`_write_bindings`](@ref)).
+const OPAQUE_DEFINITION = """
+class Opaque:
+    \"\"\"Owning handle to a Julia object held behind an opaque pointer.
+
+    The library returns a pointer that keeps a Julia object alive; this handle
+    owns it and releases it with `jlw_free_opaque`. Release is automatic: the
+    handle frees the object from its `__del__` when it is garbage-collected.
+    Call `free()` to release eagerly. Freeing happens at most once, however it
+    is triggered.
+
+    Pass a handle back into the library wherever an opaque argument is expected;
+    a raw integer address is accepted too.
+    \"\"\"
+
+    __slots__ = ("_ptr", "_freed")
+
+    def __init__(self, ptr):
+        # `ptr` is an integer address, or None for a null handle, as ctypes
+        # yields when reading a c_void_p field.
+        self._ptr = ptr
+        # A null handle owns nothing, so there is nothing to free.
+        self._freed = not ptr
+
+    @property
+    def ptr(self):
+        \"\"\"The raw pointer address; raises if the handle has been freed.\"\"\"
+        if self._freed:
+            raise RuntimeError("Opaque handle has already been freed")
+        return self._ptr
+
+    @property
+    def alive(self):
+        \"\"\"Whether the handle still owns a live Julia object.\"\"\"
+        return not self._freed
+
+    def free(self):
+        \"\"\"Release the underlying Julia object now. Idempotent.\"\"\"
+        if not self._freed:
+            # Mark freed first, so a raising call can never free twice.
+            self._freed = True
+            _lib.jlw_free_opaque(ctypes.c_void_p(self._ptr))
+
+    def __del__(self):
+        # Best-effort release on garbage collection. At interpreter shutdown
+        # module globals (`_lib`, `ctypes`) may already be torn down, so a
+        # still-live handle is swallowed rather than raising from __del__; the
+        # process is exiting, so its Julia root is reclaimed regardless.
+        try:
+            self.free()
+        except Exception:
+            pass
+
+    def __bool__(self):
+        return not self._freed
+
+    @staticmethod
+    def _ptr_of(x):
+        # Accept either an Opaque handle or a raw address when a handle is
+        # passed back into the library.
+        return x.ptr if isinstance(x, Opaque) else x
+"""
+
 function _write_bindings(
         f::IO, dest::PythonTarget, abi_info::ABIInfo,
         typedict::Dict{Int, String}, needs_jlwerror::Bool = false,
@@ -955,9 +1026,16 @@ function _write_bindings(
     )
     (; entrypoints, typeinfo, forward_declared) = abi_info
     env_var = uppercase(dest.package_name) * "_LIBRARY"
-    # Validate release functions before generating `.free()` methods.
+    # Validate release functions (the pair and jlw_free_opaque) before
+    # generating `.free()` methods and the `Opaque` handle.
     _check_release_entrypoint_signatures(abi_info)
     release_present = _release_symbols_present(abi_info)
+    # The `Opaque` handle is emitted only when the library both carries a
+    # `COpaque` carrier and exports the release entrypoints (`jlw_free_opaque`
+    # among them), so its `free()` never names a missing symbol. It rides the
+    # same `release_present` opt-in as the owning array/string carriers.
+    needs_opaque = release_present &&
+        any(t isa StructDesc && is_copaque_struct(t, typeinfo) for t in values(typeinfo))
 
     # Every entrypoint becomes `_lib.<symbol>` and `def <symbol>(…)`, so a
     # symbol that is not a Python identifier — `!`, the Julia convention for
@@ -1068,6 +1146,12 @@ function _write_bindings(
         println(f)
     end
 
+    if needs_opaque
+        # Self-freeing handle around a `COpaque` return.
+        print(f, OPAQUE_DEFINITION)
+        println(f)
+    end
+
     if any(t isa StructDesc for t in values(typeinfo))
         # Each emitted class is followed by a `_check_layout` call comparing
         # what ctypes computed against the layout the library was compiled
@@ -1161,6 +1245,7 @@ function _write_bindings(
         # Enum classes share the module namespace with structs and functions.
         claimed_names = Set{String}(typedict[id] for (id, type) in pairs(typeinfo) if type isa StructDesc)
         needs_jlwerror && push!(claimed_names, "JLWError")
+        needs_opaque && push!(claimed_names, "Opaque")
         for method in entrypoints
             method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
             push!(claimed_names, method.symbol)
@@ -1288,17 +1373,27 @@ excluded from that pass-through and stays `:opaque`
 - `(kind=:cdict, classname=…)` — a borrowed `CDict`; wrap with
   `<class>.from_dict(name)`
 - `(kind=:copt, classname=…)` — wrap with `<class>.from_optional(name)`
+- `(kind=:opaque_arg, classname=…)` — a `COpaque` handle; pass the wrapping
+  `Opaque` (or a raw address) back with `<class>(ptr=Opaque._ptr_of(name))`.
+  Returned only when `release_present`, so the `Opaque` helper exists.
 - `(kind=:opaque, reason=…)` — bail out; emit mechanical re-export instead.
 """
 function _facade_classify_arg(
         arg::ArgDesc,
         typeinfo::OrderedDict{Int, TypeDesc},
         typedict::Dict{Int, String};
-        pass_opaque::Bool = false
+        pass_opaque::Bool = false,
+        release_present::Bool = false
     )
     t = typeinfo[arg.type]
     if t isa PrimitiveTypeDesc
         return (kind = :primitive,)
+    elseif t isa StructDesc && is_copaque_struct(t, typeinfo) && release_present
+        # An opaque handle: unwrap the `Opaque` (or a raw address) to its
+        # `COpaque` carrier on the way in. Checked before the carrier
+        # recognizers below, none of which match a `COpaque`. Gated on the
+        # release entrypoints, like every owning carrier.
+        return (kind = :opaque_arg, classname = typedict[arg.type])
     elseif t isa StructDesc
         cainfo = _python_carray_info(t, typeinfo)
         csinfo = cstring_struct_info(t, typeinfo)
@@ -1415,6 +1510,12 @@ return is one of:
   separate allocations).
 - `(kind=:copt_unwrap, classname=…)` — return `_result.as_optional()`; COpt
   is by-value, so no free is involved (not gated on `release_present`)
+- `(kind=:opaque_wrap,)` — a `COpaque` handle return
+  ([`is_copaque_struct`](@ref)): wrap the pointer in an `Opaque`, which frees
+  the Julia object with `jlw_free_opaque` on `free()` or garbage collection.
+  Gated on `release_present`, like the owning carriers (`jlw_free_opaque` is one
+  of the release entrypoints); otherwise the return falls through to the
+  raw-pointer handling (a passthrough under `pass_opaque`).
 - `(kind=:ctuple_unwrap, elements=…, accessors=…, classname=…)` — a `CNTuple`
   return, recognized via [`ctuple_struct_info`](@ref): a Python tuple built by
   converting each element by its own kind, then releasing the owning ones in
@@ -1491,6 +1592,11 @@ function _classify_return_type(
             return (kind = :cdict_unwrap, classname = typedict[type_id])
         elseif !isnothing(_python_copt_info(rt, typeinfo))
             return (kind = :copt_unwrap, classname = typedict[type_id])
+        elseif is_copaque_struct(rt, typeinfo) && release_present
+            # An opaque handle return: wrap the pointer in an `Opaque` that
+            # frees the Julia object once, on `free()` or garbage collection.
+            # Gated on the release entrypoints, like the owning carriers.
+            return (kind = :opaque_wrap,)
         elseif !isnothing(ctinfo)
             elements = [
                 _classify_return_type(
@@ -1555,7 +1661,8 @@ function _facade_classify_return(
         pass_opaque::Bool = false
     )
     return _classify_return_type(
-        method.return_type, typeinfo, typedict, release_present; method, pass_opaque
+        method.return_type, typeinfo, typedict, release_present;
+        method, pass_opaque
     )
 end
 
@@ -1567,7 +1674,7 @@ _ret_uses_numpy(ret) = ret.kind in (:carray_view, :carray_unwrap) ||
 _ret_adds_value(ret) = ret.kind === :jlwresult_unwrap || ret.kind in (
     :carray_view, :carray_unwrap, :cstring_convert, :cstring_unwrap,
     :cstrarray_convert, :cstrarray_unwrap, :cdict_convert, :cdict_unwrap,
-    :copt_unwrap, :ctuple_unwrap, :jlwstatus_discard, :enum_wrap,
+    :copt_unwrap, :ctuple_unwrap, :jlwstatus_discard, :enum_wrap, :opaque_wrap,
 )
 
 """
@@ -1608,7 +1715,8 @@ function _facade_plan(
     pass_opaque = !isnothing(api_entry)
     # Enum overrides use a different NamedTuple type.
     arg_classes = Any[
-        _facade_classify_arg(a, typeinfo, typedict; pass_opaque) for a in method.args
+        _facade_classify_arg(a, typeinfo, typedict; pass_opaque, release_present)
+            for a in method.args
     ]
     if !isnothing(api_entry)
         arg_enums = get(api_entry, "arg_enums", nothing)
@@ -1643,7 +1751,9 @@ function _facade_plan(
             )
         end
     end
-    ret = _facade_classify_return(method, typeinfo, typedict, release_present; pass_opaque)
+    ret = _facade_classify_return(
+        method, typeinfo, typedict, release_present; pass_opaque
+    )
     if !isnothing(api_entry)
         return_enum = get(api_entry, "return_enum", nothing)
         return_enum === nothing || (ret = _apply_enum_return(ret, String(return_enum)))
@@ -1723,6 +1833,13 @@ function _facade_arg_conversions(
             local_ = "_" * name
             println(f, "    ", local_, " = ", cls.classname, ".from_optional(", name, ")")
             push!(call_args, local_)
+        elseif cls.kind === :opaque_arg
+            # Rebuild the `COpaque` carrier from an `Opaque` handle (or a raw
+            # address). A ctypes c_void_p field accepts an integer directly, so
+            # no ctypes import is needed in the façade.
+            local_ = "_" * name
+            println(f, "    ", local_, " = ", cls.classname, "(ptr=Opaque._ptr_of(", name, "))")
+            push!(call_args, local_)
         elseif cls.kind === :enum
             local_ = "_" * name
             println(f, "    ", local_, " = _enum_coerce(", cls.classname, ", ", name, ")")
@@ -1792,6 +1909,10 @@ function _emit_value_unwrap(f::IO, root::AbstractString, ret)
     elseif kind === :copt_unwrap
         # COpt is stored by value.
         println(f, "    return ", root, ".as_optional()")
+    elseif kind === :opaque_wrap
+        # Wrap the pointer in a self-freeing handle. Nothing is released here:
+        # the caller holds the `Opaque` and it frees on `free()` or GC.
+        println(f, "    return Opaque(", root, ".ptr)")
     elseif kind === :ctuple_unwrap
         # Every element is converted before any is released, so a later
         # element's conversion cannot read freed memory.
@@ -2040,12 +2161,23 @@ function _write_generated(
 
     release_present = _release_symbols_present(abi_info)
     plans = [
-        _facade_plan(m, typeinfo, typedict, release_present, get(api_metadata, m.symbol, nothing))
-            for m in entrypoints
+        _facade_plan(
+                m, typeinfo, typedict, release_present,
+                get(api_metadata, m.symbol, nothing)
+            ) for m in entrypoints
     ]
     needs_np = any(p -> p.uses_numpy, plans)
     needs_enum_coerce = any(p -> any(c -> c.kind === :enum, p.args), plans)
-    has_struct_exports = !isempty(struct_names) || !isempty(enum_names) || needs_jlwerror
+    # The `Opaque` handle is re-exported from `_lowlevel` whenever a wrapper
+    # here builds or unwraps one; mirrors `_write_bindings`'s `needs_opaque`.
+    needs_opaque = release_present && any(
+        p -> p.ret.kind === :opaque_wrap ||
+            (p.ret.kind === :jlwresult_unwrap && p.ret.inner.kind === :opaque_wrap) ||
+            any(c -> c.kind === :opaque_arg, p.args),
+        plans,
+    )
+    has_struct_exports = !isempty(struct_names) || !isempty(enum_names) ||
+        needs_jlwerror || needs_opaque
 
     # Each `@api` function is defined on the façade under its sidecar name,
     # so that name has to be a Python identifier and has to be free. The
@@ -2061,6 +2193,7 @@ function _write_generated(
         claimed[name] = "the enum class `$name`"
     end
     needs_jlwerror && (claimed["JLWError"] = "the exception class `JLWError`")
+    needs_opaque && (claimed["Opaque"] = "the opaque-handle class `Opaque`")
     for (method, plan) in zip(entrypoints, plans)
         plan.category === :api_auto && continue
         method.symbol in _RELEASE_ENTRYPOINT_SYMBOLS && continue
@@ -2100,7 +2233,8 @@ function _write_generated(
     end
     println(f, "\"\"\"")
 
-    has_any_export = !isempty(struct_names) || !isempty(enum_names) || needs_jlwerror || !isempty(entrypoints)
+    has_any_export = !isempty(struct_names) || !isempty(enum_names) ||
+        needs_jlwerror || needs_opaque || !isempty(entrypoints)
     if !has_any_export
         println(f, "from . import _lowlevel  # noqa: F401")
         println(f)
@@ -2125,6 +2259,7 @@ function _write_generated(
             println(f, "    ", name, ",")
         end
         needs_jlwerror && println(f, "    JLWError,")
+        needs_opaque && println(f, "    Opaque,")
         needs_enum_coerce && println(f, "    _enum_coerce,")
         println(f, ")")
         println(f)
@@ -2169,6 +2304,11 @@ function _write_generated(
     if needs_jlwerror
         isfirst || print(f, ", ")
         print(f, "\"JLWError\"")
+        isfirst = false
+    end
+    if needs_opaque
+        isfirst || print(f, ", ")
+        print(f, "\"Opaque\"")
         isfirst = false
     end
     for (method, plan) in zip(entrypoints, plans)

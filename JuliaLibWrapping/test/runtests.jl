@@ -2675,10 +2675,10 @@ end
     end
 
     @testset "_release_symbols_present" begin
-        # Both jlw_free AND jlw_free_strings must be present — either alone
-        # is not enough, and a library with no release entrypoints at all
-        # (or an unrelated function that happens to be named similarly)
-        # must not be mistaken for having them.
+        # Every release symbol — jlw_free, jlw_free_strings AND jlw_free_opaque
+        # — must be present; any strict subset is not enough, and a library
+        # with no release entrypoints at all (or an unrelated function that
+        # happens to be named similarly) must not be mistaken for having them.
         present = JuliaLibWrapping._release_symbols_present
         abi_both = read_abi_info("bindinginfo_cstrarray.json")
         @test present(abi_both) === true
@@ -2709,7 +2709,8 @@ end
             BitSet(), JuliaLibWrapping.MethodDesc[]
         )
         @test present(neither) === false
-        both = JuliaLibWrapping.ABIInfo(
+        # Two of the three is still not enough: jlw_free_opaque is required too.
+        two_of_three = JuliaLibWrapping.ABIInfo(
             OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
             BitSet(),
             JuliaLibWrapping.MethodDesc[
@@ -2719,7 +2720,21 @@ end
                 ),
             ]
         )
-        @test present(both) === true
+        @test present(two_of_three) === false
+        all_three = JuliaLibWrapping.ABIInfo(
+            OrderedDict{Int, TypeDesc}(1 => PrimitiveTypeDesc("Int64", true, 64, 8, 8)),
+            BitSet(),
+            JuliaLibWrapping.MethodDesc[
+                JuliaLibWrapping.MethodDesc("jlw_free", "jlw_free(p)", 1, JuliaLibWrapping.ArgDesc[]),
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_strings", "jlw_free_strings(p, n)", 1, JuliaLibWrapping.ArgDesc[]
+                ),
+                JuliaLibWrapping.MethodDesc(
+                    "jlw_free_opaque", "jlw_free_opaque(p)", 1, JuliaLibWrapping.ArgDesc[]
+                ),
+            ]
+        )
+        @test present(all_three) === true
     end
 
     @testset "_check_release_entrypoint_signatures" begin
@@ -2769,8 +2784,31 @@ end
             "jlw_free_strings", "jlw_free_strings(p::Ptr{CString{:owned}}, n::Int64)::Cvoid", nothing,
             [JuliaLibWrapping.ArgDesc("p", 8, false), JuliaLibWrapping.ArgDesc("n", 1, false)]
         )
-        info(free, free_strings) = JuliaLibWrapping.ABIInfo(ti, BitSet(), [free, free_strings])
+        # `jlw_free_opaque` is one of the release entrypoints, sharing `jlw_free`'s
+        # `(p::Ptr{Cvoid})::Cvoid` shape. All three are emitted together, so the
+        # signature check runs only when all three are present; `info` supplies a
+        # valid opaque alongside the pair so the mutants below are actually checked.
+        valid_opaque = JuliaLibWrapping.MethodDesc(
+            "jlw_free_opaque", "jlw_free_opaque(p::Ptr{Cvoid})::Cvoid", nothing,
+            [JuliaLibWrapping.ArgDesc("p", 10, false)]
+        )
+        info(free, free_strings) =
+            JuliaLibWrapping.ABIInfo(ti, BitSet(), [free, free_strings, valid_opaque])
         @test check(info(valid_free, valid_free_strings)) === nothing
+
+        # A bad `jlw_free_opaque` is caught when the whole set is present.
+        @test_throws "`jlw_free_opaque`" check(
+            JuliaLibWrapping.ABIInfo(
+                ti, BitSet(),
+                [
+                    valid_free, valid_free_strings,
+                    JuliaLibWrapping.MethodDesc(
+                        "jlw_free_opaque", "jlw_free_opaque(p::Ptr{UInt8})::Cvoid", nothing,
+                        [JuliaLibWrapping.ArgDesc("p", 5, false)]
+                    ),
+                ],
+            )
+        )
 
         mutants = (
             # Invalid jlw_free signatures.
@@ -3694,6 +3732,84 @@ end
         @test JuliaLibWrapping._classify_return_type(
             pair_arg.type, simple.typeinfo, td, false; pass_opaque = true
         ).kind === :passthrough
+    end
+
+    @testset "opaque handles (COpaque)" begin
+        # `is_copaque_struct` recognizes a one-field `COpaque` over a void
+        # pointer, and rejects lookalikes.
+        ti = OrderedDict{Int, TypeDesc}(
+            1 => PointerDesc("Ptr{Nothing}", nothing),
+            2 => PrimitiveTypeDesc("UInt8", false, 8, 1, 1),
+            3 => PointerDesc("Ptr{UInt8}", 2),
+            10 => StructDesc("COpaque", 8, 8, FieldDesc[FieldDesc("ptr", 1, 0)]),
+            11 => StructDesc("COpaque", 8, 8, FieldDesc[FieldDesc("handle", 1, 0)]),
+            12 => StructDesc("COpaque", 8, 8, FieldDesc[FieldDesc("ptr", 3, 0)]),
+            13 => StructDesc("Widget", 8, 8, FieldDesc[FieldDesc("ptr", 1, 0)]),
+        )
+        @test JuliaLibWrapping.is_copaque_struct(ti[10], ti)
+        @test !JuliaLibWrapping.is_copaque_struct(ti[11], ti)  # wrong field name
+        @test !JuliaLibWrapping.is_copaque_struct(ti[12], ti)  # ptr not `Ptr{Cvoid}`
+        @test !JuliaLibWrapping.is_copaque_struct(ti[13], ti)  # wrong struct name
+
+        # The opaque fixture is a release-enabled library: it exports all of
+        # `jlw_free`/`jlw_free_strings`/`jlw_free_opaque` (as `@export_release_entrypoints`
+        # now emits them), so opaque wrapping rides the same `release_present` opt-in
+        # as the owning carriers.
+        abi = read_abi_info("bindinginfo_opaque.json")
+        @test JuliaLibWrapping._release_symbols_present(abi)
+        td = Dict{Int, String}()
+        for (id, t) in pairs(abi.typeinfo)
+            t isa StructDesc && JuliaLibWrapping.mangle_python!(td, id, abi.typeinfo)
+        end
+        by = Dict(m.symbol => m for m in abi.entrypoints)
+
+        # A COpaque wrapped in a JLWResult wraps to an Opaque handle only when
+        # the release entrypoints are present; otherwise it stays opaque.
+        rc = JuliaLibWrapping._facade_classify_return(
+            by["make_model"], abi.typeinfo, td, true
+        )
+        @test rc.kind === :jlwresult_unwrap
+        @test rc.inner.kind === :opaque_wrap
+        @test JuliaLibWrapping._facade_classify_return(
+            by["make_model"], abi.typeinfo, td, false
+        ).kind === :opaque
+
+        # A bare (hand-written) COpaque return wraps directly.
+        @test JuliaLibWrapping._facade_classify_return(
+            by["raw_handle"], abi.typeinfo, td, true
+        ).kind === :opaque_wrap
+
+        # An opaque argument unwraps to its carrier, again only with the
+        # release entrypoints (so the `Opaque` helper exists to unwrap through).
+        marg = only(by["use_model"].args)
+        @test JuliaLibWrapping._facade_classify_arg(
+            marg, abi.typeinfo, td; release_present = true
+        ).kind === :opaque_arg
+        @test JuliaLibWrapping._facade_classify_arg(marg, abi.typeinfo, td).kind === :opaque
+
+        mktempdir() do path
+            dest = PythonTarget(path, "opaque_demo", "libopaque")
+            write_wrapper(dest, abi)
+
+            low = read(joinpath(path, "opaque_demo", "_lowlevel.py"), String)
+            @test occursin("class Opaque:", low)
+            @test occursin("def __del__(self):", low)
+            @test occursin("_lib.jlw_free_opaque(ctypes.c_void_p(self._ptr))", low)
+            @test occursin("_lib.jlw_free_opaque.restype", low)
+            # The release entrypoint is bound on `_lib` but never exposed.
+            @test !occursin("def jlw_free_opaque(", low)
+
+            facade = read(joinpath(path, "opaque_demo", "_facade.py"), String)
+            @test occursin("Opaque,", facade)                       # re-exported
+            @test occursin("def make_model():", facade)
+            @test occursin("return Opaque(_r.value.ptr)", facade)
+            @test occursin("def use_model(m):", facade)
+            @test occursin("COpaque(ptr=Opaque._ptr_of(m))", facade)
+            @test occursin("def raw_handle():", facade)
+            @test occursin("return Opaque(_result.ptr)", facade)
+            @test occursin("\"Opaque\"", facade)                    # in __all__
+            @test !occursin("jlw_free_opaque", facade)              # never public
+        end
     end
 
     @testset "JLWStatus convention" begin

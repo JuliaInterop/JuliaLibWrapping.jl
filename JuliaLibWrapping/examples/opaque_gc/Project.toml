@@ -1,0 +1,15 @@
+name = "opaque_gc"
+uuid = "d5082a2f-abe3-4ef8-91b6-2fc1b6c20f27"
+version = "0.0.1"
+
+[deps]
+JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
+
+# Note: `[sources]` is intentionally absent, as in the other examples.
+# `build.jl` (and the test harness) materialize a transient project whose
+# `[sources]` points `JLWInterop` at the in-tree checkout, so this file
+# carries no machine-specific path.
+
+[compat]
+JLWInterop = "0.2"
+julia = "1.13"

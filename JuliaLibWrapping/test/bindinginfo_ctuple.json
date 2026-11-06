@@ -38,6 +38,14 @@
         { "name": "n", "type_id": 3 }
       ],
       "returns": { "type_id": null }
+    },
+    {
+      "returns": { "type_id": null },
+      "name": "jlw_free_opaque(p::Ptr{Nothing})",
+      "arguments": [
+        { "name": "p", "type_id": 11 }
+      ],
+      "symbol": "jlw_free_opaque"
     }
   ],
   "types": [
